@@ -1,4 +1,4 @@
-# The public site — `sovatela.anaubi.com`
+# The public site — `sovatela.eu`
 
 The download page and policy pages, in version control. Before August 2026 the
 page existed **only on the Pi**, hand-edited at release time, with no history and
@@ -43,7 +43,7 @@ gh release create vX.Y.Z --repo jacobla1/sovatela \
 node deploy/web/build.mjs /tmp/sovatela-release
 
 # 5. Publish the pages — commit dist/ into the separate `sovatela-web` repo,
-#    which GitHub Pages serves at sovatela.anaubi.com. That repo is the publish
+#    which GitHub Pages serves at sovatela.eu. That repo is the publish
 #    target; do not edit its HTML by hand.
 cp    deploy/web/dist/index.html      ../sovatela-web/
 cp -R deploy/web/dist/accessibility   ../sovatela-web/
@@ -61,7 +61,7 @@ asset list.
 `dist/` is gitignored here on purpose — it cannot exist before the installers
 do, because the checksums are computed from their bytes. Build output instead
 lives in the separate **public** repo **`jacobla1/sovatela-web`**, which GitHub
-Pages serves at `sovatela.anaubi.com`. Pushing to its `main` deploys.
+Pages serves at `sovatela.eu`. Pushing to its `main` deploys.
 
 That split is what makes the live site correspond to a commit. Before August
 2026 the page was hand-edited on a server; through 1.1.1 it was `scp`'d over a
@@ -155,9 +155,9 @@ maintained alongside.
 
 **A local check proves nothing about the public path, in either direction** —
 and this machine is still configured to lie about it. `/etc/hosts` maps the
-other `anaubi.com` hostnames to `the Pi's LAN address`, because those services are
-still on the Pi behind a NAT that doesn't hairpin. `sovatela.anaubi.com` must
-**not** be in that list any more.
+`anaubi.com` hostnames to `the Pi's LAN address`, because those services are still on
+the Pi behind a NAT that doesn't hairpin. Neither `sovatela.eu` nor
+`sovatela.anaubi.com` belongs in that list: both are on Pages now.
 
 Both directions of this have already happened. In August 2026 the site appeared
 dead from the LAN purely because it was the one hostname *missing* from
@@ -169,8 +169,8 @@ because DNS had moved and no Pages site claimed the domain yet.
 So verify by bypassing name resolution entirely:
 
 ```sh
-curl -sSI --resolve sovatela.anaubi.com:443:185.199.111.153 \
-  https://sovatela.anaubi.com | grep -i '^server'   # expect: GitHub.com
+curl -sSI --resolve sovatela.eu:443:185.199.111.153 \
+  https://sovatela.eu | grep -i '^server'   # expect: GitHub.com
 ```
 
 Then confirm: valid certificate for the custom domain, every download button

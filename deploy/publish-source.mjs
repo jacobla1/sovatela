@@ -82,7 +82,7 @@ const linkPattern = new RegExp(
 // text would hide something that exists. Only genuinely unpublished documents
 // lose their anchor.
 const PUBLISHED_ELSEWHERE = {
-  "ACCESSIBILITY.md": "https://sovatela.anaubi.com/accessibility",
+  "ACCESSIBILITY.md": "https://sovatela.eu/accessibility",
 };
 
 let rewritten = 0;

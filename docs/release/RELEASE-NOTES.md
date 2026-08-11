@@ -90,7 +90,7 @@ the engineering view is in [Technical specification §
   no screen-reader testing has been performed; colour contrast has not been
   formally measured.
 - Full detail and remediation plan: [Accessibility
-  statement](https://sovatela.anaubi.com/accessibility).
+  statement](https://sovatela.eu/accessibility).
 
 **Packaging**
 
@@ -134,7 +134,7 @@ and lives wherever you point it.
 history, memory, projects, and stored keys are preserved; there is no migration
 step and nothing to back up first. On macOS, replace the app in Applications.
 
-**Fresh install** — download for your platform from `https://sovatela.anaubi.com`, verify the
+**Fresh install** — download for your platform from `https://sovatela.eu`, verify the
 checksum, and follow the [installation guide](../INSTALL.md). Then add a
 Scaleway API key: [Quick-start](../QUICKSTART.md).
 

@@ -91,7 +91,7 @@ Some things don't work yet and are documented rather than hidden:
 - No conversation export/import, no history search, no message
   editing or regeneration.
 - No automatic updates.
-- Accessibility gaps — see the [Accessibility statement](https://sovatela.anaubi.com/accessibility).
+- Accessibility gaps — see the [Accessibility statement](https://sovatela.eu/accessibility).
 - Windows and Linux builds are unsigned. macOS builds are signed and notarized.
 
 Full list: [release notes § Known

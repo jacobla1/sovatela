@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Sovatela — download</title>
-  <meta name="description" content="Sovatela — a private, EU-sovereign desktop client for GLM-5.2, hosted in Europe on Scaleway." />
+  <meta name="description" content="Sovatela — a private desktop app for AI chat, running GLM-5.2 in Europe on Scaleway. Bring your own key; it stays on your device." />
   <style>
     :root {
       --bg: #f7f8fb;
@@ -52,40 +52,42 @@
       border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
       border-radius: 14px;
       padding: 16px 18px;
-      margin: 0 0 24px;
+      margin: 24px 0 0;
       font-size: 14.5px;
       color: var(--muted);
     }
 
-    /* Five steps from download to first answer. Auto-fit rather than a fixed
-       five columns, so it reflows to fewer per row on a narrow screen instead
-       of scrolling sideways or crushing the text. */
+    /* Five steps from download to first answer, shown before the buttons so a
+       reader knows what they are committing to. Auto-fit rather than fixed
+       columns, so it reflows to fewer per row on a narrow screen instead of
+       scrolling sideways or crushing the text. */
     .steps {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-      gap: 10px;
-      margin: 0 0 12px;
+      grid-template-columns: repeat(auto-fit, minmax(158px, 1fr));
+      gap: 14px;
+      margin: 0 0 32px;
       padding: 0;
       list-style: none;
     }
 
-    /* Five illustrated cards do not fit across a 720px column. Where there is
-       room, the strip breaks out wider than the rest of the page — which also
-       marks it as the overview rather than part of the body copy. Below that,
-       it stays inside the column and auto-fit folds it to fewer per row. */
-    @media (min-width: 860px) {
+    /* The cards do not fit across a 720px column without orphaning words onto
+       their own lines, so where there is room the strip breaks out wider than
+       the rest of the page. Below that width it stays in the column and
+       auto-fit folds it to fewer per row. */
+    @media (min-width: 900px) {
       .steps {
-        width: min(880px, 94vw);
+        width: min(940px, 94vw);
         margin-left: 50%;
         transform: translateX(-50%);
       }
     }
+
     .step {
       position: relative;
       background: var(--card);
       border: 1px solid var(--border);
       border-radius: 14px;
-      padding: 18px 14px 16px;
+      padding: 22px 16px 20px;
       text-align: center;
     }
     .step-n {
@@ -124,11 +126,11 @@
 
     /* Chevrons between steps, drawn only when they are actually side by side.
        Decorative: the numbers carry the order for anyone who cannot see them. */
-    @media (min-width: 860px) {
+    @media (min-width: 900px) {
       .step + .step::before {
         content: "";
         position: absolute;
-        left: -8px;
+        left: -11px;
         top: 50%;
         width: 7px;
         height: 7px;
@@ -180,7 +182,7 @@
     <header>
       <img class="mark" src="assets/app-icon.jpg" width="112" height="112" alt="Sovatela app icon" />
       <h1>Sovatela</h1>
-      <p class="tagline">A private, EU-sovereign desktop client for <strong>GLM-5.2</strong> — hosted in Europe on Scaleway. Your keys stay on your device.</p>
+      <p class="tagline">A desktop app for <strong>AI chat</strong> — private, and EU-sovereign. It runs <strong>GLM-5.2</strong> in Europe on Scaleway, and your keys stay on your device.</p>
     </header>
 
     <ol class="steps">
@@ -194,8 +196,8 @@
           </svg>
         </span>
         <span class="step-n">1</span>
-        <span class="step-t">Download Sovatela</span>
-        <span class="step-d"><a href="#downloads">Pick your platform</a> — macOS, Windows or Linux</span>
+        <span class="step-t">Download</span>
+        <span class="step-d"><a href="#downloads">macOS, Windows<br />or Linux</a></span>
       </li>
       <li class="step">
         <span class="step-art" aria-hidden="true">
@@ -208,8 +210,8 @@
           </svg>
         </span>
         <span class="step-n">2</span>
-        <span class="step-t">Create a Scaleway account</span>
-        <span class="step-d">Free to open at <a href="https://console.scaleway.com/register" rel="noopener">scaleway.com</a>; you add a card</span>
+        <span class="step-t">Scaleway account</span>
+        <span class="step-d">Free to open at<br /><a href="https://console.scaleway.com/register" rel="noopener">scaleway.com</a></span>
       </li>
       <li class="step">
         <span class="step-art" aria-hidden="true">
@@ -222,8 +224,8 @@
           </svg>
         </span>
         <span class="step-n">3</span>
-        <span class="step-t">Generate an API key</span>
-        <span class="step-d">Copy the <strong>Secret Key</strong> — Scaleway shows it once</span>
+        <span class="step-t">Generate a key</span>
+        <span class="step-d">Copy it — Scaleway<br />shows it once</span>
       </li>
       <li class="step">
         <span class="step-art" aria-hidden="true">
@@ -236,8 +238,8 @@
           </svg>
         </span>
         <span class="step-n">4</span>
-        <span class="step-t">Paste it into the app</span>
-        <span class="step-d">It's the first thing Sovatela asks for</span>
+        <span class="step-t">Paste it in</span>
+        <span class="step-d">The first thing<br />the app asks for</span>
       </li>
       <li class="step done">
         <span class="step-art" aria-hidden="true">
@@ -249,17 +251,9 @@
         </span>
         <span class="step-n">✓</span>
         <span class="step-t">Chat</span>
-        <span class="step-d">Your key stays on your device</span>
+        <span class="step-d">Your key stays<br />on your device</span>
       </li>
     </ol>
-
-    <p class="notice">
-      <strong>Free and open source — but you'll need a paid Scaleway key.</strong>
-      Sovatela has no AI of its own: it uses your own Scaleway account, and
-      <strong>Scaleway bills you directly</strong> for what you use — typically a
-      few cents a day for ordinary chat. Sovatela never handles payment and takes
-      no cut, and the app shows a running cost estimate on your device.
-    </p>
 
     <main class="downloads" id="downloads">
       <!-- macOS (universal: Apple Silicon + Intel) -->
@@ -292,6 +286,15 @@
         <span class="dl-cta">Download</span>
       </a>
     </main>
+
+    <p class="notice">
+      <strong>Free and open source — but you'll need a paid Scaleway key.</strong>
+      Sovatela has no AI of its own: it uses your own Scaleway account, and
+      <strong>Scaleway bills you directly</strong> for what you use — typically a
+      few cents a day for ordinary chat. Sovatela never handles payment and takes
+      no cut, and the app shows a running cost estimate on your device.
+    </p>
+
 
     <p class="secondary">
       Also available: <a href="/downloads/Sovatela_1.1.1_x64_en-US.msi">Windows .msi</a> (for managed deployment) ·

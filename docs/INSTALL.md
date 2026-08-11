@@ -2,7 +2,7 @@
 
 macOS, Windows, Linux
 
-Download the installer for your platform from `https://sovatela.anaubi.com`.
+Download the installer for your platform from `https://sovatela.eu`.
 That page carries the current release and the SHA-256 for each file; the
 installers themselves, and every earlier version, are published as releases on
 GitHub, which the page links to.
@@ -24,7 +24,7 @@ Apple Silicon and Intel Macs.
 The build is signed and notarized with an Apple Developer ID, so it opens
 without a security warning. If macOS says the app "cannot be opened because the
 developer cannot be verified", **stop** — that means the build is unsigned and
-did not come from us. Re-download from `https://sovatela.anaubi.com` and check the checksum.
+did not come from us. Re-download from `https://sovatela.eu` and check the checksum.
 
 You can confirm the signature yourself. This is a command, so it runs in
 **Terminal** — the app in *Applications → Utilities*, or press <kbd>⌘</kbd> +
@@ -122,7 +122,7 @@ Without a keyring daemon the app starts but cannot store your API key.
 one.
 
 **No repository yet.** There is no apt/dnf repo or Flatpak, so `.deb` and
-AppImage installs do not auto-update. Check `https://sovatela.anaubi.com` for
+AppImage installs do not auto-update. Check `https://sovatela.eu` for
 new versions.
 
 ---
@@ -151,7 +151,7 @@ Get-FileHash .\Sovatela_*_x64-setup.exe -Algorithm SHA256
 ```
 
 If the value doesn't match, delete the file and download it again from
-`https://sovatela.anaubi.com`. Don't run it.
+`https://sovatela.eu`. Don't run it.
 
 ---
 

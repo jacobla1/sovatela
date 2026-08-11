@@ -104,7 +104,7 @@ act on your behalf there.
 
 ## 6. Website
 
-`https://sovatela.anaubi.com` — the download page and these policy pages.
+`https://sovatela.eu` — the download page and these policy pages.
 
 The site is **hosted by GitHub Pages**. We run no server for it, so we keep no
 access logs and receive no visitor data — not your IP address, not which pages

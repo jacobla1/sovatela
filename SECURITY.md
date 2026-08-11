@@ -136,7 +136,7 @@ than filed away:
   7](docs/TECHNICAL-SPEC.md#7-known-technical-debt), and the *Known limitations*
   section of each [release's notes](docs/release/RELEASE-NOTES.md)
 - **Accessibility defects**, stated rather than glossed —
-  [Accessibility statement](https://sovatela.anaubi.com/accessibility)
+  [Accessibility statement](https://sovatela.eu/accessibility)
 - **Security and robustness reviews** (July 2026) and the mitigation plan that
   followed are held internally. They record findings against pre-release
   versions, including some not yet remediated; we'd rather share them on request

@@ -93,7 +93,7 @@ jobs:
             See [CHANGELOG.md](https://github.com/jacobla1/Scale/blob/main/CHANGELOG.md) for what changed in this version.
 
             **Verify your download.** `SHA256SUMS.txt` is published on
-            https://sovatela.anaubi.com — check the file against it before running it.
+            https://sovatela.eu — check the file against it before running it.
 
             Signing status is not asserted here. tauri-action degrades to an
             unsigned build rather than failing when the Apple secrets are missing

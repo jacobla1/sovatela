@@ -266,7 +266,7 @@ Full index: [`docs/README.md`](docs/README.md).
   [FAQ](docs/FAQ.md) · [Troubleshooting](docs/TROUBLESHOOTING.md) ·
   [Uninstall & data deletion](docs/UNINSTALL.md) · [Support](docs/SUPPORT.md)
 - **Policies** — [Security](SECURITY.md) ·
-  [Accessibility](https://sovatela.anaubi.com/accessibility) · [Privacy](docs/PRIVACY.md) ·
+  [Accessibility](https://sovatela.eu/accessibility) · [Privacy](docs/PRIVACY.md) ·
   [Terms](docs/TERMS.md) *(the last two are outlines pending legal review)*
 - **Product** — Product spec ·
   UX spec · [Technical spec](docs/TECHNICAL-SPEC.md)
@@ -290,7 +290,7 @@ Full index: [`docs/README.md`](docs/README.md).
 
 - Accessibility: text scaling to 200% (150% today), keyboard shortcuts, focus
   management, landmark roles, and screen-reader testing — the open items in the
-  [accessibility statement](https://sovatela.anaubi.com/accessibility).
+  [accessibility statement](https://sovatela.eu/accessibility).
 - Windows code signing, so SmartScreen stops warning. macOS is signed and
   notarized already.
 - A local/OpenAI-compatible chat endpoint (Ollama, llama.cpp, LM Studio) as an

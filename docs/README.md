@@ -10,7 +10,7 @@
 | [Troubleshooting](TROUBLESHOOTING.md) | Connection, keys, keychain, files, display |
 | [Uninstall & data deletion](UNINSTALL.md) | Complete removal, including keys and revocation |
 | [Support](SUPPORT.md) | Where to go, what we can and can't help with |
-| [Accessibility statement](https://sovatela.anaubi.com/accessibility) | Conformance, known failures, plan — also published at [sovatela.anaubi.com/accessibility](https://sovatela.anaubi.com/accessibility) |
+| [Accessibility statement](https://sovatela.eu/accessibility) | Conformance, known failures, plan — also published at [sovatela.eu/accessibility](https://sovatela.eu/accessibility) |
 | [Privacy policy](PRIVACY.md) | *Outline — pending legal review* |
 | [Terms of use](TERMS.md) | *Outline — pending legal review* |
 | [Security policy](../SECURITY.md) | Design, reporting, what it doesn't protect against |

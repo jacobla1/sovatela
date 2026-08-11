@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Build the public site for sovatela.anaubi.com.
+// Build the public site for sovatela.eu.
 //
 //   node deploy/web/build.mjs <artifacts-dir>
 //

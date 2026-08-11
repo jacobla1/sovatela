@@ -124,7 +124,7 @@ The app opens and your saved history is readable offline. Anything needing the
 model — sending a message, search, image generation — requires a connection.
 
 **Is there an automatic updater?**
-No. Download new versions from `https://sovatela.anaubi.com` and install over the top;
+No. Download new versions from `https://sovatela.eu` and install over the top;
 your data is preserved.
 
 ## Platforms

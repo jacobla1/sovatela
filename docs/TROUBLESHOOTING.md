@@ -254,7 +254,7 @@ WEBKIT_DISABLE_COMPOSITING_MODE=1 ./Sovatela.AppImage
 ### macOS says the developer cannot be verified
 
 Our macOS builds are signed and notarized, so this should not happen. **Do not
-override it.** Delete the file, re-download from `https://sovatela.anaubi.com`,
+override it.** Delete the file, re-download from `https://sovatela.eu`,
 and check the SHA-256 against the release page. Verify with this, in **Terminal**
 (*Applications → Utilities*, or <kbd>⌘</kbd> + <kbd>Space</kbd> → "Terminal"):
 
