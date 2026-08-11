@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/jacobla1/Scale/blob/main/SECURITY.md
+    about: Please report vulnerabilities privately by email, not as a public issue.
+  - name: Troubleshooting guide
+    url: https://github.com/jacobla1/Scale/blob/main/docs/TROUBLESHOOTING.md
+    about: Most problems — connection, keys, keychain, blank windows — are covered here.
+  - name: FAQ
+    url: https://github.com/jacobla1/Scale/blob/main/docs/FAQ.md
+    about: Costs, privacy, storage locations, and what the app does and doesn't do.
+  - name: Scaleway support
+    url: https://console.scaleway.com/support
+    about: Billing, quotas, and API key problems are Scaleway's — we have no visibility into your account.

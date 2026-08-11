@@ -1,0 +1,64 @@
+# Node
+node_modules/
+dist/
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# Generated placeholder icon source
+app-icon.png
+
+# Local secrets (e.g. deploy/flux-litellm/.env)
+.env
+
+# Live integration-test keys (real API keys — never commit)
+.env.integration
+
+# OS
+.DS_Store
+
+# Reference docs (local only)
+staan/
+
+# Local engineering log & known-limitations notes (not for the public repo).
+# Everything under docs/ is ignored by default, so a new internal note is
+# private unless it is added to the allow-list below on purpose.
+# NB: this must be `docs/*`, not `docs/` — git does not descend into an
+# excluded directory, so a `!` rule below could never re-include anything.
+docs/*
+
+# …except the public documentation package, which ships with the product.
+!docs/README.md
+!docs/INSTALL.md
+!docs/QUICKSTART.md
+!docs/FAQ.md
+!docs/TROUBLESHOOTING.md
+!docs/UNINSTALL.md
+!docs/SUPPORT.md
+!docs/ACCESSIBILITY.md
+!docs/PRIVACY.md
+!docs/TERMS.md
+!docs/PUBLISHER.md
+!docs/LEGAL-CHECKLIST.md
+!docs/PRODUCT-SPEC.md
+!docs/UX-SPEC.md
+!docs/TECHNICAL-SPEC.md
+!docs/website-description.md
+!docs/ONBOARDING-COPY.md
+!docs/release/
+!docs/release/*.md
+
+# Still ignored, deliberately: ASSESSMENT-*.md, MITIGATION-PLAN-*.md,
+# ENGINEERING_NOTES.md, KNOWN_LIMITATIONS.md, CSP-EXPERIMENT-*.md, csp-probe/,
+# ux-walkthrough.md. These contain unfixed findings and internal reasoning.
+# The public docs mention KNOWN_LIMITATIONS.md but no longer link to it:
+# TECHNICAL-SPEC.md § 7 carries the published list and says outright that the
+# internal file is not part of the repository. Keep it that way — a link from a
+# tracked doc to an ignored file is broken for everyone but you.
+
+# Built site output (deploy/web/build.mjs)
+deploy/web/dist/
+
+# Prompt-suite run output — timestamped, contains full model replies
+qa/prompt-suite/results/

@@ -1,0 +1,46 @@
+{
+  "version": "2026-07-24",
+  "collected": "2026-07-24",
+  "display_currency": "EUR",
+  "fx": {
+    "EUR": 1.0,
+    "USD": 0.92
+  },
+  "sources": {
+    "scaleway": "https://www.scaleway.com/en/pricing/model-as-a-service/",
+    "bfl": "https://bfl.ai/pricing",
+    "ovh": "https://www.ovhcloud.com/en/public-cloud/ai-endpoints/",
+    "linkup": "https://www.linkup.so/",
+    "staan": "https://staan.ai/",
+    "fx": "https://www.ecb.europa.eu/stats/policy_and_exchange_rates/euro_reference_exchange_rates/html/index.en.html"
+  },
+  "free": {
+    "scaleway": "1M tokens/month",
+    "bfl": "none",
+    "ovh": "rough estimate — OVHcloud bills by compute-time, no published per-image price; verify on your invoice",
+    "linkup": "~$20 credit/month (~4,000 searches)",
+    "staan": "1,000 searches/month",
+    "searxng": "free (self-hosted)"
+  },
+  "ai": {
+    "default": { "input_per_mtok": 1.80, "output_per_mtok": 5.50, "currency": "EUR" },
+    "glm-5.2": { "input_per_mtok": 1.80, "output_per_mtok": 5.50, "currency": "EUR" },
+    "mistral-small-3.1-24b-instruct-2503": { "input_per_mtok": 0.15, "output_per_mtok": 0.35, "currency": "EUR" }
+  },
+  "image": {
+    "default": { "per_unit": 0.04, "currency": "USD" },
+    "flux-pro-1.1": { "per_unit": 0.04, "currency": "USD" },
+    "flux-pro-1.1-ultra": { "per_unit": 0.06, "currency": "USD" },
+    "flux-pro": { "per_unit": 0.05, "currency": "USD" },
+    "flux.2-pro": { "per_unit": 0.03, "currency": "USD" },
+    "flux.2-max": { "per_unit": 0.07, "currency": "USD" },
+    "ovh-sdxl": { "per_unit": 0.004, "currency": "EUR" },
+    "custom": { "per_unit": 0.0, "currency": "EUR" }
+  },
+  "search": {
+    "default": { "per_unit": 0.0, "currency": "EUR" },
+    "linkup": { "per_unit": 0.005, "currency": "USD" },
+    "staan": { "per_unit": 0.001, "currency": "EUR" },
+    "searxng": { "per_unit": 0.0, "currency": "EUR" }
+  }
+}

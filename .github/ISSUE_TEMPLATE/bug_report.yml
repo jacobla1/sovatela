@@ -1,0 +1,120 @@
+name: Bug report
+description: Something doesn't work as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. There are no server-side logs on our side — the
+        app sends us nothing — so what you write here is all we have to go on.
+
+        **Never paste an API key.** If you do so by accident, revoke it
+        immediately in your provider's console.
+
+        For a security vulnerability, please email the address in
+        [SECURITY.md](../../SECURITY.md) instead of opening an issue.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before reporting
+      options:
+        - label: I checked [Troubleshooting](../../docs/TROUBLESHOOTING.md)
+          required: true
+        - label: I searched existing issues
+          required: true
+        - label: There is no API key or personal content in this report
+          required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open Settings → …
+        2. Send "…"
+        3. The reply …
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Sovatela version
+      description: Shown on the release you installed, e.g. 1.1.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Windows 11
+        - Windows 10
+        - Linux (.deb)
+        - Linux (AppImage)
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: os-version
+    attributes:
+      label: OS version
+      placeholder: "macOS 15.2 / Windows 11 23H2 / Ubuntu 24.04"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: status-dot
+    attributes:
+      label: Status dot
+      description: The dot beside "GLM-5.2 · Scaleway" — hover it for the message.
+      options:
+        - Green — connected
+        - Red — key rejected
+        - Red — Scaleway returned an error
+        - Amber — can't reach Scaleway
+        - Grey — no API key connected
+        - Not relevant to this bug
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: features
+    attributes:
+      label: Which features were involved?
+      options:
+        - label: Quick answers (⚡) was on
+        - label: Web search (🌐) was on
+        - label: Image generation
+        - label: File or image attachment
+        - label: Artifacts
+        - label: Workspace
+        - label: Projects or memory
+        - label: Terminal access (claude-glm)
+
+  - type: markdown
+    attributes:
+      value: |
+        **If this is about a wrong answer** rather than a broken feature: check
+        whether the reply carries the *Quick · lower accuracy* marker. That mode
+        skips the model's reasoning step by design and is unreliable on numbers,
+        dates, and multi-step questions.
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Screenshots, error text, or console output. Redact first.

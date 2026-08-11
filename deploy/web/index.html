@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sovatela — download</title>
+  <meta name="description" content="Sovatela — a private, EU-sovereign desktop client for GLM-5.2, hosted in Europe on Scaleway." />
+  <style>
+    :root {
+      --bg: #f7f8fb;
+      --card: #ffffff;
+      --text: #1a1a1a;
+      --muted: #6b7280;
+      --border: #e4e6eb;
+      --accent: #5a37f0;
+      --accent-2: #6b4bff;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #17181c;
+        --card: #1f2126;
+        --text: #ededed;
+        --muted: #b4b9c2;
+        --border: #2c2f36;
+        --accent: #7c5cff;
+        --accent-2: #8b6bff;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      -webkit-font-smoothing: antialiased;
+      line-height: 1.5;
+    }
+    .wrap { max-width: 720px; margin: 0 auto; padding: 64px 24px 80px; }
+    header { text-align: center; margin-bottom: 48px; }
+    .mark {
+      width: 112px; height: 112px; margin: 0 auto 20px;
+      display: block;
+      border-radius: 26px;
+      box-shadow: 0 10px 34px color-mix(in srgb, var(--accent) 34%, transparent);
+    }
+    h1 { font-size: 34px; margin: 0 0 8px; letter-spacing: -0.02em; }
+    .tagline { color: var(--muted); font-size: 17px; margin: 0 auto; max-width: 30em; }
+    .tagline strong { color: var(--text); font-weight: 600; }
+
+    .notice {
+      background: color-mix(in srgb, var(--accent) 7%, var(--card));
+      border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+      border-radius: 14px;
+      padding: 16px 18px;
+      margin: 0 0 24px;
+      font-size: 14.5px;
+      color: var(--muted);
+    }
+
+    /* Five steps from download to first answer. Auto-fit rather than a fixed
+       five columns, so it reflows to fewer per row on a narrow screen instead
+       of scrolling sideways or crushing the text. */
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 10px;
+      margin: 0 0 12px;
+      padding: 0;
+      list-style: none;
+    }
+
+    /* Five illustrated cards do not fit across a 720px column. Where there is
+       room, the strip breaks out wider than the rest of the page — which also
+       marks it as the overview rather than part of the body copy. Below that,
+       it stays inside the column and auto-fit folds it to fewer per row. */
+    @media (min-width: 860px) {
+      .steps {
+        width: min(880px, 94vw);
+        margin-left: 50%;
+        transform: translateX(-50%);
+      }
+    }
+    .step {
+      position: relative;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 18px 14px 16px;
+      text-align: center;
+    }
+    .step-n {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 30px;
+      height: 30px;
+      margin-bottom: 10px;
+      border-radius: 50%;
+      background: color-mix(in srgb, var(--accent) 12%, var(--card));
+      border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+      color: var(--accent-2);
+      font-size: 14px;
+      font-weight: 700;
+    }
+    /* Inline SVG rather than image files: they inherit the accent and the
+       theme, so there is no second dark-mode copy and nothing extra to fetch.
+       Same line weight and rounding as the drawings in the app. */
+    .step-art { color: var(--accent); display: block; margin: 0 auto 10px; }
+    .step-art svg { width: 56px; height: 56px; display: block; margin: 0 auto; }
+    .step-t { display: block; font-weight: 650; font-size: 14.5px; margin-bottom: 4px; }
+    .step-d { display: block; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+    .step a { color: var(--accent-2); }
+
+    /* The payoff step, marked so the eye lands on where this is going. */
+    .step.done {
+      background: color-mix(in srgb, var(--accent) 10%, var(--card));
+      border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
+    }
+    .step.done .step-n {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    /* Chevrons between steps, drawn only when they are actually side by side.
+       Decorative: the numbers carry the order for anyone who cannot see them. */
+    @media (min-width: 860px) {
+      .step + .step::before {
+        content: "";
+        position: absolute;
+        left: -8px;
+        top: 50%;
+        width: 7px;
+        height: 7px;
+        margin-top: -4px;
+        border-right: 2px solid var(--border);
+        border-bottom: 2px solid var(--border);
+        transform: rotate(-45deg);
+      }
+    }
+    .notice strong { color: var(--text); font-weight: 600; }
+
+    .downloads { display: flex; flex-direction: column; gap: 14px; }
+    .dl {
+      display: flex; align-items: center; gap: 16px;
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 16px; padding: 18px 20px;
+      text-decoration: none; color: inherit;
+      transition: border-color .15s ease, transform .15s ease;
+    }
+    .dl:hover { border-color: var(--accent); transform: translateY(-1px); }
+    .dl-os { flex: 0 0 auto; width: 40px; height: 40px; color: var(--muted); }
+    .dl-os svg { width: 100%; height: 100%; }
+    .dl-body { flex: 1 1 auto; min-width: 0; }
+    .dl-title { font-weight: 600; font-size: 16px; }
+    .dl-meta { color: var(--muted); font-size: 13px; margin-top: 2px; }
+    .dl-cta {
+      flex: 0 0 auto; font-weight: 600; font-size: 14px; color: #fff;
+      background: var(--accent); border-radius: 999px; padding: 8px 16px;
+      white-space: nowrap;
+    }
+    .secondary { text-align: center; margin-top: 16px; font-size: 14px; }
+    .secondary a { color: var(--accent-2); }
+
+    details.sums { margin-top: 40px; border-top: 1px solid var(--border); padding-top: 24px; }
+    details.sums summary { cursor: pointer; font-weight: 600; font-size: 14px; color: var(--muted); }
+    .sums-note { color: var(--muted); font-size: 13px; margin: 10px 0 14px; }
+    .sums table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+    .sums td { padding: 8px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .sums td.file { white-space: nowrap; padding-right: 16px; }
+    .sums code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; color: var(--muted); }
+
+    footer { margin-top: 48px; text-align: center; color: var(--muted); font-size: 13px; line-height: 1.7; }
+    footer a { color: var(--accent-2); }
+    footer .legal { margin: 14px 0 6px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <img class="mark" src="assets/app-icon.jpg" width="112" height="112" alt="Sovatela app icon" />
+      <h1>Sovatela</h1>
+      <p class="tagline">A private, EU-sovereign desktop client for <strong>GLM-5.2</strong> — hosted in Europe on Scaleway. Your keys stay on your device.</p>
+    </header>
+
+    <ol class="steps">
+      <li class="step">
+        <span class="step-art" aria-hidden="true">
+          <svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="10" y="12" width="44" height="30" rx="4"/>
+            <path d="M6 48h52"/>
+            <path d="M32 20v14"/>
+            <path d="M26 28l6 6 6-6"/>
+          </svg>
+        </span>
+        <span class="step-n">1</span>
+        <span class="step-t">Download Sovatela</span>
+        <span class="step-d"><a href="#downloads">Pick your platform</a> — macOS, Windows or Linux</span>
+      </li>
+      <li class="step">
+        <span class="step-art" aria-hidden="true">
+          <svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="4" y="10" width="56" height="44" rx="5"/>
+            <path d="M4 21h56"/>
+            <circle cx="11" cy="15.5" r="1.5"/><circle cx="17" cy="15.5" r="1.5"/><circle cx="23" cy="15.5" r="1.5"/>
+            <circle cx="32" cy="32" r="6.5"/>
+            <path d="M21.5 47a10.5 10.5 0 0 1 21 0"/>
+          </svg>
+        </span>
+        <span class="step-n">2</span>
+        <span class="step-t">Create a Scaleway account</span>
+        <span class="step-d">Free to open at <a href="https://console.scaleway.com/register" rel="noopener">scaleway.com</a>; you add a card</span>
+      </li>
+      <li class="step">
+        <span class="step-art" aria-hidden="true">
+          <svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="19" cy="32" r="10"/>
+            <circle cx="19" cy="32" r="3.5"/>
+            <path d="M29 32h28"/>
+            <path d="M50 32v8"/>
+            <path d="M41 32v6"/>
+          </svg>
+        </span>
+        <span class="step-n">3</span>
+        <span class="step-t">Generate an API key</span>
+        <span class="step-d">Copy the <strong>Secret Key</strong> — Scaleway shows it once</span>
+      </li>
+      <li class="step">
+        <span class="step-art" aria-hidden="true">
+          <svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="6" y="11" width="52" height="42" rx="5"/>
+            <path d="M6 22h52"/>
+            <rect x="14" y="30" width="36" height="12" rx="4"/>
+            <path d="M21 36h13"/>
+            <path d="M40 32.5v7"/>
+          </svg>
+        </span>
+        <span class="step-n">4</span>
+        <span class="step-t">Paste it into the app</span>
+        <span class="step-d">It's the first thing Sovatela asks for</span>
+      </li>
+      <li class="step done">
+        <span class="step-art" aria-hidden="true">
+          <svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 17a5 5 0 0 1 5-5h36a5 5 0 0 1 5 5v17a5 5 0 0 1-5 5H26l-11 9v-9h-1a5 5 0 0 1-5-5z"/>
+            <path d="M19 22h26"/>
+            <path d="M19 30h16"/>
+          </svg>
+        </span>
+        <span class="step-n">✓</span>
+        <span class="step-t">Chat</span>
+        <span class="step-d">Your key stays on your device</span>
+      </li>
+    </ol>
+
+    <p class="notice">
+      <strong>Free and open source — but you'll need a paid Scaleway key.</strong>
+      Sovatela has no AI of its own: it uses your own Scaleway account, and
+      <strong>Scaleway bills you directly</strong> for what you use — typically a
+      few cents a day for ordinary chat. Sovatela never handles payment and takes
+      no cut, and the app shows a running cost estimate on your device.
+    </p>
+
+    <main class="downloads" id="downloads">
+      <!-- macOS (universal: Apple Silicon + Intel) -->
+      <a class="dl" href="/downloads/Sovatela_1.1.1_universal.dmg" download>
+        <span class="dl-os"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/></svg></span>
+        <span class="dl-body">
+          <span class="dl-title">macOS</span>
+          <span class="dl-meta">.dmg · universal — Apple Silicon &amp; Intel</span>
+        </span>
+        <span class="dl-cta">Download</span>
+      </a>
+
+      <!-- Windows -->
+      <a class="dl" href="/downloads/Sovatela_1.1.1_x64-setup.exe" download>
+        <span class="dl-os"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.1 10.4 4v7.5H3zM10.4 12.5V20L3 18.9v-6.4zM11.6 3.83 21 2.5v9H11.6zM21 12.5v9l-9.4-1.33V12.5z"/></svg></span>
+        <span class="dl-body">
+          <span class="dl-title">Windows</span>
+          <span class="dl-meta">.exe installer · 64-bit — just run it</span>
+        </span>
+        <span class="dl-cta">Download</span>
+      </a>
+
+      <!-- Linux -->
+      <a class="dl" href="/downloads/Sovatela_1.1.1_amd64.AppImage" download>
+        <span class="dl-os"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.832-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.394-.132.602 0 .199.027.4.055.536.058.399.116.728.04.97-.249.68-.28 1.145-.106 1.484.174.334.535.47.94.601.81.2 1.91.135 2.774.6.926.466 1.866.67 2.616.47.526-.116.97-.464 1.208-.946.587-.003 1.23-.269 2.26-.334.699-.058 1.574.267 2.577.2.025.134.063.198.114.333l.003.003c.391.778 1.113 1.132 1.884 1.071.771-.06 1.592-.536 2.257-1.306.631-.765 1.683-1.084 2.378-1.503.348-.199.629-.469.649-.853.023-.4-.2-.811-.714-1.376v-.097l-.003-.003c-.17-.2-.25-.535-.338-.926-.085-.401-.182-.786-.492-1.046h-.003c-.059-.054-.123-.067-.188-.135a.357.357 0 00-.19-.064c.431-1.278.264-2.55-.173-3.694-.533-1.41-1.465-2.638-2.175-3.483-.796-1.005-1.576-1.957-1.56-3.368.026-2.152.236-6.133-3.544-6.139zm.529 3.405h.013c.213 0 .396.062.584.198.19.135.33.332.438.533.105.259.158.459.166.724 0-.02.006-.04.006-.06v.105a.086.086 0 01-.004-.021l-.004-.024a1.807 1.807 0 01-.15.706.953.953 0 01-.213.335.71.71 0 00-.088-.042c-.104-.045-.198-.064-.284-.133a1.312 1.312 0 00-.22-.066c.05-.06.146-.133.183-.198.053-.128.082-.264.088-.402v-.02a1.21 1.21 0 00-.061-.4c-.045-.134-.101-.2-.183-.333-.084-.066-.167-.132-.267-.132h-.016c-.093 0-.176.03-.262.132a.8.8 0 00-.205.334 1.18 1.18 0 00-.09.4v.019c.002.089.008.179.02.267-.193-.067-.438-.135-.607-.202a1.635 1.635 0 01-.018-.2v-.02a1.772 1.772 0 01.15-.768c.082-.22.232-.406.43-.533a.985.985 0 01.594-.2zm-2.962.059h.036c.142 0 .27.048.399.135.146.129.264.288.344.465.09.199.14.4.153.667v.004c.007.134.006.2-.002.266v.08c-.03.007-.056.018-.083.024-.152.055-.274.135-.393.2.012-.09.013-.18.003-.267v-.015c-.012-.133-.04-.2-.082-.333a.613.613 0 00-.166-.267.248.248 0 00-.183-.064h-.021c-.071.006-.13.04-.186.132a.552.552 0 00-.12.27.944.944 0 00-.023.33v.015c.012.135.037.2.08.334.046.134.098.2.166.268.01.009.02.018.034.024-.07.057-.117.07-.176.136a.304.304 0 01-.131.068 2.62 2.62 0 01-.275-.402 1.772 1.772 0 01-.155-.667 1.759 1.759 0 01.08-.668 1.43 1.43 0 01.283-.535c.128-.133.26-.2.418-.2zm1.37 1.706c.332 0 .733.065 1.216.399.293.2.523.269 1.052.468h.003c.255.136.405.266.478.399v-.131a.571.571 0 01.016.47c-.123.31-.516.643-1.063.842v.002c-.268.135-.501.333-.775.465-.276.135-.588.292-1.012.267a1.139 1.139 0 01-.448-.067 3.566 3.566 0 01-.322-.198c-.195-.135-.363-.332-.612-.465v-.005h-.005c-.4-.246-.616-.512-.686-.71-.07-.268-.005-.47.193-.6.224-.135.38-.271.483-.336.104-.074.143-.102.176-.131h.002v-.003c.169-.202.436-.47.839-.601.139-.036.294-.065.466-.065zm2.8 2.142c.358 1.417 1.196 3.475 1.735 4.473.286.534.855 1.659 1.102 3.024.156-.005.33.018.513.064.646-1.671-.546-3.467-1.089-3.966-.22-.2-.232-.335-.123-.335.59.534 1.365 1.572 1.646 2.757.13.535.16 1.104.021 1.67.067.028.135.06.205.067 1.032.534 1.413.938 1.23 1.537v-.043c-.06-.003-.12 0-.18 0h-.016c.151-.467-.182-.825-1.065-1.224-.915-.4-1.646-.336-1.77.465-.008.043-.013.066-.018.135-.068.023-.139.053-.209.064-.43.268-.662.669-.793 1.187-.13.533-.17 1.156-.205 1.869v.003c-.02.334-.17.838-.319 1.35-1.5 1.072-3.58 1.538-5.348.334a2.645 2.645 0 00-.402-.533 1.45 1.45 0 00-.275-.333c.182 0 .338-.03.465-.067a.615.615 0 00.314-.334c.108-.267 0-.697-.345-1.163-.345-.467-.931-.995-1.788-1.521-.63-.4-.986-.87-1.15-1.396-.165-.534-.143-1.085-.015-1.645.245-1.07.873-2.11 1.274-2.763.107-.065.037.135-.408.974-.396.751-1.14 2.497-.122 3.854a8.123 8.123 0 01.647-2.876c.564-1.278 1.743-3.504 1.836-5.268.048.036.217.135.289.202.218.133.38.333.59.465.21.201.477.335.876.335.039.003.075.006.11.006.412 0 .73-.134.997-.268.29-.134.52-.334.74-.4h.005c.467-.135.835-.402 1.044-.7zm2.185 8.958c.037.6.343 1.245.882 1.377.588.134 1.434-.333 1.791-.765l.211-.01c.315-.007.577.01.847.268l.003.003c.208.199.305.53.391.876.085.4.154.78.409 1.066.486.527.645.906.636 1.14l.003-.007v.018l-.003-.012c-.015.262-.185.396-.498.595-.63.401-1.746.712-2.457 1.57-.618.737-1.37 1.14-2.036 1.191-.664.053-1.237-.2-1.574-.898l-.005-.003c-.21-.4-.12-1.025.056-1.69.176-.668.428-1.344.463-1.897.037-.714.076-1.335.195-1.814.12-.465.308-.797.641-.984l.045-.022zm-10.814.049h.01c.053 0 .105.005.157.014.376.055.706.333 1.023.752l.91 1.664.003.003c.243.533.754 1.064 1.189 1.637.434.598.77 1.131.729 1.57v.006c-.057.744-.48 1.148-1.125 1.294-.645.135-1.52.002-2.395-.464-.968-.536-2.118-.469-2.857-.602-.369-.066-.61-.2-.723-.4-.11-.2-.113-.602.123-1.23v-.004l.002-.003c.117-.334.03-.752-.027-1.118-.055-.401-.083-.71.043-.94.16-.334.396-.4.69-.533.294-.135.64-.202.915-.47h.002v-.002c.256-.268.445-.601.668-.838.19-.201.38-.336.663-.336zm7.159-9.074c-.435.201-.945.535-1.488.535-.542 0-.97-.267-1.28-.466-.154-.134-.28-.268-.373-.335-.164-.134-.144-.333-.074-.333.109.016.129.134.199.2.096.066.215.2.36.333.292.2.68.467 1.167.467.485 0 1.053-.267 1.398-.466.195-.135.445-.334.648-.467.156-.136.149-.267.279-.267.128.016.034.134-.147.332a8.097 8.097 0 01-.69.468zm-1.082-1.583V5.64c-.006-.02.013-.042.029-.05.074-.043.18-.027.26.004.063 0 .16.067.15.135-.006.049-.085.066-.135.066-.055 0-.092-.043-.141-.068-.052-.018-.146-.008-.163-.065zm-.551 0c-.02.058-.113.049-.166.066-.047.025-.086.068-.14.068-.05 0-.13-.02-.136-.068-.01-.066.088-.133.15-.133.08-.031.184-.047.259-.005.019.009.036.03.03.05v.02h.003z"/></svg></span>
+        <span class="dl-body">
+          <span class="dl-title">Linux</span>
+          <span class="dl-meta">.AppImage · 64-bit</span>
+        </span>
+        <span class="dl-cta">Download</span>
+      </a>
+    </main>
+
+    <p class="secondary">
+      Also available: <a href="/downloads/Sovatela_1.1.1_x64_en-US.msi">Windows .msi</a> (for managed deployment) ·
+      <a href="/downloads/Sovatela_1.1.1_amd64.deb">Debian/Ubuntu .deb</a> ·
+      <a href="/downloads/Sovatela-1.1.1-1.x86_64.rpm">Fedora/RHEL .rpm</a> ·
+      <a href="/downloads/">all files &amp; older versions →</a>
+    </p>
+
+    <details class="sums">
+      <summary>Verify your download (SHA-256)</summary>
+      <p class="sums-note">
+        After downloading, check the file's hash matches below. On macOS/Linux:
+        <code>shasum -a 256 &lt;file&gt;</code> · On Windows:
+        <code>certutil -hashfile &lt;file&gt; SHA256</code>.
+        The canonical list is also at <a href="/downloads/SHA256SUMS.txt">SHA256SUMS.txt</a>.
+      </p>
+      <table>
+        <tbody>
+          <tr><td class="file">macOS (universal)</td><td><code>SHA256_DMG_UNFILLED</code></td></tr>
+          <tr><td class="file">Windows (.exe)</td><td><code>SHA256_EXE_UNFILLED</code></td></tr>
+          <tr><td class="file">Windows (.msi)</td><td><code>SHA256_MSI_UNFILLED</code></td></tr>
+          <tr><td class="file">Linux (.AppImage)</td><td><code>SHA256_APPIMAGE_UNFILLED</code></td></tr>
+          <tr><td class="file">Linux (.deb)</td><td><code>SHA256_DEB_UNFILLED</code></td></tr>
+          <tr><td class="file">Linux (.rpm)</td><td><code>SHA256_RPM_UNFILLED</code></td></tr>
+        </tbody>
+      </table>
+    </details>
+
+    <footer>
+      <p>
+        Sovatela talks to <strong>GLM-5.2</strong>, Z.ai's open model hosted in France by Scaleway.
+        You bring your own Scaleway key; it never leaves your device.
+      </p>
+      <p class="legal">
+        {{POLICY_LINKS}}
+      </p>
+      <p class="legal">
+        Published by <strong>Jacob Bergmann Larsen</strong> ·
+        <a href="mailto:info@anaubi.com">info@anaubi.com</a>
+      </p>
+      <p>Version 1.1.1 · Released 2026-08-04 · Not affiliated with Z.ai, Scaleway, or Ollama</p>
+    </footer>
+  </div>
+</body>
+</html>

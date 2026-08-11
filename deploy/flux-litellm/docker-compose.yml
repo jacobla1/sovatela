@@ -1,0 +1,23 @@
+# LiteLLM proxy → Black Forest Labs EU FLUX. Sovereign image generation for the
+# Sovatela app, no GPU needed (it forwards to BFL's hosted model).
+# Bound to localhost; run it on your own machine, or front it with nginx (like
+# deploy/searxng) to reach it from another device.
+
+services:
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: flux-litellm
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4000:4000"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    environment:
+      - BFL_API_KEY=${BFL_API_KEY}
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "1"

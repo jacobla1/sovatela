@@ -1,0 +1,112 @@
+name: release
+
+# Builds installers on each OS and attaches them to a GitHub Release.
+# Trigger by pushing a version tag, e.g.:  git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    permissions:
+      contents: write # needed to create the Release and upload assets
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest # macOS: universal .dmg + .app
+            args: "--target universal-apple-darwin"
+          - platform: ubuntu-22.04 # Linux: .deb + .AppImage
+            args: ""
+          - platform: windows-latest # Windows: .msi + .exe (NSIS)
+            args: ""
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build app and publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS code signing + notarization. Only consumed on the macOS
+          # runner; harmless (unused) elsewhere. If these secrets are unset the
+          # build is simply unsigned, exactly as before — so this is safe to
+          # merge before the Apple Developer credentials exist. Setup steps and
+          # the full secret list are in README → Releasing → Signing.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          # Notarization via the Apple ID method (app-specific password).
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName: ${{ github.ref_name }}
+          # Keep this in sync with productName in tauri.conf.json — it is the
+          # title people see on the Releases page. It said "GLM Chat" for the
+          # first release after the Sovatela rename.
+          releaseName: "Sovatela v__VERSION__"
+          # The macOS line below assumes the APPLE_* secrets above are present and
+          # valid. tauri-action degrades to an unsigned build rather than failing
+          # when they are missing or expired, so a lapsed certificate would make
+          # this claim false with nothing in the log to flag it. Before a release,
+          # confirm on the built artifact:
+          #   spctl -a -t exec -vv /Volumes/Sovatela/Sovatela.app
+          # expecting "accepted / source=Notarized Developer ID". (The .dmg itself
+          # reports as unnotarized — tauri staples the ticket to the .app inside,
+          # which is what Gatekeeper assesses at launch.)
+          releaseBody: |
+            Download the installer for your platform below.
+
+            See [CHANGELOG.md](https://github.com/jacobla1/Scale/blob/main/CHANGELOG.md) for what changed in this version.
+
+            **Verify your download.** `SHA256SUMS.txt` is published on
+            https://sovatela.anaubi.com — check the file against it before running it.
+
+            Signing status is not asserted here. tauri-action degrades to an
+            unsigned build rather than failing when the Apple secrets are missing
+            or expired, and nothing in the log flags it, so a claim written into
+            this template would be believed on every release whether or not it
+            was true. Confirm it on the artifact instead, before publishing the
+            draft:
+
+                hdiutil attach Sovatela_*_universal.dmg
+                spctl -a -t exec -vv /Volumes/Sovatela/Sovatela.app
+                # expect: accepted / source=Notarized Developer ID
+
+            Windows and Linux builds are not signed; SmartScreen will warn.
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}

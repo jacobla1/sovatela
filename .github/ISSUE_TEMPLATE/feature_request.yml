@@ -1,0 +1,67 @@
+name: Feature request
+description: Suggest something Sovatela should do
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Sovatela is deliberately small, and some things are left out on purpose
+        rather than by oversight. Requests that fit the project's constraints
+        get much further than ones that don't — see below.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: >
+        Describe the situation you're in, not the feature you have in mind.
+        "I can't find an old conversation" tells us more than "add search".
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like it to do?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: known-gap
+    attributes:
+      label: Is this already a known gap?
+      description: >
+        These are documented as missing and already planned or under
+        consideration. Picking one still helps — it tells us demand.
+      options:
+        - "No / not sure"
+        - "Conversation export & import"
+        - "Search across chat history"
+        - "Message editing / regeneration"
+        - "Automatic updates"
+        - "Model or provider selection"
+        - "A local model endpoint (Ollama, llama.cpp, LM Studio)"
+        - "Keyboard shortcuts"
+        - "An accessibility gap"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Constraint check
+      description: >
+        The project's design principles. A request that breaks one isn't
+        automatically refused, but it needs a strong argument.
+      options:
+        - label: This doesn't require a server operated by the developer
+        - label: This doesn't require collecting any user data or telemetry
+        - label: This doesn't require an account with the developer
+        - label: This doesn't weaken the artifact sandbox or key storage
+        - label: This doesn't route user data through a non-EU provider by default
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What do you do instead today?
+      description: Workarounds, or other tools that solve it well.

@@ -1,0 +1,53 @@
+[package]
+name = "scale"
+version = "1.2.0"
+description = "BYO-key desktop chat client for GLM-5.2 on Scaleway"
+authors = ["Jacob Bergmann Larsen"]
+license = "MIT"
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "scale_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+futures-util = "0.3"
+base64 = "0.22"
+tokio = { version = "1", features = ["time", "macros", "rt-multi-thread"] }
+keyring = { version = "3", features = [
+  "apple-native",
+  "windows-native",
+  "sync-secret-service",
+  "crypto-rust",
+] }
+# Document text extraction (PDF / .docx / .odt uploads)
+pdf-extract = "0.7"
+zip = "2"
+quick-xml = "0.37"
+# System locale, for the Staan search market
+sys-locale = "0.3"
+# HTML → readable text, for the agent's fetch_page tool
+html2text = "0.13"
+# Safe arithmetic evaluator for the agent's calculate tool (no I/O, no shell).
+# meval is f64-only, so no silent integer-division truncation (10/3 = 3.33…).
+meval = "0.2"
+
+# Not on Windows: tauri's `test` harness (MockRuntime) links a webview loader
+# that won't start the test binary in headless Windows CI (STATUS_ENTRYPOINT_
+# NOT_FOUND). The send_chat scenario tests that need it are OS-independent and
+# run on the macOS/Linux CI legs; they're compiled out on Windows.
+[target.'cfg(not(target_os = "windows"))'.dev-dependencies]
+# Mock OpenAI-compatible server for the send_chat scenario tests.
+wiremock = "0.6"
+# The `test` feature provides mock_builder()/mock App for a real AppHandle.
+tauri = { version = "2", features = ["test"] }

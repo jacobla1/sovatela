@@ -1,0 +1,179 @@
+name: ci
+
+# Build + test on all three desktop OSes, and validate the claude-glm
+# credential-read path per platform. Deliberately NOT run on every push —
+# a 3-OS Tauri build (macOS billed 10x) is costly — so it runs on PRs to main
+# and on demand. Trigger it manually before cutting a release:
+#   Actions → ci → Run workflow
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [macos-latest, ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      # Frontend must build first: the Tauri app embeds ../dist at compile time.
+      - name: Build frontend
+        run: npm run build
+
+      - name: Frontend tests (vitest)
+        run: npm test
+
+      # This is the main gap-closer: compiling the app on Windows/Linux checks
+      # the per-OS #[cfg] branches (claude_glm_status / install_claude_glm) that
+      # can't be cross-compiled from macOS.
+      - name: Build app
+        run: cargo build --manifest-path src-tauri/Cargo.toml
+
+      - name: Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      # ---- claude-glm installer script validation --------------------------
+      - name: Check installer scripts (macOS)
+        if: matrix.platform == 'macos-latest'
+        run: |
+          zsh -n deploy/claude-glm/install-claude-glm.command
+          bash -n deploy/claude-glm/install-claude-glm.sh
+          echo "macOS/Linux installer scripts parse OK"
+
+      - name: Check installer script (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          bash -n deploy/claude-glm/install-claude-glm.sh
+          echo "Linux installer script parses OK"
+
+      - name: Check installer + launcher (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          # Parse the installer, then extract the embedded launcher and compile
+          # its C# CredRead type — the same check that caught the -MemberDefinition bug.
+          $null = [System.Management.Automation.PSParser]::Tokenize((Get-Content -Raw deploy/claude-glm/install-claude-glm.ps1), [ref]$null)
+          $src = Get-Content -Raw deploy/claude-glm/install-claude-glm.ps1
+          $m = [regex]::Match($src, "(?s)-TypeDefinition @""(.*?)""@")
+          if (-not $m.Success) { throw "launcher C# type block not found" }
+          Add-Type -TypeDefinition $m.Groups[1].Value
+          if (-not [GlmCred.Native].GetMethod('Read')) { throw "CredRead method missing" }
+          "Windows installer parses + launcher C# compiles OK"
+
+      # ---- claude-glm credential round-trip --------------------------------
+      # Seed the OS credential store in the exact format the keyring crate uses
+      # (verified against keyring 3.6.3 source), then run the launcher's read
+      # path and assert the key comes back. Validates the shared-credential
+      # contract end to end, minus the desktop app doing the write.
+      - name: Credential round-trip (macOS)
+        if: matrix.platform == 'macos-latest'
+        run: |
+          set -euo pipefail
+          BLOB='{"scaleway_api_key":"SCW-ci-test-123","linkup_key":"x"}'
+          security add-generic-password -s com.anaubi.sovatela -a secrets -w "$BLOB" -U
+          got=$(security find-generic-password -s com.anaubi.sovatela -a secrets -w)
+          key=$(printf '%s' "$got" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write((JSON.parse(s).scaleway_api_key||"").trim())}catch(e){}})')
+          security delete-generic-password -s com.anaubi.sovatela -a secrets >/dev/null 2>&1 || true
+          [ "$key" = "SCW-ci-test-123" ] && echo "macOS credential round-trip: OK" || { echo "FAIL: got '$key'"; exit 1; }
+
+      - name: Credential round-trip (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y gnome-keyring libsecret-tools dbus-x11
+          # Run inside a fresh D-Bus session with an unlocked secret-service, then
+          # store the JSON blob under the keyring attributes the desktop app uses
+          # and confirm a lookup returns it. Single-quoted bash -c body (no inner
+          # single quotes) so YAML/shell quoting stays simple.
+          dbus-run-session -- bash -c '
+            set -e
+            eval "$(printf "dummy\n" | gnome-keyring-daemon --components=secrets --daemonize --unlock)"
+            printf "%s" "{\"scaleway_api_key\":\"SCW-ci-test-123\"}" | secret-tool store --label=glmtest service com.anaubi.sovatela username secrets
+            got=$(secret-tool lookup service com.anaubi.sovatela username secrets)
+            echo "$got" | grep -q "SCW-ci-test-123" && echo "Linux credential round-trip: OK" || { echo "FAIL: got $got"; exit 1; }
+          '
+
+      - name: Credential round-trip (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          Add-Type -TypeDefinition @"
+          using System;
+          using System.Runtime.InteropServices;
+          namespace GlmCredTest {
+            [StructLayout(LayoutKind.Sequential)]
+            public struct CREDENTIAL {
+              public uint Flags; public uint Type; public IntPtr TargetName; public IntPtr Comment;
+              public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
+              public uint CredentialBlobSize; public IntPtr CredentialBlob; public uint Persist;
+              public uint AttributeCount; public IntPtr Attributes; public IntPtr TargetAlias; public IntPtr UserName;
+            }
+            public static class N {
+              [DllImport("advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+              public static extern bool CredWriteW(ref CREDENTIAL c, uint flags);
+              [DllImport("advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+              public static extern bool CredReadW(string target, uint type, uint flags, out IntPtr cred);
+              [DllImport("advapi32.dll")]
+              public static extern void CredFree(IntPtr cred);
+              public static void Write(string target, byte[] blob) {
+                CREDENTIAL c = new CREDENTIAL();
+                c.Type = 1; c.Persist = 3;
+                c.TargetName = Marshal.StringToCoTaskMemUni(target);
+                c.UserName = Marshal.StringToCoTaskMemUni("secrets");
+                c.CredentialBlobSize = (uint)blob.Length;
+                c.CredentialBlob = Marshal.AllocCoTaskMem(blob.Length);
+                Marshal.Copy(blob, 0, c.CredentialBlob, blob.Length);
+                if (!CredWriteW(ref c, 0)) throw new Exception("CredWrite failed: " + Marshal.GetLastWin32Error());
+              }
+              public static byte[] Read(string target) {
+                IntPtr p;
+                if (!CredReadW(target, 1, 0, out p)) return null;
+                try {
+                  CREDENTIAL c = (CREDENTIAL)Marshal.PtrToStructure(p, typeof(CREDENTIAL));
+                  byte[] b = new byte[c.CredentialBlobSize];
+                  Marshal.Copy(c.CredentialBlob, b, 0, (int)c.CredentialBlobSize);
+                  return b;
+                } finally { CredFree(p); }
+              }
+            }
+          }
+          "@
+          $blob = [System.Text.Encoding]::Unicode.GetBytes('{"scaleway_api_key":"SCW-ci-test-123","linkup_key":"x"}')
+          [GlmCredTest.N]::Write('secrets.com.anaubi.sovatela', $blob)
+          $bytes = [GlmCredTest.N]::Read('secrets.com.anaubi.sovatela')
+          $json = [System.Text.Encoding]::Unicode.GetString($bytes)
+          $key = ([string]((ConvertFrom-Json $json).scaleway_api_key)).Trim()
+          cmdkey /delete:secrets.com.anaubi.sovatela | Out-Null
+          if ($key -ne 'SCW-ci-test-123') { throw "FAIL: got '$key'" }
+          "Windows credential round-trip: OK"

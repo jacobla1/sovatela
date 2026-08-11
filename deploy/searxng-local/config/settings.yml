@@ -1,0 +1,40 @@
+# Local SearXNG config for the Sovatela app.
+use_default_settings:
+  engines:
+    keep_only:
+      - brave
+      - startpage
+      - duckduckgo
+      - mojeek
+      - qwant
+      - wikipedia
+      - wikidata
+
+general:
+  instance_name: "glm chat search"
+  privacypolicy_url: false
+  donation_url: false
+  contact_url: false
+  enable_metrics: false
+
+server:
+  # Replaced with a random value on first run by start.command / start.bat.
+  secret_key: "REPLACE_ME"
+  # Runs on localhost only, so the bot-limiter (which blocks the JSON API) is off.
+  limiter: false
+  public_instance: false
+  image_proxy: true
+
+search:
+  formats:
+    - html
+    - json
+  autocomplete: ""
+  default_lang: "auto"
+  safe_search: 0
+
+outgoing:
+  request_timeout: 6.0
+  max_request_timeout: 12.0
+  pool_connections: 100
+  pool_maxsize: 20

@@ -1,0 +1,21 @@
+# LiteLLM proxy config: exposes an OpenAI-compatible /v1/images/generations
+# endpoint backed by Black Forest Labs' EU FLUX endpoint (sovereign — German
+# model, EU-hosted). The app points at this proxy; you bring your own BFL key.
+#
+# Verify the exact model id and EU base against the current LiteLLM + BFL docs:
+#   https://docs.litellm.ai/docs/providers/black_forest_labs
+#   https://docs.bfl.ai/  (regional endpoint: https://api.eu.bfl.ai)
+model_list:
+  - model_name: flux # the name the app sends in "model"
+    litellm_params:
+      model: black_forest_labs/flux-pro-1.1 # or flux-dev (cheaper), etc.
+      api_key: os.environ/BFL_API_KEY
+      api_base: https://api.eu.bfl.ai # EU endpoint keeps it sovereign
+
+litellm_settings:
+  # BFL doesn't accept some OpenAI params (e.g. response_format); drop them
+  # instead of erroring. BFL then returns an image URL, which the app displays.
+  drop_params: true
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
