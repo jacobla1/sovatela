@@ -1138,8 +1138,46 @@
     <label class="field">
       <span>Model</span>
       <input type="text" placeholder="flux-pro-1.1" bind:value={bflModel}
-        autocomplete="off" spellcheck="false" />
+        list="bfl-models" autocomplete="off" spellcheck="false" />
     </label>
+    <datalist id="bfl-models">
+      <option value="flux-2-pro">FLUX.2 [pro] — reference images, best all-round</option>
+      <option value="flux-2-max">FLUX.2 [max] — highest quality</option>
+      <option value="flux-2-flex">FLUX.2 [flex] — typography and text in images</option>
+      <option value="flux-2-klein-9b">FLUX.2 [klein] 9B — cheapest</option>
+      <option value="flux-kontext-pro">FLUX.1 Kontext [pro] — edit one picture</option>
+      <option value="flux-kontext-max">FLUX.1 Kontext [max] — edit one picture</option>
+      <option value="flux-pro-1.1">FLUX 1.1 [pro] — text prompt only</option>
+    </datalist>
+    <p class="hint">
+      <strong>Generating from a picture.</strong> FLUX is the only provider here
+      that can take images alongside your prompt: in chat, switch 🎨 on, attach
+      one or more and describe what you want. Which model you set above decides
+      what happens to them, and the difference is large:
+    </p>
+    <ul class="hint">
+      <li>
+        <strong><em>flux-2-*</em> — a matching set.</strong> FLUX.2 takes up to
+        <strong>eight</strong> references and holds their style across a new
+        image: a family of icons, one character in different scenes, a house
+        look. This is the one to pick for "more like these".
+      </li>
+      <li>
+        <strong><em>flux-kontext-*</em> — edit this picture.</strong> Takes one
+        image and changes <em>it</em> to your instruction ("make the sky
+        orange"). It edits rather than making a matching new picture.
+      </li>
+      <li>
+        <strong><em>flux-pro-1.1</em> and older — text only, really.</strong> One
+        image can be attached, but it only produces a loose variation on it
+        (BFL's Redux) — it will <em>not</em> carry a style onto a new subject.
+      </li>
+    </ul>
+    <p class="hint">
+      Every attempt is billed as a normal image. FLUX.2 is priced per megapixel
+      from about $0.03, and editing with references costs more than a plain
+      prompt — the usage panel's estimate is a floor for those models.
+    </p>
   {:else}
     <p class="hint">
       Point at your own OpenAI-images endpoint — e.g. the

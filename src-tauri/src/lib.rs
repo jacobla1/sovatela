@@ -964,6 +964,78 @@ async fn fetch_as_data_url(client: &reqwest::Client, url: &str) -> Result<String
 
 const BFL_BASE: &str = "https://api.eu.bfl.ai/v1";
 
+/// A reference image arrives from the webview as a `data:` URL; the image APIs
+/// want the bare base64. Decoded so a corrupt attachment fails here rather than
+/// after a paid round-trip. The UI caps uploads at 6 MB — this is the backstop.
+const MAX_REFERENCE_BYTES: usize = 8 * 1024 * 1024;
+
+fn reference_payload(data_url: &str) -> Result<String, String> {
+    let trimmed = data_url.trim();
+    let b64 = match trimmed.split_once(',') {
+        Some((head, rest)) if head.starts_with("data:image/") && head.ends_with(";base64") => rest,
+        Some(_) => return Err("The reference has to be an image.".into()),
+        None => trimmed, // already bare base64
+    };
+    let bytes = BASE64_STANDARD
+        .decode(b64.as_bytes())
+        .map_err(|_| "Could not read the reference image.".to_string())?;
+    if bytes.is_empty() {
+        return Err("The reference image is empty.".into());
+    }
+    if bytes.len() > MAX_REFERENCE_BYTES {
+        return Err(format!(
+            "The reference image is too large (max {} MB).",
+            MAX_REFERENCE_BYTES / (1024 * 1024)
+        ));
+    }
+    Ok(b64.to_string())
+}
+
+/// The three FLUX families take reference images in three different ways, and
+/// mean three different things by them:
+///
+/// - **FLUX.2** (`flux-2-*`) takes up to eight, as `input_image` plus
+///   `input_image_2`…`input_image_8`, and is the family built for holding a
+///   style across a *set* of images — an icon family, a character, a brand.
+/// - **Kontext** (`flux-kontext-*`) takes exactly one, as `input_image`, and
+///   edits that picture to your instruction. It sizes the result from the
+///   reference and rejects `width`/`height`.
+/// - **Everything else** (`flux-pro-1.1`, `flux-pro`, `flux-dev`) takes one as
+///   `image_prompt` — Redux, which makes a loose variation on the picture. It
+///   does *not* carry a style onto a new subject.
+fn bfl_reference_limit(model: &str) -> usize {
+    if model.starts_with("flux-2") {
+        if model.contains("klein") {
+            4
+        } else {
+            8
+        }
+    } else {
+        1
+    }
+}
+
+fn bfl_body(model: &str, prompt: &str, references: &[String]) -> serde_json::Value {
+    let kontext = model.starts_with("flux-kontext");
+    let flux2 = model.starts_with("flux-2");
+    let mut body = serde_json::json!({ "prompt": prompt });
+    if !kontext {
+        // Kontext is the only family that refuses an explicit size. Everywhere
+        // else 1024² keeps FLUX.2's megapixel-scaled price predictable.
+        body["width"] = serde_json::json!(1024);
+        body["height"] = serde_json::json!(1024);
+    }
+    for (i, image) in references.iter().enumerate() {
+        let field = match (flux2 || kontext, i) {
+            (true, 0) => "input_image".to_string(),
+            (true, n) => format!("input_image_{}", n + 1),
+            (false, _) => "image_prompt".to_string(),
+        };
+        body[field] = serde_json::Value::String(image.clone());
+    }
+    body
+}
+
 /// Native Black Forest Labs generation (async submit + poll). Returns the image
 /// URL from `result.sample`, which expires within ~10 minutes.
 async fn bfl_generate(
@@ -971,13 +1043,14 @@ async fn bfl_generate(
     key: &str,
     model: &str,
     prompt: &str,
+    references: &[String],
     cancel: &Option<Arc<AtomicBool>>,
 ) -> Result<String, String> {
     let resp = client
         .post(format!("{BFL_BASE}/{model}"))
         .header("x-key", key)
         .header(reqwest::header::ACCEPT, "application/json")
-        .json(&serde_json::json!({ "prompt": prompt, "width": 1024, "height": 1024 }))
+        .json(&bfl_body(model, prompt, references))
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -1180,14 +1253,30 @@ struct GeneratedImage {
     model: String,
 }
 
+/// Only FLUX takes a picture alongside the prompt. Said once, so the wording
+/// stays identical whichever of the other providers the user is on.
+const REFERENCE_UNSUPPORTED: &str = "Only Black Forest Labs (FLUX) can generate \
+from a reference image — switch provider in Settings → Image generation, or \
+remove the attached image.";
+
+/// `references` are images the user attached to the prompt, as data URLs, for
+/// FLUX to work from. Only the native Black Forest Labs provider can take any —
+/// the others are told so rather than quietly ignoring them, since a silently
+/// dropped reference still costs the user an image.
 #[tauri::command]
 async fn generate_image(
     app: tauri::AppHandle,
     state: tauri::State<'_, Cancellations>,
     prompt: String,
+    references: Option<Vec<String>>,
     request_id: Option<String>,
 ) -> Result<GeneratedImage, String> {
     let s = load_settings(&app)?;
+    let references = references
+        .unwrap_or_default()
+        .iter()
+        .map(|r| reference_payload(r.trim()))
+        .collect::<Result<Vec<_>, _>>()?;
     let cancel = request_id.as_deref().map(|id| state.flag(id));
     let _cleanup = CancelCleanup(state.inner(), request_id.clone());
     let client = http_client();
@@ -1206,6 +1295,9 @@ async fn generate_image(
         if s.image_url.trim().is_empty() {
             return Err("No image endpoint set — add one in Settings → Image generation.".into());
         }
+        if !references.is_empty() {
+            return Err(REFERENCE_UNSUPPORTED.into());
+        }
         let image = custom_image_generate(&client, &s, &prompt).await?;
         usage::record_image("custom", "custom", 1);
         let model = if s.image_model.trim().is_empty() {
@@ -1220,6 +1312,9 @@ async fn generate_image(
         let Some(key) = load_secrets().ok().and_then(|sec| trimmed_nonempty(&sec.ovh_key)) else {
             return Err("No OVHcloud API key set — add one in Settings → Image generation.".into());
         };
+        if !references.is_empty() {
+            return Err(REFERENCE_UNSUPPORTED.into());
+        }
         let image = ovh_generate(&client, key.trim(), &prompt, &cancel).await?;
         usage::record_image("ovh", "ovh-sdxl", 1);
         return Ok(GeneratedImage {
@@ -1238,12 +1333,27 @@ async fn generate_image(
     } else {
         s.bfl_model.trim()
     };
-    let sample = bfl_generate(&client, key.trim(), model, &prompt, &cancel).await?;
+    // Refuse rather than truncate: sending five references to a model that
+    // reads one produces a picture that ignores four of them, and bills for it.
+    let limit = bfl_reference_limit(model);
+    if references.len() > limit {
+        return Err(format!(
+            "{model} takes {limit} reference image{} — you attached {}. Remove some, or switch to a FLUX.2 model (up to 8) in Settings → Image generation.",
+            if limit == 1 { "" } else { "s" },
+            references.len()
+        ));
+    }
+    let sample = bfl_generate(&client, key.trim(), model, &prompt, &references, &cancel).await?;
     let image = fetch_as_data_url(&client, &sample).await?;
     usage::record_image("bfl", model, 1);
+    let label = match references.len() {
+        0 => format!("Black Forest Labs · {model}"),
+        1 => format!("Black Forest Labs · {model} · from your image"),
+        n => format!("Black Forest Labs · {model} · from your {n} images"),
+    };
     Ok(GeneratedImage {
         image,
-        model: format!("Black Forest Labs · {model}"),
+        model: label,
     })
 }
 
@@ -3855,6 +3965,67 @@ mod tests {
     }
 
     #[test]
+    fn reference_payload_strips_data_url_and_guards_size() {
+        let png = BASE64_STANDARD.encode(b"\x89PNG\r\n\x1a\n");
+        assert_eq!(
+            reference_payload(&format!("data:image/png;base64,{png}")).unwrap(),
+            png
+        );
+        // Bare base64 is accepted as-is.
+        assert_eq!(reference_payload(&png).unwrap(), png);
+        // A non-image data URL, or unreadable base64, is refused.
+        assert!(reference_payload("data:text/plain;base64,aGk=").is_err());
+        assert!(reference_payload("data:image/png;base64,not base64!!").is_err());
+        // Oversized attachments are refused before the request goes out.
+        let huge = BASE64_STANDARD.encode(vec![0u8; MAX_REFERENCE_BYTES + 1]);
+        assert!(reference_payload(&format!("data:image/png;base64,{huge}"))
+            .unwrap_err()
+            .contains("too large"));
+    }
+
+    #[test]
+    fn bfl_body_picks_the_field_the_model_understands() {
+        let one = ["QUJD".to_string()];
+
+        // Redux models take inspiration and keep the fixed square size.
+        let redux = bfl_body("flux-pro-1.1", "a bicycle", &one);
+        assert_eq!(redux["image_prompt"], "QUJD");
+        assert!(redux.get("input_image").is_none());
+        assert_eq!(redux["width"], 1024);
+
+        // Kontext edits the reference and derives its own size from it.
+        let kontext = bfl_body("flux-kontext-pro", "make it red", &one);
+        assert_eq!(kontext["input_image"], "QUJD");
+        assert!(kontext.get("image_prompt").is_none());
+        assert!(kontext.get("width").is_none());
+
+        // FLUX.2 numbers its references from the second one on — this is the
+        // family that holds a style across a set.
+        let three: Vec<String> = ["AAAA", "BBBB", "CCCC"].iter().map(|s| s.to_string()).collect();
+        let flux2 = bfl_body("flux-2-pro", "a matching download icon", &three);
+        assert_eq!(flux2["input_image"], "AAAA");
+        assert_eq!(flux2["input_image_2"], "BBBB");
+        assert_eq!(flux2["input_image_3"], "CCCC");
+        assert!(flux2.get("input_image_1").is_none());
+        assert!(flux2.get("image_prompt").is_none());
+
+        // No reference → no image field at all.
+        let plain = bfl_body("flux-pro-1.1", "a bicycle", &[]);
+        assert!(plain.get("image_prompt").is_none());
+        assert!(plain.get("input_image").is_none());
+        assert_eq!(plain["prompt"], "a bicycle");
+    }
+
+    #[test]
+    fn bfl_reference_limit_matches_each_family() {
+        assert_eq!(bfl_reference_limit("flux-2-pro"), 8);
+        assert_eq!(bfl_reference_limit("flux-2-max"), 8);
+        assert_eq!(bfl_reference_limit("flux-2-klein-9b"), 4);
+        assert_eq!(bfl_reference_limit("flux-kontext-max"), 1);
+        assert_eq!(bfl_reference_limit("flux-pro-1.1"), 1);
+    }
+
+    #[test]
     fn inline_assets_leaves_missing_refs_alone() {
         let dir = temp_dir("missing");
         let mut v = serde_json::json!({ "image": "asset://conv1-doesnotexist" });
@@ -4172,6 +4343,7 @@ mod tests {
             key.trim(),
             "flux-pro-1.1",
             "a simple red circle centered on a plain white background",
+            &[],
             &cancel,
         )
         .await
@@ -4189,6 +4361,61 @@ mod tests {
             &data[..data.len().min(40)]
         );
         eprintln!("PASS bfl image: url returned, embedded {} bytes", data.len());
+    }
+
+    /// The multi-reference path end to end, which is the one that matters for a
+    /// consistent set: generate two icons, then hand FLUX.2 *both* and ask for a
+    /// third in the same style. Three images, so it is gated like the rest.
+    #[tokio::test]
+    #[ignore]
+    async fn integ_bfl_image_from_references() {
+        let key = key_or_skip!("BFL_API_KEY");
+        if std::env::var("RUN_PAID_TESTS").is_err() {
+            eprintln!(
+                "SKIP integ_bfl_image_from_references: set RUN_PAID_TESTS=1 (bills ~$0.10 — three images)"
+            );
+            return;
+        }
+        let client = http_client();
+        let cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>> = None;
+
+        let mut references = Vec::new();
+        for subject in ["a house", "an envelope"] {
+            let url = bfl_generate(
+                &client,
+                key.trim(),
+                "flux-2-pro",
+                &format!("a flat line icon of {subject}, thin dark strokes, plain white background"),
+                &[],
+                &cancel,
+            )
+            .await
+            .expect("BFL image generation failed");
+            references.push(
+                reference_payload(
+                    &fetch_as_data_url(&client, &url)
+                        .await
+                        .expect("fetching the reference image failed"),
+                )
+                .expect("the generated image was not usable as a reference"),
+            );
+        }
+
+        let sample = bfl_generate(
+            &client,
+            key.trim(),
+            "flux-2-pro",
+            "a flat line icon of a magnifying glass, matching the style of the reference icons exactly",
+            &references,
+            &cancel,
+        )
+        .await
+        .expect("BFL generation from reference images failed");
+        assert!(sample.starts_with("http"), "unexpected sample URL: {sample}");
+        eprintln!(
+            "PASS bfl image from {} references — inspect it by hand for style match: {sample}",
+            references.len()
+        );
     }
 
     #[tokio::test]

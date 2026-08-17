@@ -1,6 +1,6 @@
-# Release notes — Sovatela 1.2.0
+# Release notes — Sovatela 1.3.0
 
-Release date: 2026-08-10 · [All releases](https://github.com/jacobla1/Scale/releases)
+Release date: 2026-08-14 · [All releases](https://github.com/jacobla1/Scale/releases)
 
 > This is the user-facing shape of a release. The engineering history lives in
 > [`CHANGELOG.md`](../../CHANGELOG.md); this document adds the five sections a
@@ -10,55 +10,67 @@ Release date: 2026-08-10 · [All releases](https://github.com/jacobla1/Scale/rel
 
 ## New
 
-**Terminal access (Settings → Advanced).** Use GLM-5.2 from your terminal. It
-sets up a `claude-glm` launcher that runs **Claude Code** against Scaleway
-through a small local proxy, while your normal `claude` command keeps using
-Anthropic models. It reads the Scaleway key you already saved, so there is
-nothing extra to paste. Claude Code itself is the one prerequisite, and the
-section checks for it before enabling the button.
+**Generate an image from your images** (🎨 + 📎). Attach one or more pictures
+alongside an image prompt and FLUX will work from them — a set of icons in one
+style, a character across different scenes, a house look held across a page of
+assets.
 
-It was hidden for the 1.0 and 1.1 releases because running Claude Code against
-a non-Anthropic model sits outside what Anthropic supports — their gateway
-documentation says it "doesn't support routing Claude Code to non-Claude models
-through any gateway". That is unchanged, and it is a support statement rather
-than a prohibition. What changed is that the caveats are now in the app, next to
-the button, instead of only in a README nobody reads first.
+Which FLUX model you have set decides what happens to them, and the difference
+is large enough that the wrong choice looks like the feature failing rather than
+the wrong tool being used. So the app now says which behaviour you are getting
+*before* it spends anything, and *Settings → Image generation* offers the model
+ids instead of expecting you to know them:
 
-Two of those caveats matter before you press it. **Terminal access is less
-sovereign than the app**: your prompts follow the local proxy to Scaleway, but
-Claude Code is an agent — it runs commands, installs packages, fetches pages and
-talks to MCP servers, and those can reach hosts outside Europe. And **setup
-itself reaches outside Europe**: it fetches an installer from `astral.sh` and
-installs a proxy from PyPI, both US-hosted. Nothing is installed until you press
-the button, and [uninstalling](../UNINSTALL.md) § 4 removes every piece.
+- **`flux-2-pro`** and the other FLUX.2 models take **up to eight** pictures and
+  hold their style across a new image. This is the one for "more like these".
+- **`flux-kontext-pro`** takes one and edits *that* picture to your instruction
+  — "make the sky orange" — rather than making a matching new one.
+- **`flux-pro-1.1`**, the default, is a text-to-image model. It accepts one
+  picture but only makes a loose variation on it, and will not carry a style
+  onto a new subject. **Set the model to `flux-2-pro` before attaching
+  anything**, or the composer will warn you that it won't do what you want.
 
-**Text size is adjustable** (Settings → Appearance), up to 150%. The type scale
-was written in fixed pixels, so a reader who needed larger text had no way to
-get it — the accessibility statement called this the most serious gap in the
-product. The scale is now relative, which makes it responsive, and the app
-carries its own control, which makes that reachable: a desktop app has no
-address bar to zoom with, and neither macOS nor Windows passes its text-size
-setting through to one.
+Attach more pictures than your model reads and the request is refused before it
+is billed, rather than being quietly trimmed into a result that ignores half of
+them. OVHcloud's SDXL and custom endpoints take no reference at all and say so.
+Either way your pictures go back to the composer, so the fix is Settings and
+Send again.
 
-The smallest text in the app was 10px. It is now 11px, and nothing renders
-below that.
-
-**The reduced-motion setting is respected.** With it on, animation and
-transitions stop.
-
-The two status dots that pulse to mean "in progress" are not simply frozen.
-"Checking" and "offline" are the same colour, and the pulse was the only thing
-telling them apart — stopping it would have deleted a state for exactly the
-readers the setting is meant to help. Both dots become unfilled rings instead,
-so *indeterminate* still reads as different from *settled*.
+**A first screen that shows what this takes.** A fresh install now opens on four
+pictures — create a Scaleway account, generate a key, paste it in, chat — before
+asking for anything or expecting anyone to read instructions. Reachable
+afterwards from *Settings → Appearance → Welcome screen*. The same set now
+carries the setup strip on `sovatela.eu`.
 
 ---
 
 ## Known limitations
 
-Documented rather than omitted. This is the complete user-facing list for 1.2.0;
+Documented rather than omitted. This is the complete user-facing list for 1.3.0;
 the engineering view is in [Technical specification §
 7](../TECHNICAL-SPEC.md#7-known-technical-debt).
+
+**Reference images**
+
+- Only **Black Forest Labs** can generate from a picture you attach. OVHcloud's
+  SDXL and custom OpenAI-images endpoints take no reference and refuse the
+  request rather than ignoring the attachment.
+- The **default model is `flux-pro-1.1`**, which is the wrong one for this: it
+  makes a loose variation rather than carrying a style onto a new subject. The
+  composer warns, but the default is not changed for you, because changing it
+  would change what your existing prompts cost and produce.
+- FLUX.2 is priced **per megapixel** and costs more with references attached, so
+  the usage panel's estimate for those models is a floor rather than a figure.
+- Reference images have been exercised on FLUX.2; the Kontext editing path is
+  built to the same API but has not been run against a paid key.
+
+**The setup-step pictures do not scale**
+
+- The four cards on the welcome screen carry their wording inside the picture,
+  so that text does not grow with *Settings → Appearance → Text size*, and does
+  not follow the light theme. The wording is repeated in each picture's
+  alternative text for screen readers, but a reader who enlarges type will not
+  see these four cards enlarge with the rest.
 
 **Terminal access on Windows is unverified on hardware**
 
@@ -130,7 +142,7 @@ and lives wherever you point it.
 
 ## Upgrade and install instructions
 
-**Upgrading from 1.0.0 or 1.1.x** — install over the top. Settings, chat
+**Upgrading from 1.0.0, 1.1.x or 1.2.0** — install over the top. Settings, chat
 history, memory, projects, and stored keys are preserved; there is no migration
 step and nothing to back up first. On macOS, replace the app in Applications.
 
@@ -141,13 +153,13 @@ Scaleway API key: [Quick-start](../QUICKSTART.md).
 **Verify your download** before running it:
 
 ```sh
-shasum -a 256 Sovatela_1.2.0_universal.dmg      # macOS
-sha256sum sovatela_1.2.0_amd64.deb              # Linux
-Get-FileHash .\Sovatela_1.2.0_x64-setup.exe -Algorithm SHA256   # Windows
+shasum -a 256 Sovatela_1.3.0_universal.dmg      # macOS
+sha256sum sovatela_1.3.0_amd64.deb              # Linux
+Get-FileHash .\Sovatela_1.3.0_x64-setup.exe -Algorithm SHA256   # Windows
 ```
 
 **Downgrading** — install the older version over the top. The data format is
-unchanged across 1.0.0, 1.1.x and 1.2.0. Terminal access is set up outside the
+unchanged across 1.0.0, 1.1.x, 1.2.0 and 1.3.0. Terminal access is set up outside the
 app's data folder, so downgrading does not remove it; use
 [uninstalling](../UNINSTALL.md) § 4 if you want it gone.
 
@@ -166,4 +178,4 @@ app's data folder, so downgrading does not remove it; use
 
 Support is best-effort from a small project — see [Support](../SUPPORT.md).
 
-**Credits.** Thanks to everyone who reported issues against 1.1.x.
+**Credits.** Thanks to everyone who reported issues against 1.2.x.

@@ -75,7 +75,11 @@ endpoint for chat; see the Roadmap.
   that runs a real query.
 - **Image generation** (🎨) — **OVHcloud** (SDXL, the sovereign default),
   **Black Forest Labs** (FLUX, higher quality), or a custom OpenAI-images
-  endpoint. No Docker or GPU needed. Off until you add a key.
+  endpoint. No Docker or GPU needed. Off until you add a key. On FLUX you can
+  **attach pictures** to generate from — a `flux-2-*` model takes up to eight
+  and holds their style across a new image (a matching icon set, one character
+  in different scenes), while a `flux-kontext-*` model edits a single picture to
+  your instruction.
 - **Artifacts** — ask for a chart/diagram/visual/app and it renders live in a
   right-hand canvas panel (sandboxed). All code blocks open in the panel; a
   session-wide **index** lets you revisit any artifact.

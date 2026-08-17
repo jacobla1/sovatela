@@ -73,6 +73,8 @@
     quickMode = !!t.quickMode;
   }
   let imageConfigured = $state(false);
+  let imageProvider = $state(""); // "ovh" | "bfl" | "custom" — set from settings
+  let bflModel = $state(""); // which FLUX model, which decides what a reference does
   let searchConfigured = $state(false);
   let activeIndex = $state(null); // index into `artifacts` shown in the panel (null = closed)
   let listEl;
@@ -115,6 +117,11 @@
       const provider = s.provider || (s.url && s.url.trim() ? "custom" : "bfl");
       imageConfigured =
         provider === "custom" ? !!(s.url && s.url.trim()) : !!s.bfl_key_set;
+      // Only FLUX generates from a picture you supply, so the composer only
+      // offers a reference image when FLUX is the configured provider — and
+      // what it does with one depends on which FLUX model is set.
+      imageProvider = provider;
+      bflModel = (s.bfl_model || "").trim() || "flux-pro-1.1";
     })
     .catch(() => {});
 
@@ -569,15 +576,32 @@
 
     // Image-generation mode: send the prompt to the user's image endpoint.
     if (imageMode) {
+      // A picture needs describing even when one is attached: the reference says
+      // what it should look like, the prompt says what to make of it.
+      if (!text) return;
+      // Attached images are what FLUX generates from — all of them, since
+      // FLUX.2 holds a style across a set. Over its model's limit the backend
+      // refuses before spending anything, and the composer has already said so.
+      const references = pending.filter((a) => a.kind === "image");
       input = "";
+      pending = pending.filter((a) => !references.includes(a));
       const imageStartedAt = Date.now();
-      msgs.push({ role: "user", text, attachments: [], at: imageStartedAt });
+      msgs.push({
+        role: "user",
+        text,
+        attachments: references,
+        at: imageStartedAt,
+      });
       msgs.push({ role: "assistant", text: "", status: "🎨 Generating image…", image: null });
       const reply = msgs[msgs.length - 1];
       startRun(cid, msgs, requestId);
       scrollToBottom(true);
       try {
-        const gen = await invoke("generate_image", { prompt: text, requestId });
+        const gen = await invoke("generate_image", {
+          prompt: text,
+          references: references.map((a) => a.dataUrl),
+          requestId,
+        });
         reply.image = gen.image;
         // Keep the prompt: it is the only description a screen reader can give
         // of a picture that exists nowhere else. "Generated image" says nothing
@@ -589,6 +613,11 @@
         const msg = String(e);
         reply.text = msg === "Stopped." ? "⏹ Stopped." : `⚠️ ${msg}`;
         reply.status = "";
+        // Nothing was generated, so put the references back in the composer —
+        // the likeliest failures ("this provider can't take one", "too many for
+        // this model") are fixed in Settings and the same thing sent again.
+        const back = references.filter((a) => !pending.includes(a));
+        if (back.length) pending = [...back, ...pending];
       } finally {
         reply.at = Date.now();
         reply.took = reply.at - imageStartedAt;
@@ -863,6 +892,43 @@
   // shows a third state: still switched on, but paused for this turn.
   const quickPaused = $derived(quickMode && webSearch);
 
+  // In image mode an attached picture is what FLUX generates *from*, and the
+  // three FLUX families mean three different things by it. Mirrors
+  // bfl_reference_limit in the backend, which is what actually enforces this.
+  const stagedImages = $derived(pending.filter((a) => a.kind === "image"));
+  const bflFamily = $derived(
+    bflModel.startsWith("flux-2") ? "flux2" : bflModel.startsWith("flux-kontext") ? "kontext" : "redux",
+  );
+  const referenceLimit = $derived(
+    bflFamily === "flux2" ? (bflModel.includes("klein") ? 4 : 8) : 1,
+  );
+
+  // Said before the request, because a generated image is billed either way —
+  // and because the wrong model here produces a disappointing picture rather
+  // than an error, which is far harder to diagnose from the result alone.
+  const referenceHint = $derived.by(() => {
+    const n = stagedImages.length;
+    if (!imageMode || n === 0) return "";
+    if (imageProvider !== "bfl")
+      return "Only Black Forest Labs (FLUX) can generate from an image — the attachment will be refused. Switch provider in Settings → Image generation.";
+    if (n > referenceLimit)
+      return `${bflModel} takes ${referenceLimit} reference image${
+        referenceLimit === 1 ? "" : "s"
+      } — remove ${n - referenceLimit}, or switch to a FLUX.2 model in Settings.`;
+    if (bflFamily === "flux2")
+      return n === 1
+        ? `FLUX.2 will work from ${stagedImages[0].name}. Attach more of the same set (up to ${referenceLimit}) to hold the style tighter.`
+        : `FLUX.2 will hold the style across your ${n} images.`;
+    if (bflFamily === "kontext")
+      return `Kontext will edit ${stagedImages[0].name} to your instruction — it changes that picture rather than making a matching one.`;
+    return `${bflModel} only makes a loose variation on ${stagedImages[0].name}. For a new image that matches its style, switch the model to flux-2-pro in Settings → Image generation.`;
+  });
+
+  // Amber for the hints where sending as-staged won't give what was asked for.
+  const referenceWarn = $derived(
+    imageProvider !== "bfl" || stagedImages.length > referenceLimit || bflFamily === "redux",
+  );
+
   function onImageToggle() {
     // If no endpoint is configured, jump to the image section in settings.
     if (imageConfigured) {
@@ -1114,7 +1180,9 @@
       <textarea
         bind:this={inputEl}
         placeholder={imageMode
-          ? "Describe an image to generate…"
+          ? stagedImages.length
+            ? "Describe the image to make from it…"
+            : "Describe an image to generate…"
           : "Message GLM-5.2…   (Enter to send · Shift+Enter for newline)"}
         bind:value={input}
         onkeydown={onKeydown}
@@ -1125,7 +1193,9 @@
           <button
             class="tool"
             onclick={() => fileInput.click()}
-            title="Attach files or images"
+            title={imageMode && imageProvider === "bfl"
+              ? "Attach an image for FLUX to generate from"
+              : "Attach files or images"}
             aria-label="Attach files or images"
           ><Icon name="paperclip" /></button>
           <button
@@ -1166,10 +1236,18 @@
             onclick={send}
             title="Send message"
             aria-label="Send message"
-            disabled={!input.trim() && pending.filter((a) => a.kind !== 'error').length === 0}
+            disabled={imageMode
+              ? !input.trim()
+              : !input.trim() && pending.filter((a) => a.kind !== 'error').length === 0}
           ><Icon name="arrow-up" /></button>
         {/if}
       </div>
+      {#if referenceHint}
+        <div class="composer-hint {referenceWarn ? 'warn' : ''}">
+          <Icon name="image" size={11} inline />
+          <span>{referenceHint}</span>
+        </div>
+      {/if}
       {#if quickPaused}
         <!-- The dimmed button says "not active"; this says why. Without it the
              only explanation is a tooltip, which you have to go looking for. -->

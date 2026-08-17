@@ -7,7 +7,7 @@
     ["message", "Chat", "Talk to GLM-5.2 about anything."],
     ["paperclip", "Upload files & images", "Attach documents (PDF, Word, ODT), text, code, or images and ask about them."],
     ["panel", "Create artifacts", "Ask for a chart, diagram, or small app — it renders in a panel on the right."],
-    ["image", "Generate images", "Turn on the image button in the message bar to create an image from a prompt."],
+    ["image", "Generate images", "Turn on the image button in the message bar to create an image from a prompt — with FLUX, you can attach a picture for it to work from."],
     ["globe", "Search the web", "Turn on the web-search button for current, cited information."],
     ["bookmark", "Memory", "Tell it about you once, and it remembers useful facts across chats (you approve each)."],
     ["folder", "Projects", "Group chats with their own instructions and reference files (the ☰ sidebar)."],

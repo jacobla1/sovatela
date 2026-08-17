@@ -1,15 +1,66 @@
 # Changelog
 
-## Unreleased
+## 1.3.0 — 2026-08-14
+
+- **Generate an image from your images.** With 🎨 on and Black Forest Labs as
+  the provider, the 📎 button now stages pictures for FLUX to work from: attach
+  them, describe what you want, and they go with the prompt.
+
+  What FLUX does with them depends entirely on the model set in *Settings →
+  Image generation*, so the app now says which of the three you're getting
+  before you send, and the model field offers the ids rather than expecting you
+  to know them:
+
+  - **`flux-2-*` — a matching set.** FLUX.2 takes up to **eight** references
+    (four on `klein`) as `input_image`, `input_image_2`… and holds their style
+    across a new image. This is the family to use for "more icons like these".
+  - **`flux-kontext-*` — edit this picture.** One reference as `input_image`;
+    it changes that picture rather than making a matching one. Kontext sizes
+    the result from the reference, so the fixed 1024×1024 is no longer sent to
+    those models.
+  - **`flux-pro-1.1` and older — text prompts, really.** One reference as
+    `image_prompt` (BFL's Redux), which only makes a loose variation and will
+    not carry a style onto a new subject. The composer now warns when you
+    attach a picture to one of these, since the result *looks* like the feature
+    failing rather than the wrong model being asked.
+
+  Attaching more references than the model reads is refused locally, before
+  anything is billed, rather than being truncated into a picture that ignores
+  half of them. OVHcloud's SDXL and custom OpenAI-images endpoints take no
+  references at all and say so for the same reason. A refused prompt puts the
+  pictures back in the composer, so the fix is Settings and Send again.
+
+  Prices for the Kontext and FLUX.2 models were added to the bundled price list
+  — the previous `flux.2-*` entries were dead keys that never matched a request,
+  leaving Kontext Max and FLUX.2 Max estimated at half their real cost. FLUX.2
+  is priced per megapixel and costs more with references attached, so its
+  estimate is a floor. Collected from BFL's pricing page on 2026-08-13; the
+  table's own date is unchanged, since the other providers weren't re-checked.
 
 - **An illustrated first screen.** A fresh install now opens on a splash that
   answers "what will this take?" in four pictures — create a Scaleway account,
   generate a key, paste it in, chat — before asking for anything or expecting
   anyone to read instructions. **Let's get started →** leads into Quick start.
 
-  The drawings are inline SVG, not image files: they inherit the theme and the
-  accent, so there is no second dark-mode copy, and nothing loads from disk or
-  the network on a screen that renders before anything is configured.
+  Each step is now one rendered card — artwork, title and note in a single
+  picture — bundled with the app rather than fetched, since this screen draws
+  before anything is configured and possibly before there is a connection. The
+  same set carries the setup strip on sovatela.eu.
+
+  The cards are built by `scripts/build_step_cards.py` rather than used as
+  delivered. The source renders each frame their subject differently and carry
+  captions that do not match the product's own wording, so the script lifts the
+  artwork out of each one, drops it into a single shared container — same
+  geometry, bevel, shadow and backdrop for all of them — and sets each step's
+  real wording underneath in Inter, the typeface the rest of the app uses. A row
+  of them matches because it was drawn to, not because five renders happened to
+  agree. 1254² sources at 1.7 MB come out as 640² WebP at ~15 KB.
+
+  The type is composited in, which is the cost of this: it does not reflow, does
+  not follow the theme, and does not grow with the text-size setting. It is
+  therefore sized for the ~180px the cards are actually read at, and repeated
+  verbatim in each image's `alt` — the only copy a screen reader reaches, and
+  the only copy left if a picture fails to load.
 
   Reachable afterwards from *Settings → Appearance → Welcome screen*.
 

@@ -62,3 +62,6 @@ deploy/web/dist/
 
 # Prompt-suite run output — timestamped, contains full model replies
 qa/prompt-suite/results/
+
+# Byte-code from the asset scripts (scripts/*.py)
+__pycache__/

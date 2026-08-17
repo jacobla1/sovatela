@@ -9,7 +9,20 @@ no rollback. This directory replaces that.
 | `index.html` | The download page. Edit this, not the copy on the server |
 | `page.html` | Shell used to render the policy pages |
 | `build.mjs` | Produces `dist/` — real checksums, rendered policies, `SHA256SUMS.txt` |
+| `steps/` | Artwork for the five setup steps. Generated — see below |
 | `dist/` | Build output, gitignored. Never edit; it is overwritten |
+
+Do not edit `steps/*.webp`. They are built by `scripts/build_step_cards.py` from
+the renders in `assets/`: it lifts the artwork out of each source, drops it into
+one shared container, and sets the step's wording underneath in Inter. Each card
+is therefore a picture *of its own words* — change the copy in `WEB_STEPS` in
+that script and re-run it, not in `index.html`, and keep each `alt` here in step
+with it, since the alt text is the only copy a screen reader can reach.
+
+`build.mjs` copies them into `dist/steps/`, and refuses to build if one is
+missing — a missing card is a missing paragraph above the fold, not just a
+missing picture. They must be published along with `index.html`; see step 5 of
+the release procedure.
 
 ## Release procedure
 
@@ -22,13 +35,20 @@ gh release download vX.Y.Z --repo jacobla1/Scale
 #    CI degrades to an unsigned build rather than failing, and nothing in the
 #    log flags it, so this is the only thing standing between an expired
 #    certificate and a false claim on the download page.
-hdiutil attach Sovatela_X.Y.Z_universal.dmg
-spctl -a -t exec -vv /Volumes/Sovatela/Sovatela.app
-#    expect: accepted / source=Notarized Developer ID
-xcrun stapler validate /Volumes/Sovatela/Sovatela.app
-#    expect: "The validate action worked!" — the ticket must be stapled, or
-#    Gatekeeper has to reach Apple at first launch and fails offline.
-hdiutil detach /Volumes/Sovatela
+#
+#    Exits non-zero unless the disk image really holds that version, is signed,
+#    is notarized, and has the ticket stapled (without the staple, Gatekeeper
+#    has to reach Apple at first launch, and fails offline).
+../../scripts/verify-notarization.sh Sovatela_X.Y.Z_universal.dmg X.Y.Z
+#    expect: PASS, with the version, the signing identity and the timestamp.
+#
+#    This used to be three commands against a hardcoded /Volumes/Sovatela. With
+#    the previous release still mounted — the normal state after checking the
+#    last one — macOS mounts the new image at "/Volumes/Sovatela 1", and those
+#    commands validated the OLD app while appearing to pass for the new one.
+#    That happened during the 1.3.0 release. The script mounts to a private
+#    temporary point and refuses to report on an image whose version does not
+#    match the one you named, so a stale disk cannot answer for a new build.
 
 # 3. Publish the PUBLIC release. This must happen before step 4: the build
 #    fetches every asset URL it writes and refuses if one is not downloadable.
@@ -47,6 +67,7 @@ node deploy/web/build.mjs /tmp/sovatela-release
 #    target; do not edit its HTML by hand.
 cp    deploy/web/dist/index.html      ../sovatela-web/
 cp -R deploy/web/dist/accessibility   ../sovatela-web/
+cp -R deploy/web/dist/steps           ../sovatela-web/   # setup-strip cards
 (cd ../sovatela-web && git add -A && git commit && git push)
 
 # 6. Verify from OUTSIDE your own machine. See the warning below.

@@ -1231,6 +1231,13 @@ button.ghost:hover {
   font-weight: 600;
 }
 
+/* A hint about something that will be refused if you send it as staged —
+   a caution before the fact, not a failure, so it takes the amber. */
+.composer-hint.warn,
+.composer-hint.warn svg {
+  color: var(--warn);
+}
+
 /* Circular send button — muted until there's something to send. */
 .send {
   display: inline-flex;
@@ -2154,21 +2161,19 @@ button.mini:hover {
   gap: var(--sp-3);
 }
 
+/* Each card is a picture that already has a frame, a background and its own
+   type. Wrapping that in a second bordered panel drew a box inside a box, so
+   the list item carries nothing of its own but the number underneath. */
 .splash-steps li {
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--panel);
-  padding: var(--sp-4) var(--sp-3);
+  text-align: center;
 }
 
 .splash-art {
-  color: var(--accent);
-  margin-bottom: var(--sp-3);
-}
-
-.splash-art svg {
-  width: 4rem;
-  height: 4rem;
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1;
+  border-radius: var(--r-md);
 }
 
 .splash-n {
@@ -2177,7 +2182,7 @@ button.mini:hover {
   justify-content: center;
   width: 1.5rem;
   height: 1.5rem;
-  margin-bottom: var(--sp-2);
+  margin-top: var(--sp-2);
   border-radius: 50%;
   background: color-mix(in srgb, var(--accent) 14%, transparent);
   color: var(--accent);
@@ -2185,22 +2190,11 @@ button.mini:hover {
   font-weight: 700;
 }
 
-.splash-label {
-  display: block;
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  margin-bottom: var(--sp-1);
-}
-
-.splash-note {
-  display: block;
-  font-size: var(--fs-xs);
-  color: var(--muted);
-}
-
-.splash-steps li.done {
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
-  border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
+/* The payoff step, marked so the eye lands on where this is going. The ring
+   goes on the picture itself, since the picture is the card. */
+.splash-steps li.done .splash-art {
+  outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent);
+  outline-offset: -1px;
 }
 
 .splash-steps li.done .splash-n {

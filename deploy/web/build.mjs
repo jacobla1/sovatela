@@ -345,6 +345,26 @@ if (badPolicy.length) {
 writeFileSync(join(dist, "index.html"), index);
 writeFileSync(join(dist, "SHA256SUMS.txt"), sums.join("\n") + "\n");
 
+// The step artwork carries the wording of the setup strip, not just its
+// pictures, so a missing file is a missing paragraph above the fold — this
+// refuses to build rather than publish that. Copied rather than inlined: five
+// files the browser caches beat 75KB of base64 in every page load.
+const stepsSrc = join(here, "steps");
+const stepArt = [...index.matchAll(/src="steps\/([^"]+)"/g)].map((m) => m[1]);
+if (stepArt.length) {
+  const missing = [...new Set(stepArt)].filter((f) => !existsSync(join(stepsSrc, f)));
+  if (missing.length) {
+    console.error(`\nindex.html references step artwork that does not exist: ${missing.join(", ")}`);
+    console.error("Run scripts/build-step-art.sh to regenerate it from assets/.");
+    process.exit(1);
+  }
+  mkdirSync(join(dist, "steps"), { recursive: true });
+  for (const file of new Set(stepArt)) {
+    writeFileSync(join(dist, "steps", file), readFileSync(join(stepsSrc, file)));
+  }
+  console.log(`  copied ${new Set(stepArt).size} step artwork file(s)`);
+}
+
 console.log(`\nBuilt into ${dist}`);
 
 const held = PAGES.filter(([, , , o]) => o.hold);
