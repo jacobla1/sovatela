@@ -21,7 +21,7 @@ with it, since the alt text is the only copy a screen reader can reach.
 
 `build.mjs` copies them into `dist/steps/`, and refuses to build if one is
 missing — a missing card is a missing paragraph above the fold, not just a
-missing picture. They must be published along with `index.html`; see step 5 of
+missing picture. They must be published along with `index.html`; see step 6 of
 the release procedure.
 
 ## Release procedure
@@ -50,7 +50,7 @@ gh release download vX.Y.Z --repo jacobla1/Scale
 #    temporary point and refuses to report on an image whose version does not
 #    match the one you named, so a stale disk cannot answer for a new build.
 
-# 3. Publish the PUBLIC release. This must happen before step 4: the build
+# 3. Publish the PUBLIC release. This must happen before step 5: the build
 #    fetches every asset URL it writes and refuses if one is not downloadable.
 shasum -a 256 Sovatela_X.Y.Z_* Sovatela-X.Y.Z-*.rpm > SHA256SUMS.txt
 gh release create vX.Y.Z --repo jacobla1/sovatela \
@@ -59,10 +59,23 @@ gh release create vX.Y.Z --repo jacobla1/sovatela \
   Sovatela_X.Y.Z_x64_en-US.msi Sovatela_X.Y.Z_amd64.deb \
   Sovatela_X.Y.Z_amd64.AppImage Sovatela-X.Y.Z-1.x86_64.rpm
 
-# 4. Build the site.
+# 4. Publish the SOURCE for this version, into the public `jacobla1/sovatela`
+#    repo. Do this with the release, not later: the moment the installers are
+#    public, SECURITY.md § "Verifying the claims" is pointing every reader at
+#    whatever version that repo last received. For 1.3.0 it was pointing at
+#    1.2.0 — the claim was true of the old release and quietly false of the
+#    one people were downloading.
+#
+#    The script assembles the tree, withholds the maintainer-facing documents,
+#    and unwraps links into them so the public repo has no link a reader
+#    cannot follow. It refuses to run against a dirty working tree.
+node deploy/publish-source.mjs ../sovatela
+(cd ../sovatela && git add -A && git commit -m "Sovatela X.Y.Z — source" && git push)
+
+# 5. Build the site.
 node deploy/web/build.mjs /tmp/sovatela-release
 
-# 5. Publish the pages — commit dist/ into the separate `sovatela-web` repo,
+# 6. Publish the pages — commit dist/ into the separate `sovatela-web` repo,
 #    which GitHub Pages serves at sovatela.eu. That repo is the publish
 #    target; do not edit its HTML by hand.
 cp    deploy/web/dist/index.html      ../sovatela-web/
@@ -70,7 +83,7 @@ cp -R deploy/web/dist/accessibility   ../sovatela-web/
 cp -R deploy/web/dist/steps           ../sovatela-web/   # setup-strip cards
 (cd ../sovatela-web && git add -A && git commit && git push)
 
-# 6. Verify from OUTSIDE your own machine. See the warning below.
+# 7. Verify from OUTSIDE your own machine. See the warning below.
 ```
 
 Do not attach `Sovatela_universal.app.tar.gz` to the release. It is Tauri's
@@ -197,6 +210,14 @@ curl -sSI --resolve sovatela.eu:443:185.199.111.153 \
 Then confirm: valid certificate for the custom domain, every download button
 returns a file, and a downloaded artifact hashes to what `SHA256SUMS.txt` says.
 Mobile data with wifi off works too.
+
+Confirm the published source is this release as well — step 4 fails silently,
+and `SECURITY.md` invites people to check the code against what they downloaded:
+
+```sh
+gh api repos/jacobla1/sovatela/contents/package.json --jq .content \
+  | base64 -d | grep -m1 version    # expect: the version you just shipped
+```
 
 ## Before publishing the policy pages
 

@@ -1,5 +1,46 @@
 # Changelog
 
+## 1.3.1 — 2026-08-18
+
+- **Terminal access on Windows never worked, and now does.** Two defects, either
+  of which was fatal on its own, and both invisible on macOS and Linux:
+
+  - The installer wrote `litellm.yaml` with a **UTF-8 byte-order mark**, because
+    `Set-Content -Encoding UTF8` adds one in Windows PowerShell 5.1. LiteLLM
+    reads that file with a bare `open()`, so Python decoded it with the locale
+    encoding — cp1252 on a stock Windows install — where the mark becomes three
+    visible characters at the start of line 1 and stops it being a comment. The
+    YAML parse then failed on `model_list:`.
+  - The proxy died printing **its own startup banner**: LiteLLM's banner
+    contains characters cp1252 cannot encode, and the launcher redirects its
+    output to a log file, so Python used the locale encoding rather than the
+    console's. It now runs in UTF-8 mode.
+
+  Both surfaced identically — *"LiteLLM failed to start"* — with the real reason
+  in a log file nothing tells you to open. Fixing one would have moved the
+  failure rather than removed it.
+
+  This is why 1.2.0 and 1.3.0 disclosed the Windows installer as unverified:
+  nobody had run it. "Unverified" was too kind. It was broken, on every Windows
+  machine, from the first release that offered it.
+
+  The installer is compiled into the application, so this fix required a
+  release; there was no way to repair an installed 1.3.0.
+
+- **The Windows install path is now tested on every commit that touches it**, and
+  no release can be built until it passes. A `windows-latest` runner runs the
+  installer exactly as the documentation tells a user to, then drives the
+  launcher it produces: the `uv` fetch, the LiteLLM install with its FastAPI
+  pin, the config, the persistent `PATH` edit, whether `claude-glm` resolves in
+  a terminal that reads `PATH` from the registry, and the launcher's own
+  `CredReadW` read of a credential written exactly as the app writes it. Then it
+  uninstalls, so the removal instructions are exercised too.
+
+  The first version of that test passed against the broken build: it opened the
+  config with an explicit encoding, which handles a byte-order mark silently,
+  while the program under test does not. A check that reads a file more
+  carefully than the software it is checking proves nothing.
+
 ## 1.3.0 — 2026-08-14
 
 - **Generate an image from your images.** With 🎨 on and Black Forest Labs as

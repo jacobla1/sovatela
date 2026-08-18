@@ -8,7 +8,14 @@ on:
       - "v*"
 
 jobs:
+  # The Windows terminal-access installer is compiled into the binary, so a
+  # broken one can only be fixed by another release. It shipped broken twice
+  # before anyone ran it. Nothing is built until it is run.
+  windows-terminal-access:
+    uses: ./.github/workflows/windows-terminal-access.yml
+
   build:
+    needs: windows-terminal-access
     permissions:
       contents: write # needed to create the Release and upload assets
     strategy:

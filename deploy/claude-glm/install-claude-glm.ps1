@@ -85,7 +85,22 @@ litellm_settings:
 general_settings:
   master_key: os.environ/CLAUDE_GLM_PROXY_KEY
 '@
-Set-Content -LiteralPath (Join-Path $ConfigDir 'litellm.yaml') -Value $yaml -Encoding UTF8
+# Written WITHOUT a byte-order mark, and not with Set-Content -Encoding UTF8,
+# which in Windows PowerShell 5.1 prepends one. LiteLLM reads this file with a
+# bare open(path), so Python decodes it with the machine's locale encoding —
+# cp1252 on a stock Windows install, not UTF-8. There the BOM does not announce
+# an encoding, it decodes to the characters "ï»¿" and lands at the start of the
+# first line, which stops that line being a comment. PyYAML then reads lines 1-4
+# as one plain scalar and fails on `model_list:` at line 5 with
+#
+#   expected '<document start>', but found '<block mapping start>'
+#
+# The proxy never starts, and `claude-glm` reports only "LiteLLM failed to
+# start", with the real reason in a log file nobody opens. Every Windows install
+# hit this; it is why the launcher had never worked on Windows.
+[IO.File]::WriteAllText(
+  (Join-Path $ConfigDir 'litellm.yaml'), $yaml,
+  (New-Object System.Text.UTF8Encoding($false)))
 
 # Local-only password guarding the proxy on 127.0.0.1:4000 (not sensitive - it
 # never leaves this machine). Generated once and kept stable across re-runs.
@@ -186,6 +201,14 @@ if (-not (Test-Path -LiteralPath $LiteLLM)) {
 
 if (-not (Test-Proxy)) {
   Write-Host "Starting local GLM-5.2 proxy..."
+  # LiteLLM prints a startup banner containing characters cp1252 cannot encode.
+  # Its stdout is redirected to a file below, so Python encodes it with the
+  # locale encoding rather than the console's, and the proxy dies before it
+  # serves anything - UnicodeEncodeError from click.echo, in a log the user is
+  # never told to read. UTF-8 mode also makes Python read files as UTF-8, which
+  # is the same class of bug as the BOM in litellm.yaml.
+  $env:PYTHONUTF8 = '1'
+  $env:PYTHONIOENCODING = 'utf-8'
   Start-Process -WindowStyle Hidden -FilePath $LiteLLM `
     -ArgumentList @('--config', $ConfigFile, '--host', '127.0.0.1', '--port', '4000') `
     -RedirectStandardOutput $LogFile -RedirectStandardError $ErrFile

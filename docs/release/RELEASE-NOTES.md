@@ -1,6 +1,6 @@
-# Release notes — Sovatela 1.3.0
+# Release notes — Sovatela 1.3.1
 
-Release date: 2026-08-14 · [All releases](https://github.com/jacobla1/Scale/releases)
+Release date: 2026-08-18 · [All releases](https://github.com/jacobla1/Scale/releases)
 
 > This is the user-facing shape of a release. The engineering history lives in
 > [`CHANGELOG.md`](../../CHANGELOG.md); this document adds the five sections a
@@ -9,6 +9,19 @@ Release date: 2026-08-14 · [All releases](https://github.com/jacobla1/Scale/rel
 ---
 
 ## New
+
+**Terminal access works on Windows.** It never did. Two encoding defects, either
+fatal on its own, meant the local proxy could not start on any Windows machine:
+the installer wrote its config with a byte-order mark that LiteLLM's YAML parser
+choked on, and LiteLLM then died printing its own startup banner because its
+output was being written with the locale encoding. Both reported the same
+unhelpful *"LiteLLM failed to start"*.
+
+If you set up terminal access under 1.2.0 or 1.3.0 on Windows, re-run
+*Settings → Advanced → Install*: the fix is in the installer, and re-running it
+repairs an existing setup rather than requiring you to remove anything first.
+
+Everything below arrived in 1.3.0 and is included here.
 
 **Generate an image from your images** (🎨 + 📎). Attach one or more pictures
 alongside an image prompt and FLUX will work from them — a set of icons in one
@@ -46,7 +59,7 @@ carries the setup strip on `sovatela.eu`.
 
 ## Known limitations
 
-Documented rather than omitted. This is the complete user-facing list for 1.3.0;
+Documented rather than omitted. This is the complete user-facing list for 1.3.1;
 the engineering view is in [Technical specification §
 7](../TECHNICAL-SPEC.md#7-known-technical-debt).
 
@@ -72,16 +85,18 @@ the engineering view is in [Technical specification §
   alternative text for screen readers, but a reader who enlarges type will not
   see these four cards enlarge with the rest.
 
-**Terminal access on Windows is unverified on hardware**
+**Terminal access on Windows is tested, but not against a real Scaleway key**
 
-- Setting it up has been tested end to end on macOS, and its installer script on
-  Linux. On Windows the app side is confirmed on real hardware — the section
-  appears, Claude Code is detected, and your Scaleway key is read back out of
-  Credential Manager. **Pressing Install is the part nobody has run**: fetching
-  `uv`, installing the proxy, editing your user `Path`, and whether the
-  `claude-glm` command resolves afterwards. The launcher reads your key by a
-  different route than the app does, so that is unconfirmed too. If it fails,
-  *Settings → Uninstalling & your data* removes everything it wrote.
+- The installer and the launcher now run on Windows on every commit that touches
+  them, and no release can be built until that passes: the `uv` fetch, the
+  LiteLLM install, the config, the persistent `Path` edit, whether `claude-glm`
+  resolves in a new terminal, and the launcher's own read of your key out of
+  Credential Manager. Uninstalling is exercised in the same run.
+- What it does **not** do is make a real request to Scaleway: it stops at a
+  stubbed `claude`, because a paid key cannot live in CI. The path is proven up
+  to the point where your key is used; the first real request is still yours.
+- Through 1.3.0 these notes called this path *unverified*. That was too kind: it
+  was broken on every Windows machine, and 1.3.1 is the release that fixes it.
 
 **Not built yet**
 
@@ -142,7 +157,7 @@ and lives wherever you point it.
 
 ## Upgrade and install instructions
 
-**Upgrading from 1.0.0, 1.1.x or 1.2.0** — install over the top. Settings, chat
+**Upgrading from 1.0.0, 1.1.x, 1.2.0 or 1.3.0** — install over the top. Settings, chat
 history, memory, projects, and stored keys are preserved; there is no migration
 step and nothing to back up first. On macOS, replace the app in Applications.
 
@@ -153,13 +168,13 @@ Scaleway API key: [Quick-start](../QUICKSTART.md).
 **Verify your download** before running it:
 
 ```sh
-shasum -a 256 Sovatela_1.3.0_universal.dmg      # macOS
-sha256sum sovatela_1.3.0_amd64.deb              # Linux
-Get-FileHash .\Sovatela_1.3.0_x64-setup.exe -Algorithm SHA256   # Windows
+shasum -a 256 Sovatela_1.3.1_universal.dmg      # macOS
+sha256sum sovatela_1.3.1_amd64.deb              # Linux
+Get-FileHash .\Sovatela_1.3.1_x64-setup.exe -Algorithm SHA256   # Windows
 ```
 
 **Downgrading** — install the older version over the top. The data format is
-unchanged across 1.0.0, 1.1.x, 1.2.0 and 1.3.0. Terminal access is set up outside the
+unchanged across 1.0.0, 1.1.x, 1.2.0, 1.3.0 and 1.3.1. Terminal access is set up outside the
 app's data folder, so downgrading does not remove it; use
 [uninstalling](../UNINSTALL.md) § 4 if you want it gone.
 

@@ -1,0 +1,231 @@
+name: windows terminal access
+
+# Runs deploy/claude-glm/install-claude-glm.ps1 on real Windows and then drives
+# the launcher it installs, end to end.
+#
+# This exists because the Windows install path shipped unverified through 1.2.0
+# and 1.3.0. The app side was confirmed on hardware; pressing **Install** was
+# not, and the release notes have carried that disclosure for two releases. The
+# parts nobody had run: fetching uv over Invoke-RestMethod, installing LiteLLM
+# with the FastAPI pin, the persistent user PATH edit, whether the claude-glm
+# shim resolves in a new terminal, and the launcher's CredReadW P/Invoke —
+# which is separate code from the app's keyring read, so a working key in the
+# app proves nothing about it.
+#
+# What is deliberately NOT covered: a real Scaleway call. That needs a paid key,
+# and the proxy answering /v1/models proves LiteLLM started with our config,
+# which is where this has actually broken before.
+#
+# `claude` is a stub here. What is under test is our installer and our launcher,
+# not Anthropic's CLI: the installer only checks that `claude` is on PATH, and
+# the launcher only invokes it. A stub proves both, and keeps the run from
+# trying to authenticate a real Claude Code session on a throwaway machine.
+
+on:
+  workflow_dispatch:
+  # Called by the release workflow, which will not build installers until this
+  # passes. Two encoding defects shipped in 1.2.0 and 1.3.0 that made this path
+  # impossible on every Windows machine; a release that cannot run it is a
+  # release that can carry the third one.
+  workflow_call:
+  push:
+    paths:
+      - "deploy/claude-glm/install-claude-glm.ps1"
+      - ".github/workflows/windows-terminal-access.yml"
+
+jobs:
+  install:
+    runs-on: windows-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stub `claude` on PATH (the installer's one prerequisite)
+        shell: pwsh
+        run: |
+          $stub = Join-Path $env:USERPROFILE 'claude-stub'
+          New-Item -ItemType Directory -Force -Path $stub | Out-Null
+          # Prints a marker and echoes its arguments, so the end-to-end step can
+          # prove the launcher reached it and with what.
+          @"
+          @echo off
+          echo CLAUDE-STUB-REACHED args=%*
+          "@ | Set-Content -LiteralPath (Join-Path $stub 'claude.cmd') -Encoding ASCII
+          "$stub" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Seed a Sovatela credential, the way the app writes it
+        shell: pwsh
+        run: |
+          # keyring 3.x on Windows stores one generic credential under
+          # "<account>.<service>" with the secret as a UTF-16LE blob. The app
+          # writes its whole secrets JSON there; the launcher reads it back with
+          # CredReadW. This writes the same shape with a throwaway key.
+          Add-Type -TypeDefinition @"
+          using System;
+          using System.Runtime.InteropServices;
+          namespace Seed {
+            [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+            public struct CREDENTIAL {
+              public uint Flags; public uint Type; public IntPtr TargetName; public IntPtr Comment;
+              public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
+              public uint CredentialBlobSize; public IntPtr CredentialBlob; public uint Persist;
+              public uint AttributeCount; public IntPtr Attributes; public IntPtr TargetAlias; public IntPtr UserName;
+            }
+            public static class Native {
+              [DllImport("advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+              public static extern bool CredWriteW(ref CREDENTIAL cred, uint flags);
+              public static bool Write(string target, string user, string secret) {
+                byte[] blob = System.Text.Encoding.Unicode.GetBytes(secret);
+                CREDENTIAL c = new CREDENTIAL();
+                c.Type = 1; c.Persist = 2;
+                c.TargetName = Marshal.StringToCoTaskMemUni(target);
+                c.UserName   = Marshal.StringToCoTaskMemUni(user);
+                c.CredentialBlob = Marshal.AllocCoTaskMem(blob.Length);
+                Marshal.Copy(blob, 0, c.CredentialBlob, blob.Length);
+                c.CredentialBlobSize = (uint)blob.Length;
+                return CredWriteW(ref c, 0);
+              }
+            }
+          }
+          "@
+          $json = '{"scaleway_api_key":"SCW-CHAT-KEY-FOR-TEST","claude_glm_api_key":"SCW-TERMINAL-KEY-FOR-TEST"}'
+          if (-not [Seed.Native]::Write('secrets.com.anaubi.sovatela', 'secrets', $json)) {
+            throw "CredWriteW failed: $([ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error()).Message)"
+          }
+          Write-Host "seeded secrets.com.anaubi.sovatela"
+
+      - name: Run the installer exactly as the docs tell a user to
+        shell: cmd
+        run: powershell -ExecutionPolicy Bypass -File deploy\claude-glm\install-claude-glm.ps1
+
+      - name: What the installer was supposed to leave behind
+        shell: pwsh
+        run: |
+          $fail = @()
+          function Check($label, $condition, $detail) {
+            if ($condition) { Write-Host "  ok      $label" }
+            else { Write-Host "  FAILED  $label — $detail"; $script:fail += $label }
+          }
+
+          $cfg = Join-Path $env:USERPROFILE '.claude-glm'
+          $bin = Join-Path $env:USERPROFILE 'bin'
+          $uvBin = Join-Path $env:USERPROFILE '.local\bin'
+
+          Check "uv installed"          (Test-Path (Join-Path $uvBin 'uv.exe'))        "no uv.exe in $uvBin"
+          Check "litellm installed"     (Test-Path (Join-Path $uvBin 'litellm.exe'))   "no litellm.exe in $uvBin"
+          Check "litellm.yaml written"  (Test-Path (Join-Path $cfg 'litellm.yaml'))    "missing"
+          Check "proxy key written"     (Test-Path (Join-Path $cfg 'proxy-key'))       "missing"
+          Check "launcher written"      (Test-Path (Join-Path $cfg 'claude-glm.ps1'))  "missing"
+          Check "cmd shim written"      (Test-Path (Join-Path $bin 'claude-glm.cmd'))  "missing"
+
+          # The FastAPI pin is the fix for a proxy that could not start at all.
+          $pinned = & (Join-Path $uvBin 'uv.exe') tool run --from 'litellm[proxy]' python -c "import fastapi; print(fastapi.__version__)" 2>$null
+          Write-Host "  fastapi in the litellm tool env: $pinned"
+
+          # The PATH edit must be persistent — a new terminal reads the registry,
+          # not this process.
+          $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+          Check "PATH edit persisted" (($userPath -split ';') -contains $bin) "User PATH is: $userPath"
+
+          if ($fail.Count) { throw "$($fail.Count) check(s) failed: $($fail -join ', ')" }
+
+      - name: The config must be readable the way LiteLLM reads it
+        shell: pwsh
+        run: |
+          # This check exists because the first version of it was wrong. It
+          # forced encoding='utf-8', which quietly handles a BOM — so it passed
+          # while LiteLLM, which uses a bare open(), failed on the same file.
+          # A test that opens a file more carefully than the program under test
+          # proves nothing. So: no BOM, and it must parse under the machine's
+          # locale encoding, which is what Python actually uses here.
+          $p = Join-Path $env:USERPROFILE '.claude-glm\litellm.yaml'
+          $bytes = [IO.File]::ReadAllBytes($p)
+          $head = ($bytes[0..7] | ForEach-Object { '{0:X2}' -f $_ }) -join ' '
+          Write-Host "first 8 bytes : $head"
+          if ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+            throw "litellm.yaml starts with a UTF-8 BOM — LiteLLM will fail to parse it"
+          }
+          # The path goes in as an argument rather than being pasted into the
+          # source: a Windows path is full of backslashes, and generating code
+          # that quotes them correctly is a second thing to get wrong.
+          $code = 'import sys, locale, yaml; p = sys.argv[1];' +
+                  ' print("  locale encoding:", locale.getpreferredencoding(False));' +
+                  ' yaml.safe_load(open(p));' +
+                  ' print("  parses with a bare open() -- as LiteLLM reads it")'
+          & (Join-Path $env:USERPROFILE '.local\bin\uv.exe') tool run --from 'litellm[proxy]' python -c $code $p
+          if ($LASTEXITCODE -ne 0) { throw "litellm.yaml does not parse the way LiteLLM parses it" }
+
+      - name: Does `claude-glm` resolve in a NEW terminal?
+        shell: pwsh
+        run: |
+          # A new terminal composes PATH from the machine and user values in the
+          # registry. Rebuilding it here is what makes this a real test of the
+          # PATH edit rather than of this job's inherited environment.
+          $fresh = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
+                   [Environment]::GetEnvironmentVariable('Path','User')
+          $resolved = & cmd /c "set PATH=$fresh&& where claude-glm" 2>&1
+          Write-Host "where claude-glm -> $resolved"
+          if ($LASTEXITCODE -ne 0) { throw "claude-glm does not resolve in a new terminal" }
+
+      - name: Drive the launcher end to end
+        shell: pwsh
+        env:
+          # Fake, and never used against Scaleway: the run stops at the stub.
+          SEEDED: "1"
+        run: |
+          # This is the whole point of the job. Running the shim exercises the
+          # real launcher: the CredReadW read of the seeded credential, locating
+          # litellm outside PATH, starting the proxy against litellm.yaml, and
+          # finally invoking `claude` — the stub, which prints its marker.
+          $fresh = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
+                   [Environment]::GetEnvironmentVariable('Path','User') + ';' +
+                   (Join-Path $env:USERPROFILE 'claude-stub')
+          # Output goes to a file, not through a pipe. `| Out-String` waits for
+          # every writer to the pipe to close, and the launcher leaves the proxy
+          # running on purpose — so the pipeline blocks forever on a run that
+          # actually succeeded. A user in a terminal never pipes it; this
+          # deadlock was the harness, not the product.
+          $outFile = Join-Path $env:RUNNER_TEMP 'launcher-out.txt'
+          $line = "set PATH=$fresh&& claude-glm --version > ""$outFile"" 2>&1"
+          $proc = Start-Process cmd -ArgumentList '/c', $line -PassThru -NoNewWindow
+          if (-not $proc.WaitForExit(180000)) {
+            $proc.Kill()
+            throw "claude-glm had not finished after 3 minutes"
+          }
+          $out = if (Test-Path $outFile) { Get-Content $outFile -Raw } else { "" }
+          Write-Host $out
+          if ($out -notmatch 'CLAUDE-STUB-REACHED') {
+            throw "the launcher never reached claude — see the proxy logs in the next step"
+          }
+          if ($out -match 'Could not read the Sovatela credential') {
+            throw "CredReadW could not read the credential the app writes"
+          }
+          Write-Host "launcher reached claude with the proxy up"
+
+      - name: Proxy logs, whatever happened
+        if: always()
+        shell: pwsh
+        run: |
+          $cfg = Join-Path $env:USERPROFILE '.claude-glm'
+          foreach ($f in 'litellm.log','litellm.err.log') {
+            $p = Join-Path $cfg $f
+            Write-Host "===== $f ====="
+            if (Test-Path $p) { Get-Content $p -Tail 60 } else { Write-Host "(absent)" }
+          }
+
+      - name: Uninstall leaves nothing behind
+        if: always()
+        shell: pwsh
+        run: |
+          # UNINSTALL.md § 4 is what a user is told to run when this fails, so it
+          # is part of the path under test.
+          $cfg = Join-Path $env:USERPROFILE '.claude-glm'
+          $bin = Join-Path $env:USERPROFILE 'bin'
+          Get-Process litellm -ErrorAction SilentlyContinue | Stop-Process -Force
+          Remove-Item -Recurse -Force $cfg -ErrorAction SilentlyContinue
+          Remove-Item -Force (Join-Path $bin 'claude-glm.cmd') -ErrorAction SilentlyContinue
+          $userPath = [Environment]::GetEnvironmentVariable('Path','User')
+          $trimmed = ($userPath -split ';' | Where-Object { $_ -ne $bin }) -join ';'
+          [Environment]::SetEnvironmentVariable('Path', $trimmed, 'User')
+          Write-Host "removed; User PATH now: $trimmed"
