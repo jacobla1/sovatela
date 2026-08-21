@@ -189,7 +189,7 @@ maintained alongside.
 
 **A local check proves nothing about the public path, in either direction** —
 and this machine is still configured to lie about it. `/etc/hosts` maps the
-`anaubi.com` hostnames to `the Pi's LAN address`, because those services are still on
+`anaubi.com` hostnames to the Pi's LAN address, because those services are still on
 the Pi behind a NAT that doesn't hairpin. Neither `sovatela.eu` nor
 `sovatela.anaubi.com` belongs in that list: both are on Pages now.
 

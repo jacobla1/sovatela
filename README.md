@@ -137,7 +137,6 @@ src/                     Svelte 5 frontend
   lib/MemoryReview.svelte approve auto-captured memories
   lib/Artifact.svelte    sandboxed artifact renderer (auto-height)
 src-tauri/               Rust backend (keychain, Scaleway, search, images, memory)
-deploy/searxng/          SearXNG for a token-gated server (advanced self-host)
 deploy/searxng-local/    click-to-run local SearXNG (private, per-user)
 deploy/flux-litellm/     LiteLLM proxy → BFL EU FLUX (legacy; native BFL is built in)
 .github/workflows/       CI: cross-platform release builds on version tags
@@ -253,9 +252,10 @@ optional, per-feature, and each brought by the user:
 - **Web search** → one of, in increasing order of setup:
   - a **Linkup** key — self-serve sign-up at app.linkup.so with a free tier,
     so it's the one option non-technical users can set up entirely alone.
-  - a **shared SearXNG server** someone technical runs for you (see
-    `deploy/searxng/` — a token-gated server behind nginx). Users just paste
-    the URL + token; nothing to install.
+  - a **shared SearXNG server** someone technical runs for you — a token-gated
+    instance behind nginx. Users just paste the URL + token; nothing to install.
+    The server side is arranged with the maintainer directly, so the app offers
+    the fields but never instructions for standing one up.
   - `deploy/searxng-local/` — double-click `start.command` (macOS) /
     `start.bat` (Windows) after installing Docker Desktop; the app defaults to
     `http://localhost:8888` with a blank token.

@@ -917,7 +917,7 @@
         <span>Download the <strong>local-search starter</strong> folder and
         double-click <strong>start.command</strong> (Mac) or
         <strong>start.bat</strong> (Windows).</span>
-        <button class="link" onclick={() => open("https://github.com/jacobla1/Scale/tree/main/deploy/searxng-local")}>
+        <button class="link" onclick={() => open("https://github.com/jacobla1/sovatela/tree/main/deploy/searxng-local")}>
           Get the starter →
         </button>
       </li>

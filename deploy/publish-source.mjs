@@ -6,7 +6,14 @@
 // The public repository is not a mirror. A handful of maintainer-facing
 // documents stay behind — an internal compliance checklist, publisher working
 // notes including infrastructure detail, unpublished marketing copy, a UX
-// specification, and two release-process documents. None are code.
+// specification, and two release-process documents.
+//
+// One directory stays behind as well: deploy/searxng/, the recipe for running a
+// token-gated SearXNG that serves other people. That is deliberate and is not
+// about secrecy of the config — it is that operating a server for others is a
+// thing arranged with the maintainer directly, so the app never advertises the
+// path. deploy/searxng-local/ ships: running a private instance for yourself
+// involves nobody else and needs no permission.
 //
 // Withholding a file is the easy half. The half that goes wrong silently is
 // the links *into* it from files that do ship: a relative link to a document
@@ -24,8 +31,11 @@ import { dirname, join, relative, basename } from "node:path";
 
 const repo = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
 
-// Kept out of the public repository. Paths are repo-relative and exact.
+// Kept out of the public repository. Paths are repo-relative. An entry ending
+// in "/" withholds the whole directory — a gate has to hold for files that do
+// not exist yet, or it is only as good as whoever last remembered to edit it.
 const WITHHELD = [
+  "deploy/searxng/",
   "docs/ACCESSIBILITY.md",
   "docs/LEGAL-CHECKLIST.md",
   "docs/PRODUCT-SPEC.md",
@@ -35,6 +45,9 @@ const WITHHELD = [
   "docs/release/ANNOUNCEMENT.md",
   "docs/release/QA-CHECKLIST.md",
 ];
+
+const isWithheld = (p) =>
+  WITHHELD.some((w) => (w.endsWith("/") ? p.startsWith(w) : p === w));
 
 const target = process.argv[2];
 const force = process.argv.includes("--force");
@@ -57,8 +70,9 @@ const tracked = execFileSync("git", ["-C", repo, "ls-files"], { encoding: "utf8"
   .split("\n")
   .filter(Boolean);
 
-const withheld = new Set(WITHHELD);
-const missing = WITHHELD.filter((p) => !tracked.includes(p));
+const missing = WITHHELD.filter((w) =>
+  w.endsWith("/") ? !tracked.some((p) => p.startsWith(w)) : !tracked.includes(w),
+);
 if (missing.length) {
   console.error("Refusing to publish: these are on the withhold list but not tracked here.");
   missing.forEach((p) => console.error(`  ${p}`));
@@ -66,11 +80,11 @@ if (missing.length) {
   process.exit(1);
 }
 
-const shipping = tracked.filter((p) => !withheld.has(p));
+const shipping = tracked.filter((p) => !isWithheld(p));
 
 // Markdown links whose target is a withheld document, at any relative depth.
 // Matches [text](../docs/PUBLISHER.md) and [text](PUBLISHER.md#anchor) alike.
-const withheldNames = WITHHELD.map((p) => basename(p));
+const withheldNames = WITHHELD.filter((p) => !p.endsWith("/")).map((p) => basename(p));
 const linkPattern = new RegExp(
   `\\[([^\\]]+)\\]\\((?:[^)]*/)?(${withheldNames.map((n) => n.replace(/\./g, "\\.")).join("|")})(?:#[^)]*)?\\)`,
   "g",
@@ -135,7 +149,7 @@ const present = [];
   }
 })(target);
 
-const leaked = present.filter((p) => withheld.has(p));
+const leaked = present.filter((p) => isWithheld(p));
 const dangling = present
   .filter((p) => p.endsWith(".md"))
   .filter((p) => {
@@ -143,10 +157,24 @@ const dangling = present
     return linkPattern.test(readFileSync(join(target, p), "utf8"));
   });
 
-if (leaked.length || dangling.length) {
+// A withheld *directory* leaves no markdown link to unwrap — it gets named in
+// prose ("see `deploy/searxng/`"), which the link check above cannot see. That
+// reads to a stranger as a missing directory rather than a withheld one, which
+// is the same 404 the unwrapping exists to prevent.
+const withheldDirs = WITHHELD.filter((w) => w.endsWith("/"));
+const pointing = [];
+for (const p of present.filter((f) => f.endsWith(".md"))) {
+  const text = readFileSync(join(target, p), "utf8");
+  for (const dir of withheldDirs) {
+    if (text.includes(dir)) pointing.push(`${p} → ${dir}`);
+  }
+}
+
+if (leaked.length || dangling.length || pointing.length) {
   console.error("\nPublish aborted — the output is not what it claims to be:");
   leaked.forEach((p) => console.error(`  withheld file present: ${p}`));
   dangling.forEach((p) => console.error(`  link to a withheld file survives: ${p}`));
+  pointing.forEach((p) => console.error(`  text points at a withheld directory: ${p}`));
   process.exit(2);
 }
 

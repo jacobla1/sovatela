@@ -60,4 +60,4 @@ Save, then toggle 🎨 in chat and describe an image.
 - **Cost:** BFL bills per image to your key. `flux-pro-1.1` is higher quality;
   switch `config.yaml` to `flux-dev` for cheaper generations.
 - **Remote use:** to reach it from another machine, front it with nginx + TLS
-  like `deploy/searxng` and use that URL instead of `localhost`.
+  and use that URL instead of `localhost`.
