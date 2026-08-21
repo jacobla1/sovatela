@@ -259,8 +259,9 @@ Drafting is not publishing. Three steps follow, in this order:
    computes the checksums from those bytes, rewrites the download links to the
    release assets, and refuses to write a page if any asset is not reachable.
 
-The split exists because this repository is private: its releases are drafts and
-are not downloadable by users.
+The split exists because the working repository (`jacobla1/Scale`) is private:
+its CI releases are drafts and are not downloadable by users. The public
+repository is `jacobla1/sovatela`, assembled by `deploy/publish-source.mjs`.
 
 ---
 

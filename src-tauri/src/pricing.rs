@@ -17,8 +17,14 @@ use std::sync::Mutex;
 
 /// The one-click "check for updated prices" source — the same pricing.json that
 /// ships embedded, kept current in the repository.
+///
+/// This must point at the PUBLIC repository. Until 2026-08-21 it named the
+/// private working repo, so raw.githubusercontent.com answered 404 for every
+/// user and the button had never once worked outside a maintainer's checkout.
+/// Anything a shipped build fetches has to be reachable anonymously —
+/// tests/publicLinks.test.js now fails the suite if this drifts back.
 pub const REMOTE_PRICING_URL: &str =
-    "https://raw.githubusercontent.com/jacobla1/Scale/main/pricing/pricing.json";
+    "https://raw.githubusercontent.com/jacobla1/sovatela/main/pricing/pricing.json";
 
 /// Prices bundled with the build, so cost estimation works before any fetch.
 pub const EMBEDDED_PRICING: &str = include_str!("../../pricing/pricing.json");

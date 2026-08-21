@@ -178,7 +178,46 @@ fn stream_read_error(e: reqwest::Error) -> String {
 fn write_atomic(path: &std::path::Path, contents: &str) -> Result<(), String> {
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, contents).map_err(|e| e.to_string())?;
+    // Owner-only. Conversations, memories and settings were landing at 0644 —
+    // the default umask — which on a shared machine is readable by every other
+    // local account. Applied to the temp file rather than after the rename, so
+    // the finished path is never briefly world-readable.
+    //
+    // Unix only. Windows has no mode bits (`set_permissions` there only toggles
+    // the read-only flag), and files under the user profile inherit an ACL that
+    // already excludes other standard users — see `restrict_dir`.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| e.to_string())?;
+    }
     std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+}
+
+/// Restrict a directory **this app owns** to its owner.
+///
+/// This also covers files written before the 0600 change above: without execute
+/// permission nobody else can traverse in to reach them, so no one-time sweep of
+/// existing files is needed — which matters when the history folder is large or
+/// sits on a synced drive.
+///
+/// Deliberately not applied to a folder the user chose themselves. That folder
+/// may be `~/Documents` or a shared drive they use for other things, and
+/// silently narrowing its permissions is a side effect on something this app
+/// does not own. Files written into it are still 0600.
+///
+/// No-op on Windows: mode bits do not exist there, and asserting the equivalent
+/// would mean setting a DACL explicitly. Inside the user profile the inherited
+/// ACL already restricts to the user; outside it, it may not.
+fn restrict_dir(dir: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
 }
 
 // All keychain-touching commands are `async` on purpose: a keychain read can
@@ -338,8 +377,12 @@ struct AppSettings {
     about_you: String, // personalization: who the user is
     #[serde(default)]
     custom_instructions: String, // personalization: how the assistant should respond
-    #[serde(default = "default_true")]
-    auto_memory: bool, // suggest remembered facts when a chat wraps up (on by default)
+    // Opt-in. Approved facts are personal data kept on disk, and a default that
+    // starts collecting them is not one a new user chose. Existing installs keep
+    // whatever they had: their settings.json carries an explicit value, so this
+    // default only applies to someone who has never saved settings.
+    #[serde(default)]
+    auto_memory: bool, // suggest remembered facts when a chat wraps up (opt-in)
     #[serde(default)]
     workspace_dir: String, // folder the agent may read/write (empty = feature off)
 }
@@ -3521,7 +3564,8 @@ fn history_dir_for(
     app: &tauri::AppHandle,
     s: &AppSettings,
 ) -> Result<std::path::PathBuf, String> {
-    let dir = if s.history_dir.trim().is_empty() {
+    let ours = s.history_dir.trim().is_empty();
+    let dir = if ours {
         app.path()
             .app_config_dir()
             .map_err(|e| e.to_string())?
@@ -3530,6 +3574,9 @@ fn history_dir_for(
         std::path::PathBuf::from(s.history_dir.trim())
     };
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    if ours {
+        restrict_dir(&dir);
+    }
     Ok(dir)
 }
 
@@ -4685,6 +4732,36 @@ mod tests {
     }
 
 
+    /// Conversations, memories and settings all land through `write_atomic`.
+    /// They were 0644 — the default umask — until 2026-08-21, i.e. readable by
+    /// every other local account on a shared machine. This pins the fix so a
+    /// later refactor of the write path cannot quietly widen it again.
+    #[cfg(unix)]
+    #[test]
+    fn write_atomic_leaves_owner_only_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("sovatela-perm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("secret.json");
+
+        write_atomic(&path, "{\"hello\":\"world\"}").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "expected owner-only, got {mode:o}");
+
+        // Rewriting an existing file must not restore the umask default.
+        write_atomic(&path, "{\"hello\":\"again\"}").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "expected owner-only after rewrite, got {mode:o}");
+
+        // A directory we own is closed to everyone else, which is what covers
+        // files written before the change without a migration sweep.
+        restrict_dir(&dir);
+        let dmode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dmode, 0o700, "expected owner-only dir, got {dmode:o}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn vet_resolved_rejects_any_private_answer() {
         use std::net::{IpAddr, SocketAddr};
@@ -5731,6 +5808,10 @@ pub fn run() {
             // persist without an AppHandle in the deep code that records them.
             if let Ok(dir) = app.path().app_config_dir() {
                 let _ = std::fs::create_dir_all(&dir);
+                // Holds memories.json, settings.json and usage.json — and, by
+                // default, conversations/. Narrowed on every launch, not just on
+                // creation, so installs made before this change are covered too.
+                restrict_dir(&dir);
                 let _ = APP_DIR.set(dir);
                 // Must follow APP_DIR: the merge resolves the pre-rename
                 // directory relative to the current one.

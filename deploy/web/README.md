@@ -9,7 +9,7 @@ no rollback. This directory replaces that.
 | `index.html` | The download page. Edit this, not the copy on the server |
 | `page.html` | Shell used to render the policy pages |
 | `build.mjs` | Produces `dist/` — real checksums, rendered policies, `SHA256SUMS.txt` |
-| `steps/` | Artwork for the five setup steps. Generated — see below |
+| `steps/` | Artwork for the three setup steps. Generated — see below |
 | `dist/` | Build output, gitignored. Never edit; it is overwritten |
 
 Do not edit `steps/*.webp`. They are built by `scripts/build_step_cards.py` from

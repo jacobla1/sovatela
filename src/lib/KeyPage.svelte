@@ -1,5 +1,7 @@
 <script>
   import { invoke, Channel } from "@tauri-apps/api/core";
+  import { getVersion } from "@tauri-apps/api/app";
+  import ScalewayKeySteps from "./ScalewayKeySteps.svelte";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { open as openDialog, ask } from "@tauri-apps/plugin-dialog";
   import {
@@ -43,6 +45,14 @@
   // the UI rather than only in deploy/claude-glm/README.md. Keep both caveats
   // attached to this section if it ever moves.
   const SHOW_TERMINAL_ACCESS = true;
+
+  // Read from the bundle rather than package.json, so the number shown is the
+  // one the user actually installed and cannot drift from it. Degrades to a
+  // dash rather than breaking the panel if the call is ever unavailable.
+  let appVersion = $state("");
+  getVersion()
+    .then((v) => (appVersion = v))
+    .catch(() => {});
 
   let textSize = $state(getTextSize());
   function chooseTextSize(id) {
@@ -622,36 +632,7 @@
 
 {#snippet setupSteps()}
   <ol class="setup-steps">
-    <li class="setup-step">
-      <div>
-        <h2>Create a Scaleway account</h2>
-        <p>
-          Free to open. You add a card and pay only for what you use — ordinary
-          chat runs to a few cents a day.
-        </p>
-        <button class="link" onclick={() => open("https://console.scaleway.com/register")}>
-          Open Scaleway sign-up →
-        </button>
-      </div>
-    </li>
-
-    <li class="setup-step">
-      <div>
-        <h2>Create a Scaleway API key</h2>
-        <p>
-          Leave the defaults as they are, and pick <strong>No</strong> for Object
-          Storage. Copy the <strong>Secret Key</strong> — Scaleway shows it only
-          once, so do it before closing that window.
-        </p>
-        <p>
-          Missed it? Generate another. Old keys keep working until you delete
-          them, so a spare costs nothing.
-        </p>
-        <button class="link" onclick={() => open("https://console.scaleway.com/iam/api-keys")}>
-          Open API keys →
-        </button>
-      </div>
-    </li>
+    <ScalewayKeySteps />
 
     <li class="setup-step">
       <div>
@@ -1428,12 +1409,26 @@
 
   {#if saveHistory}
     <p class="hint">
-      <strong>Where it's kept.</strong> By default, in this app's private folder.
-      You can point it at a folder you control instead — including one your
-      <strong>cloud drive</strong> already syncs (Nextcloud, Proton Drive, iCloud,
-      pCloud…), which backs your history up and syncs it across your devices under
-      <em>your</em> account, not ours. Switching folders moves your existing chats
-      along.
+      <strong>Where it's kept.</strong> By default, in this app's private folder,
+      readable only by your account on this computer. You can point it at a
+      folder you control instead — including one your <strong>cloud drive</strong>
+      already syncs (Nextcloud, Proton Drive, iCloud, pCloud…), which backs your
+      history up and syncs it across your devices under <em>your</em> account,
+      not ours. Switching folders moves your existing chats along.
+    </p>
+    <!-- The sentence above used to end at "not ours", which reads as a safety
+         claim it does not make: whose account it is says nothing about who can
+         read it. Attachments are the reason this matters most — on a typical
+         install they are ~90% of the folder by size, and they are the uploaded
+         documents themselves, not chat text. -->
+    <p class="fineprint">
+      <strong>Chats are saved as ordinary files, not encrypted.</strong> Anyone
+      who can read the folder can read them — including whoever holds a backup,
+      and, if you choose a synced folder, your cloud provider. That is a reason
+      to pick a provider you trust rather than a reason to avoid syncing;
+      full-disk encryption (FileVault, BitLocker, LUKS) covers the laptop itself
+      but not a copy that has left it. A folder you choose keeps its own
+      permissions — this app narrows only its own.
     </p>
     <div class="folder-row">
       <span class="folder-label">Folder</span>
@@ -1560,6 +1555,50 @@
       tiers</strong> — real cost is usually lower, often zero within them
       (Scaleway {usage.pricing.free?.scaleway}, Linkup {usage.pricing.free?.linkup},
       Staan {usage.pricing.free?.staan}, SearXNG {usage.pricing.free?.searxng}).
+    </p>
+
+    <div class="mem-divider"></div>
+
+    <!-- The app cannot cap spending: every provider bills the user's own key
+         directly, and nothing here sits between the two. What it can do is say
+         where the controls are, and be honest that they are not the same
+         control. Scaleway is the one that matters — it is required, it is
+         post-paid, and its own documentation says usage cannot be blocked at a
+         threshold. The prepaid providers need no warning: an empty balance is
+         the cap. Verified against each provider's documentation 2026-08-21. -->
+    <h3 class="settings-sub">Capping what you can spend</h3>
+    <p class="hint">
+      Each provider bills your key directly, so the limits live in their
+      accounts, not here. They are not equivalent:
+    </p>
+    <ul class="hint">
+      <li>
+        <strong>Scaleway</strong> (chat — required) is <strong>post-paid with no
+        hard cut-off</strong>. Scaleway's own documentation says usage cannot be
+        blocked at a threshold. What you can set is a <em>billing alert</em>:
+        Billing → Consumption → Billing alerts, a monthly budget and a
+        percentage that triggers an email, SMS or webhook. It warns you; it does
+        not stop anything.
+        <button class="link" onclick={() => open("https://console.scaleway.com/billing/overview")}>
+          Open Scaleway billing →
+        </button>
+      </li>
+      <li>
+        <strong>Black Forest Labs</strong> and <strong>Linkup</strong> are
+        <strong>prepaid</strong>. The balance you load is the ceiling — when it
+        runs out the API refuses rather than bills on. No alert needed.
+      </li>
+      <li>
+        <strong>OVHcloud</strong> and <strong>Qwant Staan</strong> — check what
+        your account offers. This app has not verified a spending control for
+        either, and would rather say so than imply one exists.
+      </li>
+    </ul>
+    <p class="fineprint">
+      The tally above is this app's own estimate from what it sent and received.
+      It is not a bill, it cannot see usage from anything other than this app,
+      and nothing in it enforces a limit. Treat your provider's figures as the
+      real ones.
     </p>
 
     <div class="mem-divider"></div>
@@ -1745,6 +1784,42 @@
   </div>
 {/snippet}
 
+{#snippet aboutSection()}
+  <p class="hint">
+    <strong>Sovatela</strong> — from <em>sova</em>, Slavic for owl, and
+    <em>tutela</em>, Latin for guardianship. The app guards the thing it is
+    named for: your keys and your conversations stay on your device.
+  </p>
+  <dl class="about">
+    <dt>Version</dt>
+    <dd>{appVersion || "—"}</dd>
+    <dt>Licence</dt>
+    <dd>MIT — free to use, modify and share</dd>
+    <dt>Source</dt>
+    <dd>
+      <button class="link" onclick={() => open("https://github.com/jacobla1/sovatela")}>
+        github.com/jacobla1/sovatela →
+      </button>
+    </dd>
+  </dl>
+  <p class="fineprint">
+    This app says it has no server, collects nothing, and keeps your keys in
+    {store}. You do not have to take that on trust — the source above is the
+    same code these builds are made from.
+  </p>
+  <!-- README and TERMS §10 both carry this, but neither is reachable from
+       inside the app, and Settings names every one of these companies while
+       only the Claude Code section disclaims its own. Keep the list in step
+       with the providers actually offered above. -->
+  <p class="fineprint">
+    <strong>Independent and unofficial.</strong> Not affiliated with, sponsored
+    by, or endorsed by Z.ai, Scaleway, Anthropic, Qwant, Black Forest Labs,
+    Linkup, Mistral, OVHcloud, Docker, or the SearXNG project. Their names and
+    marks belong to them, and are used here only to say which tools and services
+    this app works with.
+  </p>
+{/snippet}
+
 {#if isSettings}
   <div class="onboarding">
     <button class="back" onclick={() => onBack?.()}>← Back to chat</button>
@@ -1882,9 +1957,11 @@
           <div class="section-body">{@render privacySection()}</div>
         </details>
 
-        <!-- The only route a user has to removal instructions: docs/UNINSTALL.md
-             lives in a private repo and the site publishes only / and
-             /accessibility, so a link out would be a dead end. -->
+        <!-- Kept inline rather than linked out. docs/UNINSTALL.md is public now,
+             but the site publishes only / and /accessibility, and removal
+             instructions are needed most by someone who has already given up on
+             the app — sending them to a browser to find them is the wrong moment
+             for a round trip. -->
         <details class="section">
           <summary>Uninstalling &amp; your data</summary>
           <div class="section-body">{@render uninstallSection()}</div>
@@ -1903,6 +1980,16 @@
         </div>
       </div>
     {/if}
+
+    <div class="settings-group">
+      <h2 class="settings-group-label">About</h2>
+      <div class="settings-group-body">
+        <details class="section">
+          <summary>About Sovatela</summary>
+          <div class="section-body">{@render aboutSection()}</div>
+        </details>
+      </div>
+    </div>
   </div>
 {:else}
   <div class="onboarding">

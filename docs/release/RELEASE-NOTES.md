@@ -1,6 +1,6 @@
 # Release notes — Sovatela 1.3.1
 
-Release date: 2026-08-18 · [All releases](https://github.com/jacobla1/Scale/releases)
+Release date: 2026-08-18 · [All releases](https://github.com/jacobla1/sovatela/releases)
 
 > This is the user-facing shape of a release. The engineering history lives in
 > [`CHANGELOG.md`](../../CHANGELOG.md); this document adds the five sections a

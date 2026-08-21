@@ -21,6 +21,13 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, "..", "..");
 const dist = join(here, "dist");
 
+// The public source, and where the installers are attached. Both the footer
+// link and every download URL are derived from this, so the page cannot end up
+// pointing at two different repositories.
+const RELEASE_REPO = "jacobla1/sovatela";
+const sourceLink =
+  `<a href="https://github.com/${RELEASE_REPO}">Source on GitHub</a>`;
+
 const artifactsDir = process.argv[2];
 if (!artifactsDir) {
   console.error("usage: node deploy/web/build.mjs <artifacts-dir>");
@@ -221,14 +228,18 @@ if (problems.length) {
 }
 
 for (const [slug, title, body] of rendered) {
+  const page = shell
+    .replace("{{TITLE}}", title)
+    .replace("{{BODY}}", body)
+    .replace("{{POLICY_LINKS}}", policyLinks)
+    .replace("{{SOURCE_LINK}}", sourceLink);
+  const left = [...page.matchAll(/\{\{[A-Z_]+\}\}/g)].map((m) => m[0]);
+  if (left.length) {
+    console.error(`\n/${slug} has unfilled slots: ${[...new Set(left)].join(", ")}`);
+    process.exit(1);
+  }
   mkdirSync(join(dist, slug), { recursive: true });
-  writeFileSync(
-    join(dist, slug, "index.html"),
-    shell
-      .replace("{{TITLE}}", title)
-      .replace("{{BODY}}", body)
-      .replace("{{POLICY_LINKS}}", policyLinks),
-  );
+  writeFileSync(join(dist, slug, "index.html"), page);
 }
 
 // ---------- index.html ----------
@@ -261,6 +272,7 @@ if (/UNFILLED/.test(index)) {
 }
 
 index = index.replace("{{POLICY_LINKS}}", policyLinks);
+index = index.replace("{{SOURCE_LINK}}", sourceLink);
 
 // Version and date are applied, not typed. Six download filenames and the
 // footer line used to be hand-edited every release; the 404 check caught a
@@ -302,7 +314,6 @@ if (absent.length) {
 // The rewrite happens AFTER the check above on purpose: the guard still runs
 // against the local artifacts, so it goes on proving that every file the page
 // offers is a file whose checksum was computed from bytes on disk.
-const RELEASE_REPO = "jacobla1/sovatela";
 const assetUrl = (file) =>
   `https://github.com/${RELEASE_REPO}/releases/download/v${RELEASE}/${file}`;
 
@@ -342,20 +353,29 @@ if (badPolicy.length) {
   process.exit(1);
 }
 
+// Every {{SLOT}} must have been filled. The UNFILLED check above only covers
+// checksums; a footer slot that nobody wired up would otherwise ship as literal
+// braces — visible to every reader and invisible to every existing guard.
+const unfilled = [...index.matchAll(/\{\{[A-Z_]+\}\}/g)].map((m) => m[0]);
+if (unfilled.length) {
+  console.error(`\nindex.html has unfilled slots: ${[...new Set(unfilled)].join(", ")}`);
+  process.exit(1);
+}
+
 writeFileSync(join(dist, "index.html"), index);
 writeFileSync(join(dist, "SHA256SUMS.txt"), sums.join("\n") + "\n");
 
 // The step artwork carries the wording of the setup strip, not just its
 // pictures, so a missing file is a missing paragraph above the fold — this
-// refuses to build rather than publish that. Copied rather than inlined: five
-// files the browser caches beat 75KB of base64 in every page load.
+// refuses to build rather than publish that. Copied rather than inlined: a few
+// files the browser caches beat tens of KB of base64 in every page load.
 const stepsSrc = join(here, "steps");
 const stepArt = [...index.matchAll(/src="steps\/([^"]+)"/g)].map((m) => m[1]);
 if (stepArt.length) {
   const missing = [...new Set(stepArt)].filter((f) => !existsSync(join(stepsSrc, f)));
   if (missing.length) {
     console.error(`\nindex.html references step artwork that does not exist: ${missing.join(", ")}`);
-    console.error("Run scripts/build-step-art.sh to regenerate it from assets/.");
+    console.error("Run scripts/build_step_cards.py to regenerate it from assets/.");
     process.exit(1);
   }
   mkdirSync(join(dist, "steps"), { recursive: true });

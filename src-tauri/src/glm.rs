@@ -286,10 +286,25 @@ where
 async fn response_error(response: reqwest::Response) -> CompletionError {
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
-    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+    // 401 and 403 are different mistakes and want different fixes, so they no
+    // longer share one message. By far the commoner is 401: the key screen
+    // shows an access key and a secret key together, and only the secret key
+    // authenticates. Saying "rejected the API key" to someone who pasted the
+    // access key describes the symptom and hides the cause.
+    if status == reqwest::StatusCode::UNAUTHORIZED {
         return CompletionError::new(
             ErrorKind::Authentication,
-            format!("Scaleway rejected the API key ({status})."),
+            "Scaleway did not accept this key. Scaleway shows two values when \
+             you create an API key — an access key and a secret key — and only \
+             the secret key works here.",
+        );
+    }
+    if status == reqwest::StatusCode::FORBIDDEN {
+        return CompletionError::new(
+            ErrorKind::Authentication,
+            "Scaleway accepted the key but refused the request. The key is \
+             valid; whoever it belongs to does not have permission to use \
+             Generative APIs in that Organization.",
         );
     }
     CompletionError::new(ErrorKind::Api, completion_error_message(status, &body))

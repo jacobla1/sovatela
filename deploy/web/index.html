@@ -52,15 +52,17 @@
       border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
       border-radius: 14px;
       padding: 16px 18px;
-      margin: 24px 0 0;
+      margin: 24px 0 28px;
       font-size: 14.5px;
       color: var(--muted);
     }
 
-    /* Five steps from download to first answer, shown before the buttons so a
-       reader knows what they are committing to. Auto-fit rather than fixed
-       columns, so it reflows to fewer per row on a narrow screen instead of
-       scrolling sideways or crushing the text. */
+    /* Three steps, each one a thing the reader does before the app can run.
+       Pasting the key and chatting used to be cards four and five; they are
+       prose below the strip now, because a card can only hold a caption and the
+       one thing that catches people out — the key is shown once — needs a
+       sentence. Auto-fit rather than fixed columns, so it reflows to fewer per
+       row on a narrow screen instead of scrolling sideways or crushing text. */
     .steps {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
@@ -118,18 +120,6 @@
     a.step-art { text-decoration: none; }
     a.step-art:hover img { outline: 2px solid var(--accent); outline-offset: -1px; }
 
-    /* The payoff step, marked so the eye lands on where this is going. The ring
-       goes on the picture, since the picture is the card. */
-    .step.done .step-art img {
-      outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent);
-      outline-offset: -1px;
-    }
-    .step.done .step-n {
-      background: var(--accent);
-      border-color: var(--accent);
-      color: #fff;
-    }
-
     /* Chevrons between steps, drawn only when they are actually side by side.
        Decorative: the numbers carry the order for anyone who cannot see them. */
     @media (min-width: 900px) {
@@ -181,6 +171,10 @@
     footer { margin-top: 48px; text-align: center; color: var(--muted); font-size: 13px; line-height: 1.7; }
     footer a { color: var(--accent-2); }
     footer .legal { margin: 14px 0 6px; }
+    /* The name is coined and reads as nothing on first contact; one line turns
+       it into a mnemonic for what the app does. Sized below the legal line so
+       it reads as an aside, not a claim. */
+    footer .name-note { margin: 10px 0 0; font-size: 12px; opacity: 0.85; }
   </style>
 </head>
 <body>
@@ -193,26 +187,26 @@
 
     <ol class="steps">
       <li class="step">
-        <a class="step-art" href="#downloads"><img src="steps/download.webp" alt="Download. macOS, Windows or Linux" width="640" height="640" loading="lazy" /></a>
+        <a class="step-art" href="#downloads"><img src="steps/download.webp" alt="Download the app. macOS, Windows or Linux" width="640" height="640" loading="lazy" /></a>
         <span class="step-n">1</span>
       </li>
       <li class="step">
-        <a class="step-art" href="https://console.scaleway.com/register" rel="noopener"><img src="steps/createAccount.webp" alt="Scaleway account. Free to open at scaleway.com" width="640" height="640" loading="lazy" /></a>
+        <a class="step-art" href="https://console.scaleway.com/register" rel="noopener"><img src="steps/createAccount.webp" alt="Get a Scaleway account. Free at scaleway.com" width="640" height="640" loading="lazy" /></a>
         <span class="step-n">2</span>
       </li>
       <li class="step">
-        <span class="step-art"><img src="steps/genKey.webp" alt="Generate a key. Copy it — Scaleway shows it once" width="640" height="640" loading="lazy" /></span>
+        <span class="step-art"><img src="steps/genKey.webp" alt="Generate an API key. Copy it, paste it into the app" width="640" height="640" loading="lazy" /></span>
         <span class="step-n">3</span>
       </li>
-      <li class="step">
-        <span class="step-art"><img src="steps/pasteKey.webp" alt="Paste it in. The first thing the app asks for" width="640" height="640" loading="lazy" /></span>
-        <span class="step-n">4</span>
-      </li>
-      <li class="step done">
-        <span class="step-art"><img src="steps/chat.webp" alt="Chat. Your key stays on your device" width="640" height="640" loading="lazy" /></span>
-        <span class="step-n">✓</span>
-      </li>
     </ol>
+
+    <p class="notice">
+      <strong>Free and open source — but you'll need a paid Scaleway key.</strong>
+      Sovatela has no AI of its own: it uses your own Scaleway account, and
+      <strong>Scaleway bills you directly</strong> for what you use — typically a
+      few cents a day for ordinary chat. Sovatela never handles payment and takes
+      no cut, and the app shows a running cost estimate on your device.
+    </p>
 
     <main class="downloads" id="downloads">
       <!-- macOS (universal: Apple Silicon + Intel) -->
@@ -246,14 +240,6 @@
       </a>
     </main>
 
-    <p class="notice">
-      <strong>Free and open source — but you'll need a paid Scaleway key.</strong>
-      Sovatela has no AI of its own: it uses your own Scaleway account, and
-      <strong>Scaleway bills you directly</strong> for what you use — typically a
-      few cents a day for ordinary chat. Sovatela never handles payment and takes
-      no cut, and the app shows a running cost estimate on your device.
-    </p>
-
 
     <p class="secondary">
       Also available: <a href="/downloads/Sovatela_1.1.1_x64_en-US.msi">Windows .msi</a> (for managed deployment) ·
@@ -283,18 +269,25 @@
     </details>
 
     <footer>
-      <p>
-        Sovatela talks to <strong>GLM-5.2</strong>, Z.ai's open model hosted in France by Scaleway.
-        You bring your own Scaleway key; it never leaves your device.
-      </p>
       <p class="legal">
         {{POLICY_LINKS}}
       </p>
       <p class="legal">
         Published by <strong>Jacob Bergmann Larsen</strong> ·
-        <a href="mailto:info@anaubi.com">info@anaubi.com</a>
+        <a href="mailto:info@anaubi.com">info@anaubi.com</a> ·
+        {{SOURCE_LINK}}
       </p>
-      <p>Version 1.1.1 · Released 2026-08-04 · Not affiliated with Z.ai, Scaleway, or Ollama</p>
+      <p class="name-note">
+        <strong>Sovatela</strong> — from <em>sova</em>, Slavic for owl, and
+        <em>tutela</em>, Latin for guardianship.
+      </p>
+      <!-- Name only the marks this page actually uses. Ollama was named here
+           long after the copy that mentioned it had gone, so the page was
+           disclaiming a company it never invoked. Anthropic is not named for
+           the same reason: Claude Code is an Advanced setting inside the app,
+           and it carries its own "nothing here is endorsed by Anthropic" notice
+           at the point of use. If Claude is ever named on this page, add it. -->
+      <p>Version 1.1.1 · Released 2026-08-04 · Not affiliated with Z.ai or Scaleway</p>
     </footer>
   </div>
 </body>

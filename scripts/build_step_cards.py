@@ -60,12 +60,16 @@ APP_STEPS = [
     ("pasteKey", "Paste it into Sovatela", "Straight into your keychain"),
     ("chat", "Start chatting", "That's the whole setup"),
 ]
+# Three cards, not five. The last two said what happens *after* the key exists —
+# paste it in, then chat — which is the part a reader cannot act on until they
+# have downloaded anything, and it pushed the download buttons below the fold.
+# That wording now sits in prose under the strip, where it can be specific about
+# the one thing that actually catches people out: Scaleway shows the key once.
+# "Generate an API key" matches the label on Scaleway's own button.
 WEB_STEPS = [
-    ("download", "Download", "macOS, Windows or Linux"),
-    ("createAccount", "Scaleway account", "Free to open at scaleway.com"),
-    ("genKey", "Generate a key", "Copy it — Scaleway shows it once"),
-    ("pasteKey", "Paste it in", "The first thing the app asks for"),
-    ("chat", "Chat", "Your key stays on your device"),
+    ("download", "Download the app", "macOS, Windows or Linux"),
+    ("createAccount", "Get a Scaleway account", "Free at scaleway.com"),
+    ("genKey", "Generate an API key", "Copy it, paste it into the app"),
 ]
 
 # Card geometry, in the 1024² space everything is composed at.

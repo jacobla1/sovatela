@@ -373,6 +373,36 @@ ul.hint li {
   line-height: 1.5;
 }
 
+/* About: a two-column key/value list. Collapses to stacked rows on narrow
+   windows, where a 100px label column would crowd the values. */
+dl.about {
+  display: grid;
+  grid-template-columns: 100px 1fr;
+  gap: 6px 12px;
+  margin: 16px 0 0;
+  font-size: var(--fs-sm);
+  align-items: baseline;
+}
+
+dl.about dt {
+  color: var(--muted);
+}
+
+dl.about dd {
+  margin: 0;
+}
+
+@media (max-width: 420px) {
+  dl.about {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+
+  dl.about dd {
+    margin-bottom: 8px;
+  }
+}
+
 .privacy {
   margin-top: 16px;
 }
@@ -2285,6 +2315,66 @@ button.mini:hover {
   margin-bottom: var(--sp-3);
 }
 
+/* The click-by-click walkthrough inside a setup step. Sits between the step's
+   prose and its link, so it reads as an aside from that step rather than a
+   section of its own — hence no border and a summary that looks like a link. */
+.walkthrough {
+  margin: var(--sp-3) 0;
+}
+
+.walkthrough summary {
+  cursor: pointer;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--accent);
+  list-style: none;
+}
+
+.walkthrough summary::-webkit-details-marker {
+  display: none;
+}
+
+/* A caret the reader can see turning, drawn rather than an emoji so it inherits
+   the text colour in both themes. */
+.walkthrough summary::before {
+  content: "";
+  display: inline-block;
+  width: 0.42em;
+  height: 0.42em;
+  margin-right: 0.6em;
+  vertical-align: middle;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform var(--dur) var(--ease);
+}
+
+.walkthrough[open] summary::before {
+  transform: rotate(45deg);
+}
+
+.walkthrough-steps {
+  margin: var(--sp-3) 0 0;
+  padding-left: 1.25em;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+.walkthrough-steps strong {
+  color: var(--text);
+}
+
+.setup-step p.walkthrough-note {
+  margin: var(--sp-3) 0 0;
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+  color: var(--muted);
+}
+
 .setup-note {
   font-size: var(--fs-xs);
   color: var(--muted);
@@ -2412,6 +2502,17 @@ button.mini:hover {
    headings inside it inverts the hierarchy, which is what .guide-sub did here.
    Sentence case in full text colour too — uppercase muted micro-type reads as a
    label for a list, not as the title of a section you are meant to work through. */
+/* A heading one level inside an open settings section — the section's own
+   <summary> is the level above, so this stays smaller than .setup-section and
+   carries no top rule of its own. */
+.settings-sub {
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
 .setup-section {
   font-size: var(--fs-lg);
   font-weight: 600;

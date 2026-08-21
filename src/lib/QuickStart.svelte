@@ -7,18 +7,12 @@
   // draft showed one "recommended" option per add-on, which quietly made the
   // choice for the reader — the sovereignty trade-offs between them are the
   // whole point, and they belong in Settings where each is explained.
-  import { openUrl } from "@tauri-apps/plugin-opener";
   import Icon from "./Icon.svelte";
+  import ScalewayKeySteps from "./ScalewayKeySteps.svelte";
 
+  // The only external links on this page were the two Scaleway steps, which
+  // now live in ScalewayKeySteps and open their own.
   let { onOpenSettings, onOpenGuide, onDone } = $props();
-
-  async function open(url) {
-    try {
-      await openUrl(url);
-    } catch (e) {
-      console.error("Could not open URL:", e);
-    }
-  }
 </script>
 
 <div class="onboarding">
@@ -35,31 +29,7 @@
   </p>
 
   <ol class="setup-steps">
-    <li class="setup-step">
-      <div>
-        <h2>Create a Scaleway account</h2>
-        <p>Free to open. You add a card and pay only for what you use.</p>
-        <button class="link" onclick={() => open("https://console.scaleway.com/register")}>
-          Open scaleway.com →
-        </button>
-      </div>
-    </li>
-    <li class="setup-step">
-      <div>
-        <h2>Create a Scaleway API key</h2>
-        <p>
-          Leave the defaults, pick <strong>No</strong> for Object Storage, and
-          copy the <strong>Secret Key</strong> — Scaleway shows it once.
-        </p>
-        <p>
-          Missed it? Generate another. Old keys keep working until you delete
-          them, so a spare costs nothing.
-        </p>
-        <button class="link" onclick={() => open("https://console.scaleway.com/iam/api-keys")}>
-          Open the API keys page →
-        </button>
-      </div>
-    </li>
+    <ScalewayKeySteps />
     <li class="setup-step">
       <div>
         <h2>Paste it into Sovatela</h2>
