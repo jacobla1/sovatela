@@ -229,8 +229,10 @@ One-time setup:
    | `APPLE_TEAM_ID` | your 10-character Team ID |
 
 Then push a tag as above — the macOS `.dmg`/`.app` is signed with the Developer
-ID identity, notarized by Apple, and the ticket stapled, so it opens without
-Gatekeeper warnings. (App Store Connect API-key notarization is an alternative
+ID identity, notarized by Apple, and the ticket stapled, so Gatekeeper admits
+it: the first launch shows the ordinary "downloaded from the internet" prompt
+carrying *"Apple checked it for malicious software"*, not the blocking
+"developer cannot be verified" panel. (App Store Connect API-key notarization is an alternative
 to the Apple ID method: swap `APPLE_ID`/`APPLE_PASSWORD`/`APPLE_TEAM_ID` for
 `APPLE_API_ISSUER`/`APPLE_API_KEY`/`APPLE_API_KEY_PATH`.)
 

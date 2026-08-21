@@ -21,10 +21,18 @@ Apple Silicon and Intel Macs.
 2. Open the `.dmg` and drag **Sovatela** into **Applications**.
 3. Eject the disk image and launch Sovatela from Applications.
 
-The build is signed and notarized with an Apple Developer ID, so it opens
-without a security warning. If macOS says the app "cannot be opened because the
-developer cannot be verified", **stop** — that means the build is unsigned and
-did not come from us. Re-download from `https://sovatela.eu` and check the checksum.
+The build is signed and notarized with an Apple Developer ID.
+
+The first time you open it, macOS asks once: *"Sovatela" is an app downloaded
+from the internet. Are you sure you want to open it?* — and, on the same panel,
+**"Apple checked it for malicious software and none was detected."** That is
+the notarized result, and it is what you should see. Click **Open**. macOS asks
+this once per app for anything downloaded from the web, however it is signed.
+
+What you should **not** see is *"cannot be opened because the developer cannot
+be verified"*, or a panel with no **Open** button. Either means the build is not
+notarized and did not come from us — **stop**, re-download from
+`https://sovatela.eu`, and check the checksum.
 
 You can confirm the signature yourself. This is a command, so it runs in
 **Terminal** — the app in *Applications → Utilities*, or press <kbd>⌘</kbd> +
