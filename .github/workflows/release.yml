@@ -117,3 +117,68 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+  # Every asset on the release must belong to the tag being released.
+  #
+  # v1.3.1 shipped carrying five of v1.3.0's Linux and Windows installers, and
+  # v1.3.0 carried v1.2.0's the same way. Three of the strays were downloaded.
+  # None were covered by SHA256SUMS.txt, so they sat unverifiable on a page that
+  # tells people to verify. It went unnoticed for weeks and surfaced only because
+  # the *site* build refuses mixed-version artifacts — a guard that protects the
+  # download page, not the release.
+  #
+  # This fails the run rather than deleting anything. An unexpected binary on a
+  # release is the shape a compromised pipeline takes, and deciding what to do
+  # about one is a person's job. The release is still a draft here, so a failure
+  # lands before it can be published.
+  verify-release-assets:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # a draft release is not visible to a read-only token
+    steps:
+      - name: Every asset matches the tag, and no platform is missing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          echo "Tag $TAG — expecting every asset to be version $version"
+
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[].name' | sort > assets.txt
+          echo "On the release:"
+          sed 's/^/  /' assets.txt
+
+          # 1. Nothing carrying a version other than this tag's. Files with no
+          #    version in the name (SHA256SUMS.txt) are left alone.
+          : > strays.txt
+          while read -r name; do
+            found=$(printf '%s\n' "$name" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+            if [ -n "$found" ] && [ "$found" != "$version" ]; then
+              echo "  $name — is $found, expected $version" >> strays.txt
+            fi
+          done < assets.txt
+
+          # 2. Every installer the matrix builds actually arrived. fail-fast is
+          #    false, so one leg can fail while the others still produce a
+          #    release that is quietly missing a platform.
+          : > missing.txt
+          for ext in .dmg -setup.exe .msi .AppImage .deb .rpm; do
+            grep -qF -- "$ext" assets.txt || echo "  $ext" >> missing.txt
+          done
+
+          fail=0
+          if [ -s strays.txt ]; then
+            echo; echo "Assets that do not belong to $version:"; cat strays.txt; fail=1
+          fi
+          if [ -s missing.txt ]; then
+            echo; echo "No installer was uploaded for:"; cat missing.txt; fail=1
+          fi
+          if [ "$fail" = 1 ]; then
+            echo
+            echo "The release is still a draft. Fix it before publishing."
+            exit 1
+          fi
+          echo "OK — every asset is $version, and all six installers are present."

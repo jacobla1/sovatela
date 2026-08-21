@@ -319,7 +319,6 @@ const assetUrl = (file) =>
 
 index = index
   .replace(/\/downloads\/SHA256SUMS\.txt/g, assetUrl("SHA256SUMS.txt"))
-  .replace(/href="\/downloads\/"/g, `href="https://github.com/${RELEASE_REPO}/releases"`)
   .replace(/\/downloads\/([^"']+)/g, (_, file) => assetUrl(file));
 
 // A link to an asset that was never uploaded is the same broken button the

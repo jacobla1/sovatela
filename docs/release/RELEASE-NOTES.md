@@ -1,6 +1,6 @@
-# Release notes — Sovatela 1.3.1
+# Release notes — Sovatela 1.4.0
 
-Release date: 2026-08-18 · [All releases](https://github.com/jacobla1/sovatela/releases)
+Release date: 2026-08-21 · [All releases](https://github.com/jacobla1/sovatela/releases)
 
 > This is the user-facing shape of a release. The engineering history lives in
 > [`CHANGELOG.md`](../../CHANGELOG.md); this document adds the five sections a
@@ -9,6 +9,62 @@ Release date: 2026-08-18 · [All releases](https://github.com/jacobla1/sovatela/
 ---
 
 ## New
+
+**Two buttons that had never worked.** Both pointed into a repository that is
+not public, so they answered *404* for everyone who pressed them:
+
+- *Settings → Web search → run it on this computer → **Get the starter***, the
+  only route to the files for a local search server.
+- *Settings → Usage & cost → **Check for updated prices***, which means updated
+  prices have never once reached anyone.
+
+Neither failed loudly. Nothing distinguishes a working link from a broken one by
+looking at it, which is why both lasted months. A test now fails the build on
+any such link, and it found a third the moment it was written.
+
+**An About section**, at the foot of Settings: which version you are running —
+read from the installed app, so it cannot be wrong — the licence, a link to the
+source, where the name comes from, and who this project is and is not affiliated
+with.
+
+**A walkthrough for the part everyone gets stuck on.** Creating the Scaleway key
+now has a *Show me exactly what to click* option, written against Scaleway's own
+documentation. It names the mistake that catches most people — the key screen
+shows an **access key** and a **secret key** together, and only the secret key
+works here — and it tells you to set the expiry to **Never**, because a key that
+lapses stops chat working on a day you will not connect to a menu you touched
+once.
+
+**Where to cap your spending, for each provider.** This app cannot cap it: every
+provider bills your own key and nothing here sits in between. So *Usage & cost*
+now says where each one's controls are, and that they differ. Scaleway is
+post-paid with **no hard cut-off** — a billing alert warns you, it does not stop
+anything. Black Forest Labs and Linkup are prepaid, so the balance you load is
+the ceiling. For OVHcloud and Qwant Staan no spending control was confirmed, and
+the app says that rather than implying one.
+
+**Your saved chats are now readable only by you.** Conversations, memories and
+settings were written with the permissions any file gets by default, which on a
+shared computer means every other account could open them. They are now
+owner-only, and the folders this app owns are closed on every launch — so files
+saved by earlier versions are covered too, without moving anything.
+
+*Settings → Chat history* also now says plainly that chats are saved as ordinary
+files and are **not encrypted**. Anyone who can read the folder can read them,
+including whoever holds a backup and, if you keep history in a synced folder,
+your cloud provider. That is a reason to choose a provider you trust, not a
+reason to avoid syncing.
+
+**Automatic memory is now off unless you turn it on.** It proposes facts to
+remember when a chat ends, and those are personal data kept on your disk — not a
+thing to start doing because nobody said otherwise. If you already had it on, it
+stays on.
+
+**A rejected key now says which kind of rejection it was.** *Not accepted* and
+*not permitted* used to share one message, which described the symptom of the
+commonest mistake while hiding its cause.
+
+Everything below arrived in 1.3.1 and 1.3.0 and is included here.
 
 **Terminal access works on Windows.** It never did. Two encoding defects, either
 fatal on its own, meant the local proxy could not start on any Windows machine:
@@ -20,8 +76,6 @@ unhelpful *"LiteLLM failed to start"*.
 If you set up terminal access under 1.2.0 or 1.3.0 on Windows, re-run
 *Settings → Advanced → Install*: the fix is in the installer, and re-running it
 repairs an existing setup rather than requiring you to remove anything first.
-
-Everything below arrived in 1.3.0 and is included here.
 
 **Generate an image from your images** (🎨 + 📎). Attach one or more pictures
 alongside an image prompt and FLUX will work from them — a set of icons in one
@@ -52,14 +106,13 @@ Send again.
 **A first screen that shows what this takes.** A fresh install now opens on four
 pictures — create a Scaleway account, generate a key, paste it in, chat — before
 asking for anything or expecting anyone to read instructions. Reachable
-afterwards from *Settings → Appearance → Welcome screen*. The same set now
-carries the setup strip on `sovatela.eu`.
+afterwards from *Settings → Appearance → Welcome screen*.
 
 ---
 
 ## Known limitations
 
-Documented rather than omitted. This is the complete user-facing list for 1.3.1;
+Documented rather than omitted. This is the complete user-facing list for 1.4.0;
 the engineering view is in [Technical specification §
 7](../TECHNICAL-SPEC.md#7-known-technical-debt).
 
@@ -104,7 +157,9 @@ the engineering view is in [Technical specification §
   control, so copying it works; there's no in-app command.
 - No search across chat history.
 - No message editing or regeneration.
-- No automatic updates — new versions are installed manually.
+- No automatic updates — new versions are installed manually, and nothing in
+  the app tells you one exists. This release fixes two buttons that never
+  worked; anyone who does not update keeps them.
 - No model or provider selection: GLM-5.2 with automatic vision routing.
 
 **Accessibility**
@@ -157,7 +212,7 @@ and lives wherever you point it.
 
 ## Upgrade and install instructions
 
-**Upgrading from 1.0.0, 1.1.x, 1.2.0 or 1.3.0** — install over the top. Settings, chat
+**Upgrading from 1.0.0, 1.1.x, 1.2.0, 1.3.x** — install over the top. Settings, chat
 history, memory, projects, and stored keys are preserved; there is no migration
 step and nothing to back up first. On macOS, replace the app in Applications.
 
@@ -168,13 +223,13 @@ Scaleway API key: [Quick-start](../QUICKSTART.md).
 **Verify your download** before running it:
 
 ```sh
-shasum -a 256 Sovatela_1.3.1_universal.dmg      # macOS
-sha256sum sovatela_1.3.1_amd64.deb              # Linux
-Get-FileHash .\Sovatela_1.3.1_x64-setup.exe -Algorithm SHA256   # Windows
+shasum -a 256 Sovatela_1.4.0_universal.dmg      # macOS
+sha256sum sovatela_1.4.0_amd64.deb              # Linux
+Get-FileHash .\Sovatela_1.4.0_x64-setup.exe -Algorithm SHA256   # Windows
 ```
 
 **Downgrading** — install the older version over the top. The data format is
-unchanged across 1.0.0, 1.1.x, 1.2.0, 1.3.0 and 1.3.1. Terminal access is set up outside the
+unchanged across 1.0.0, 1.1.x, 1.2.0, 1.3.x and 1.4.0. Terminal access is set up outside the
 app's data folder, so downgrading does not remove it; use
 [uninstalling](../UNINSTALL.md) § 4 if you want it gone.
 

@@ -1,5 +1,71 @@
 # Changelog
 
+## 1.4.0 — 2026-08-21
+
+- **Two buttons that had never worked.** Both pointed into the private working
+  repository, so GitHub answered 404 for every user who clicked them:
+
+  - *Settings → Web search → run it on this computer → "Get the starter"*, which
+    is the only route to the local SearXNG files.
+  - *Settings → Usage & cost → "Check for updated prices"*, which means price
+    updates have never once reached anyone outside a maintainer's checkout.
+
+  Nothing distinguishes a working link from a broken one by reading it, which is
+  why these survived months and were found by accident. `npm test` now fails on
+  any reference to the private repository from shipped code or release docs, and
+  it found a third instance immediately.
+
+- **An About section**, at the bottom of Settings. Version — read from the
+  installed bundle, so it cannot drift from what you are actually running —
+  licence, a link to the source, and where the name comes from. It also carries
+  the affiliation statement, which Settings needed: it names ten companies and
+  only the Claude Code section disclaimed its own.
+
+- **The Scaleway key walkthrough is one walkthrough now.** Quick start and
+  Settings each had their own copy, already drifted apart. Behind *Show me
+  exactly what to click* there is now a click-by-click version, checked against
+  Scaleway's documentation rather than written from memory. It says to choose
+  **Never** for expiration — the usual advice is a short-lived key, which is
+  right for a test integration and wrong for an app you open daily, because chat
+  would stop on the day it lapsed with an error that never mentions a key. It
+  also names the mistake that actually catches people: Scaleway shows an access
+  key and a secret key together, and only the secret key works.
+
+- **Spending limits, per provider**, in Usage & cost. The app cannot cap
+  spending — every provider bills your own key — so it says where the controls
+  are and that they are not the same control. Scaleway is post-paid with no hard
+  cut-off, so a billing alert warns and does not stop; Black Forest Labs and
+  Linkup are prepaid, where the balance is the ceiling; for OVHcloud and Staan
+  no spending control was verified, and the copy says so rather than implying
+  one exists.
+
+- **Files at rest are now owner-only.** Conversations, memories, settings and
+  the usage ledger were written at `0644` — the default umask — so on a shared
+  machine every other local account could read them. On macOS this was masked by
+  `~/Library` being `0700`, which is protection borrowed from the OS layout
+  rather than asserted by the app, and it disappears the moment the history
+  folder moves. Directories the app owns are narrowed to `0700` on every launch,
+  which covers files written by earlier versions without a migration. A folder
+  *you* chose is deliberately left alone.
+
+  The History section now also says plainly that chats are saved as ordinary
+  files, not encrypted — so a backup, or a synced folder, is readable by whoever
+  holds it. It previously ended "under *your* account, not ours", which reads as
+  a safety claim it does not make.
+
+- **Automatic memory is opt-in.** Approved facts are personal data kept on disk,
+  and a default that starts collecting them is not one a new user chose.
+  Existing installs keep whatever they had.
+
+- **A rejected key says which kind of rejection it was.** 401 and 403 shared one
+  message, which described the symptom of the commonest setup mistake — pasting
+  the access key — while hiding its cause.
+
+- **The release workflow refuses a release carrying another version's
+  installers.** 1.3.1 shipped with five of 1.3.0's attached and 1.3.0 with
+  1.2.0's; three were downloaded, and none appeared in `SHA256SUMS.txt`. It also
+  fails if any platform's installer is missing, which nothing checked for.
+
 ## 1.3.1 — 2026-08-18
 
 - **Terminal access on Windows never worked, and now does.** Two defects, either
