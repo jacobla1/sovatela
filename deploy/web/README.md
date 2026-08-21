@@ -50,7 +50,29 @@ gh release download vX.Y.Z --repo jacobla1/Scale
 #    temporary point and refuses to report on an image whose version does not
 #    match the one you named, so a stale disk cannot answer for a new build.
 
-# 3. Publish the PUBLIC release. This must happen before step 5: the build
+# 3. Publish the SOURCE for this version, into the public `jacobla1/sovatela`
+#    repo. This comes before the release, for two reasons — the second found
+#    the hard way:
+#
+#    - the moment the installers are public, SECURITY.md § "Verifying the
+#      claims" points every reader at whatever version that repo last received.
+#      For 1.3.0 it was pointing at 1.2.0 — true of the old release and quietly
+#      false of the one people were downloading;
+#    - `gh release create` CREATES THE TAG on the public repo, at whatever main
+#      is at that moment. Tag before the source is published and vX.Y.Z on the
+#      mirror contains X.Y.(Z-1). That is what put the previous version's
+#      installers on v1.3.0, v1.3.1 and v1.4.0: the mirror ran its own copy of
+#      release.yml against that stale tag and uploaded what it built. The
+#      workflows are now guarded with `if: github.repository == 'jacobla1/Scale'`,
+#      so the mirror no longer builds — but the tag would still be wrong.
+#
+#    The script assembles the tree, withholds the maintainer-facing documents,
+#    and unwraps links into them so the public repo has no link a reader
+#    cannot follow. It refuses to run against a dirty working tree.
+node deploy/publish-source.mjs ../sovatela
+(cd ../sovatela && git add -A && git commit -m "Sovatela X.Y.Z — source" && git push)
+
+# 4. Publish the PUBLIC release. This must happen before step 5: the build
 #    fetches every asset URL it writes and refuses if one is not downloadable.
 shasum -a 256 Sovatela_X.Y.Z_* Sovatela-X.Y.Z-*.rpm > SHA256SUMS.txt
 gh release create vX.Y.Z --repo jacobla1/sovatela \
@@ -58,19 +80,6 @@ gh release create vX.Y.Z --repo jacobla1/sovatela \
   SHA256SUMS.txt Sovatela_X.Y.Z_universal.dmg Sovatela_X.Y.Z_x64-setup.exe \
   Sovatela_X.Y.Z_x64_en-US.msi Sovatela_X.Y.Z_amd64.deb \
   Sovatela_X.Y.Z_amd64.AppImage Sovatela-X.Y.Z-1.x86_64.rpm
-
-# 4. Publish the SOURCE for this version, into the public `jacobla1/sovatela`
-#    repo. Do this with the release, not later: the moment the installers are
-#    public, SECURITY.md § "Verifying the claims" is pointing every reader at
-#    whatever version that repo last received. For 1.3.0 it was pointing at
-#    1.2.0 — the claim was true of the old release and quietly false of the
-#    one people were downloading.
-#
-#    The script assembles the tree, withholds the maintainer-facing documents,
-#    and unwraps links into them so the public repo has no link a reader
-#    cannot follow. It refuses to run against a dirty working tree.
-node deploy/publish-source.mjs ../sovatela
-(cd ../sovatela && git add -A && git commit -m "Sovatela X.Y.Z — source" && git push)
 
 # 5. Build the site.
 node deploy/web/build.mjs /tmp/sovatela-release

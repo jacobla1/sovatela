@@ -12,10 +12,20 @@ jobs:
   # broken one can only be fixed by another release. It shipped broken twice
   # before anyone ran it. Nothing is built until it is run.
   windows-terminal-access:
+    if: github.repository == 'jacobla1/Scale'
     uses: ./.github/workflows/windows-terminal-access.yml
 
   build:
     needs: windows-terminal-access
+    # The public repository is a mirror, and `gh release create --repo
+    # jacobla1/sovatela` creates a tag there — which started this workflow on
+    # the mirror and uploaded its own build onto the release. Because the
+    # source for a version is published *after* the release is created, that
+    # tag pointed at the previous version's code, so the mirror attached the
+    # previous version's installers: five of them, never a .dmg, because the
+    # mirror has no Apple secrets and the macOS leg fails. That is exactly the
+    # shape of the strays found on v1.3.0, v1.3.1 and v1.4.0.
+    if: github.repository == 'jacobla1/Scale'
     permissions:
       contents: write # needed to create the Release and upload assets
     strategy:
@@ -133,6 +143,7 @@ jobs:
   # lands before it can be published.
   verify-release-assets:
     needs: build
+    if: github.repository == 'jacobla1/Scale'
     runs-on: ubuntu-latest
     permissions:
       contents: write # a draft release is not visible to a read-only token

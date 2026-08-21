@@ -35,6 +35,10 @@ on:
 
 jobs:
   install:
+    # Not on the public mirror: it receives this file with the source, so a
+    # push or a tag there would run a Windows installer test for a repository
+    # that never builds anything.
+    if: github.repository == 'jacobla1/Scale'
     runs-on: windows-latest
     timeout-minutes: 25
 
