@@ -1,6 +1,6 @@
-# Release notes — Sovatela 1.4.0
+# Release notes — Sovatela 1.5.0
 
-Release date: 2026-08-21 · [All releases](https://github.com/jacobla1/sovatela/releases)
+Release date: 2026-08-25 · [All releases](https://github.com/jacobla1/sovatela/releases)
 
 > This is the user-facing shape of a release. The engineering history lives in
 > [`CHANGELOG.md`](../../CHANGELOG.md); this document adds the five sections a
@@ -9,6 +9,58 @@ Release date: 2026-08-21 · [All releases](https://github.com/jacobla1/sovatela/
 ---
 
 ## New
+
+**The app can tell you a release exists.** *Settings → About* has a **Check for
+updates** button. It reads a version number from `sovatela.eu`, says whether a
+newer one is out, and links to the download page.
+
+This is not an automatic updater and does not become one. Nothing runs when the
+app starts, there is no schedule, and no notification will ever appear — the
+check happens when you press the button and at no other time.
+
+What changes is that a release is *findable from inside the app at all*. Until
+now it was not, and the cost of that is on this page: 1.4.0 fixed two buttons
+that had never worked for anybody, and every 1.3.x install still has them,
+because the only way to learn a new version existed was to visit a website that
+nothing told you to visit. One of those two broken buttons was *Check for
+updated prices* — which had never reached a single user for exactly the same
+reason. A release nobody hears about fixes nothing.
+
+Being honest about the limit of it: this still only helps people who press the
+button. If you are reading this, you are already the kind of person who checks.
+The people who most need a fix are the ones who will not, and reaching them
+needs a real updater, which this is not.
+
+The version number comes from `sovatela.eu` — the site that already serves the
+download page — rather than from a code-hosting API, because you should not be
+routed to a US endpoint to be told a European app has an update. The request
+sends no query string and nothing about you or your computer. If the check
+fails it says so; it will not tell you that you are up to date when it does not
+know.
+
+**A claim on the security page was wrong, and is corrected.** That page and the
+technical specification both said the app contacts nothing but the providers
+you configure. That was not true, and had not been since *Check for updated
+prices* was added: pressing it fetches a price list from GitHub. The update
+check makes a second such request.
+
+Both documents now list those two fetches, what each one sends (nothing), and
+when each one runs (only on a press). The security page says the old sentence
+was wrong rather than quietly replacing it, because a security page that edits
+its history is worth less than one that admits a mistake.
+
+**Failing tests can now stop a release.** They could not before. The suites ran
+on proposed changes and on demand, but not when a version was tagged — so a
+release could be built, signed and published with a failing test and nothing in
+the way. Every release from this one on runs the full test suite before it
+builds anything.
+
+This is invisible if it never triggers, which is the point. It is listed here
+because the two broken buttons in 1.4.0, the Windows installer that could not
+start in 1.2.0 and 1.3.0, and the previous version's installers appearing on
+three releases were all found after shipping, by someone stumbling into them.
+
+Everything below arrived in 1.4.0 and is included here.
 
 **Two buttons that had never worked.** Both pointed into a repository that is
 not public, so they answered *404* for everyone who pressed them:
@@ -112,7 +164,7 @@ afterwards from *Settings → Appearance → Welcome screen*.
 
 ## Known limitations
 
-Documented rather than omitted. This is the complete user-facing list for 1.4.0;
+Documented rather than omitted. This is the complete user-facing list for 1.5.0;
 the engineering view is in [Technical specification §
 7](../TECHNICAL-SPEC.md#7-known-technical-debt).
 
@@ -157,9 +209,11 @@ the engineering view is in [Technical specification §
   control, so copying it works; there's no in-app command.
 - No search across chat history.
 - No message editing or regeneration.
-- No automatic updates — new versions are installed manually, and nothing in
-  the app tells you one exists. This release fixes two buttons that never
-  worked; anyone who does not update keeps them.
+- No automatic updates — new versions are still installed manually. *Settings →
+  About* now has a **Check for updates** button, which reads a version number
+  from sovatela.eu and tells you if a newer one is out; it runs only when you
+  press it. That makes a release discoverable, not automatic: nothing prompts
+  you, so a fix still reaches only people who go and look.
 - No model or provider selection: GLM-5.2 with automatic vision routing.
 
 **Accessibility**
@@ -212,7 +266,7 @@ and lives wherever you point it.
 
 ## Upgrade and install instructions
 
-**Upgrading from 1.0.0, 1.1.x, 1.2.0, 1.3.x** — install over the top. Settings, chat
+**Upgrading from 1.0.0, 1.1.x, 1.2.0, 1.3.x, 1.4.0** — install over the top. Settings, chat
 history, memory, projects, and stored keys are preserved; there is no migration
 step and nothing to back up first. On macOS, replace the app in Applications.
 
@@ -223,13 +277,13 @@ Scaleway API key: [Quick-start](../QUICKSTART.md).
 **Verify your download** before running it:
 
 ```sh
-shasum -a 256 Sovatela_1.4.0_universal.dmg      # macOS
-sha256sum sovatela_1.4.0_amd64.deb              # Linux
-Get-FileHash .\Sovatela_1.4.0_x64-setup.exe -Algorithm SHA256   # Windows
+shasum -a 256 Sovatela_1.5.0_universal.dmg      # macOS
+sha256sum sovatela_1.5.0_amd64.deb              # Linux
+Get-FileHash .\Sovatela_1.5.0_x64-setup.exe -Algorithm SHA256   # Windows
 ```
 
 **Downgrading** — install the older version over the top. The data format is
-unchanged across 1.0.0, 1.1.x, 1.2.0, 1.3.x and 1.4.0. Terminal access is set up outside the
+unchanged across 1.0.0, 1.1.x, 1.2.0, 1.3.x, 1.4.0 and 1.5.0. Terminal access is set up outside the
 app's data folder, so downgrading does not remove it; use
 [uninstalling](../UNINSTALL.md) § 4 if you want it gone.
 

@@ -403,6 +403,31 @@ dl.about dd {
   }
 }
 
+/* The update-check result, under the version number. Its own line rather than
+   trailing the button, so a long failure message wraps against the value
+   column instead of pushing the layout wide. */
+.update-line {
+  display: block;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+}
+
+/* Spacing only once there is a result, so the empty live region — which has to
+   sit in the DOM before the check runs for a screen reader to announce it —
+   does not push the row it lives in. */
+.update-line.has-result {
+  margin-top: 4px;
+}
+
+.update-line strong {
+  color: var(--text);
+}
+
+.update-failed {
+  color: var(--error);
+}
+
 .privacy {
   margin-top: 16px;
 }

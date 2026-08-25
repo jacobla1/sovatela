@@ -1,6 +1,6 @@
 {
   "name": "sovatela",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "type": "module",
   "description": "A BYO-key desktop chat client for Z.ai GLM-5.2 hosted on Scaleway",
   "license": "MIT",

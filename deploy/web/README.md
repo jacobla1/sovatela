@@ -88,6 +88,7 @@ node deploy/web/build.mjs /tmp/sovatela-release
 #    which GitHub Pages serves at sovatela.eu. That repo is the publish
 #    target; do not edit its HTML by hand.
 cp    deploy/web/dist/index.html      ../sovatela-web/
+cp    deploy/web/dist/version.json    ../sovatela-web/   # "Check for updates" reads this
 cp -R deploy/web/dist/accessibility   ../sovatela-web/
 cp -R deploy/web/dist/steps           ../sovatela-web/   # setup-strip cards
 (cd ../sovatela-web && git add -A && git commit && git push)
@@ -95,9 +96,11 @@ cp -R deploy/web/dist/steps           ../sovatela-web/   # setup-strip cards
 # 7. Verify from OUTSIDE your own machine. See the warning below.
 ```
 
-Do not attach `Sovatela_universal.app.tar.gz` to the release. It is Tauri's
-updater bundle, there is no updater, and it only confuses anyone reading the
-asset list.
+`Sovatela_universal.app.tar.gz` is removed automatically. It is Tauri's updater
+bundle, there is no updater, and it only confuses anyone reading the asset list.
+`release.yml` deletes it in `verify-release-assets`; through 1.5.0 it was
+deleted by hand on every release. Nothing to do here — noted so that seeing it
+vanish is not mistaken for something going wrong.
 
 ## Where the built site goes
 

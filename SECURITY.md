@@ -46,9 +46,21 @@ credential store on first launch and removed.
 
 All HTTPS calls are made from the Rust backend using `reqwest`, not from the
 webview. This keeps keys out of the renderer process and avoids relying on
-browser-side origin controls. The app makes no connections other than to the
-providers you configure — no update check, no telemetry endpoint, no remote
-assets in the interface.
+browser-side origin controls. There is no telemetry endpoint, no analytics, no
+remote assets in the interface, and nothing is contacted when the app launches.
+
+Two buttons reach a host that is not a provider you configured. Both are static
+files, both are fetched anonymously with no query string and nothing sent about
+you or your machine, and neither runs unless you press it:
+
+| Button | Fetches | Why |
+| --- | --- | --- |
+| *Settings → About →* **Check for updates** | `https://sovatela.eu/version.json` | A version number. The app has no auto-updater, so without this nothing tells you a release exists — 1.4.0 fixed two buttons that had never worked and every 1.3.x install kept them. |
+| *Settings → Usage →* **Check for updated prices** | `raw.githubusercontent.com/jacobla1/sovatela/…/pricing.json` | The published price list, so cost estimates track Scaleway's tariff between releases. |
+
+Through 1.4.0 this section claimed the app contacted nothing but your
+providers. The price fetch already contradicted that and had done since it was
+added; the sentence is corrected here rather than quietly dropped.
 
 ### Generated code
 

@@ -364,6 +364,17 @@ if (unfilled.length) {
 writeFileSync(join(dist, "index.html"), index);
 writeFileSync(join(dist, "SHA256SUMS.txt"), sums.join("\n") + "\n");
 
+// The version file the app's "Check for updates" button reads. Emitted here,
+// from RELEASE, rather than maintained by hand: RELEASE is read off the
+// artifact filenames and already cross-checked against package.json above, so
+// this cannot advertise a version the download page does not actually offer.
+// A hand-edited file would be forgotten exactly once and then tell every user
+// an update exists that they cannot download.
+writeFileSync(
+  join(dist, "version.json"),
+  JSON.stringify({ version: RELEASE, url: "https://sovatela.eu/#download" }, null, 2) + "\n",
+);
+
 // The step artwork carries the wording of the setup strip, not just its
 // pictures, so a missing file is a missing paragraph above the fold — this
 // refuses to build rather than publish that. Copied rather than inlined: a few

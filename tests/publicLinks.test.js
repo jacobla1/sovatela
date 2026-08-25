@@ -53,3 +53,39 @@ describe("shipped links point at the public repository", () => {
     ).toEqual([]);
   });
 });
+
+// REMOTE_PRICING_URL 404'd for every user for months because the URL a shipped
+// build fetches and the file someone has to publish live in different repos and
+// nothing tied them together. `check_for_update` has the identical shape, so
+// this ties them: the host the app fetches from must be the site, and the site
+// build must emit the file at that path.
+describe("the update check fetches a file the site actually publishes", () => {
+  const repo = resolve(import.meta.dirname, "..");
+  const rust = readFileSync(join(repo, "src-tauri/src/update.rs"), "utf8");
+  const siteBuild = readFileSync(join(repo, "deploy/web/build.mjs"), "utf8");
+
+  it("points at sovatela.eu, not a code-hosting API", () => {
+    const url = rust.match(/LATEST_VERSION_URL: &str =\s*"([^"]+)"/)?.[1];
+    expect(url, "LATEST_VERSION_URL is missing from update.rs").toBeTruthy();
+    expect(url).toBe("https://sovatela.eu/version.json");
+  });
+
+  it("is emitted by the site build, under the filename the app requests", () => {
+    const url = rust.match(/LATEST_VERSION_URL: &str =\s*"([^"]+)"/)?.[1];
+    const filename = new URL(url).pathname.replace(/^\//, "");
+    expect(
+      siteBuild.includes(`join(dist, "${filename}")`),
+      `update.rs fetches /${filename}, but deploy/web/build.mjs never writes it. ` +
+        `The button would 404 for every user, exactly as the price fetch did.`,
+    ).toBe(true);
+  });
+
+  it("takes its version from RELEASE, so it cannot advertise an unpublished build", () => {
+    const emit = siteBuild.slice(siteBuild.indexOf('join(dist, "version.json")'));
+    expect(
+      /version:\s*RELEASE/.test(emit.slice(0, 400)),
+      "version.json must be written from RELEASE (derived from the artifact " +
+        "filenames), never from a hand-maintained value.",
+    ).toBe(true);
+  });
+});

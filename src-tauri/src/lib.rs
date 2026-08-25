@@ -7,6 +7,7 @@ use tauri::Manager;
 
 pub mod glm;
 pub mod pricing;
+pub mod update;
 pub mod usage;
 pub mod workspace;
 
@@ -1285,6 +1286,36 @@ async fn update_pricing() -> Result<pricing::PricingInfo, String> {
     let table: pricing::PriceTable = serde_json::from_str(&text)
         .map_err(|e| format!("The fetched price list was not readable: {e}"))?;
     pricing::set_active(table)
+}
+
+/// Ask the download site what the current version is. Runs only when the user
+/// presses **Check for updates** in Settings → About — there is no call on
+/// launch, no schedule, and nothing is sent but the request itself.
+///
+/// A failure here is reported as a failure rather than as "you are up to
+/// date": telling someone they have the latest version when the check never
+/// completed is the one answer that would make this feature worse than not
+/// having it.
+#[tauri::command]
+async fn check_for_update() -> Result<update::UpdateCheck, String> {
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    let resp = http_client()
+        .get(update::LATEST_VERSION_URL)
+        .send()
+        .await
+        .map_err(|e| format!("Could not reach sovatela.eu to check: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("sovatela.eu answered {}.", resp.status()));
+    }
+    let text = resp.text().await.map_err(|e| e.to_string())?;
+    let published: update::Published = serde_json::from_str(&text)
+        .map_err(|e| format!("The version file was not readable: {e}"))?;
+    Ok(update::UpdateCheck {
+        update_available: update::is_newer(&published.version, &current),
+        latest: published.version,
+        url: published.url.unwrap_or_else(|| update::DOWNLOAD_PAGE.to_string()),
+        current,
+    })
 }
 
 /// Generate an image using the configured provider — native Black Forest Labs by
@@ -5857,6 +5888,7 @@ pub fn run() {
             get_usage_summary,
             reset_usage,
             update_pricing,
+            check_for_update,
             save_conversation,
             list_conversations,
             load_conversation,

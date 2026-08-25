@@ -1,5 +1,40 @@
 # Changelog
 
+## 1.5.0 — 2026-08-25
+
+- **The app can now tell you a release exists.** *Settings → About* gains
+  **Check for updates**: it reads a version number from `sovatela.eu` and says
+  whether a newer one is out, with a link to the download page.
+
+  There is still no auto-updater, and this does not become one. Nothing runs on
+  launch, there is no schedule, and no notification appears — the check happens
+  only when the button is pressed. What changes is that a release is
+  *discoverable* from inside the app at all. Until now it was not: 1.4.0 fixed
+  two buttons that had never worked for anyone, and every 1.3.x install keeps
+  them, because the only way to learn a version existed was to visit a website
+  nothing prompted you to visit. One of those two buttons was *Check for
+  updated prices*, which had never reached a single user for the same reason.
+
+  The version number is read from `sovatela.eu`, the site that already serves
+  the download page, rather than a code-hosting API — the check should not send
+  anyone to a US endpoint to be told a European app has an update. The request
+  carries no query string and nothing about you or your machine. A check that
+  fails says so rather than reporting "you are up to date", because a false
+  "up to date" is worse than having no check at all.
+
+- **Two documentation claims corrected.** `SECURITY.md` and the technical
+  specification both said the app contacts only the providers you configure.
+  That was already untrue — *Check for updated prices* has fetched
+  `raw.githubusercontent.com` since it was added. Both documents now list the
+  two button-triggered fetches, and the security page states that the old
+  sentence was wrong rather than quietly dropping it.
+
+- **Tests gate a release.** The test suites ran on pull requests and on demand,
+  but not on a version tag, and work lands straight on `main` — so a release
+  could be built and published with failing tests and nothing to stop it. The
+  release workflow now runs `npm test` and `cargo test` before it builds
+  anything.
+
 ## 1.4.0 — 2026-08-21
 
 - **Two buttons that had never worked.** Both pointed into the private working

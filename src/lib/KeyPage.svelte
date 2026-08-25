@@ -54,6 +54,30 @@
     .then((v) => (appVersion = v))
     .catch(() => {});
 
+  // Update check. Manual only — nothing here runs unless the button is pressed,
+  // so the app still makes no call on launch. `updateState` is one of:
+  // "" (untouched) | "checking" | "current" | "available" | "failed".
+  let updateState = $state("");
+  let updateLatest = $state("");
+  let updateUrl = $state("");
+  let updateError = $state("");
+
+  async function checkForUpdate() {
+    updateState = "checking";
+    updateError = "";
+    try {
+      const r = await invoke("check_for_update");
+      updateLatest = r.latest;
+      updateUrl = r.url;
+      // A check that failed must never render as "up to date" — see the Rust
+      // side, which returns Err rather than a false negative.
+      updateState = r.update_available ? "available" : "current";
+    } catch (e) {
+      updateError = String(e);
+      updateState = "failed";
+    }
+  }
+
   let textSize = $state(getTextSize());
   function chooseTextSize(id) {
     textSize = id;
@@ -1792,7 +1816,29 @@
   </p>
   <dl class="about">
     <dt>Version</dt>
-    <dd>{appVersion || "—"}</dd>
+    <dd>
+      {appVersion || "—"}
+      <button class="link" onclick={checkForUpdate} disabled={updateState === "checking"}>
+        {updateState === "checking" ? "Checking…" : "Check for updates"}
+      </button>
+      <span
+        class="update-line"
+        class:has-result={updateState === "available" ||
+          updateState === "current" ||
+          updateState === "failed"}
+        class:update-failed={updateState === "failed"}
+        aria-live="polite"
+      >
+        {#if updateState === "available"}
+          <strong>{updateLatest} is available.</strong>
+          <button class="link" onclick={() => open(updateUrl)}>Open the download page →</button>
+        {:else if updateState === "current"}
+          This is the latest version.
+        {:else if updateState === "failed"}
+          Could not check. {updateError}
+        {/if}
+      </span>
+    </dd>
     <dt>Licence</dt>
     <dd>MIT — free to use, modify and share</dd>
     <dt>Source</dt>
@@ -1806,6 +1852,10 @@
     This app says it has no server, collects nothing, and keeps your keys in
     {store}. You do not have to take that on trust — the source above is the
     same code these builds are made from.
+    <strong>Check for updates</strong> is the one button here that uses the
+    network: it reads a version number from sovatela.eu and sends nothing. It
+    runs only when you press it — there is no check on launch and no automatic
+    update.
   </p>
   <!-- README and TERMS §10 both carry this, but neither is reachable from
        inside the app, and Settings names every one of these companies while

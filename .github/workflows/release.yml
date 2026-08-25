@@ -15,8 +15,59 @@ jobs:
     if: github.repository == 'jacobla1/Scale'
     uses: ./.github/workflows/windows-terminal-access.yml
 
+  # Tests gate the tag. `ci` runs the same suites across three OSes, but it only
+  # triggers on pull requests and manual dispatch — and work here lands straight
+  # on main — so through 1.4.0 nothing stopped a tag whose tests were red. A
+  # `needs:` cannot reach a job in another workflow file, and re-running the full
+  # 3-OS `ci` matrix here would compile Tauri twice per release for no new
+  # signal: the per-OS compile is already proven by the build job below, which
+  # fails the release if any platform stops building. So this runs the suites
+  # themselves, once, on the cheapest runner.
+  tests:
+    if: github.repository == 'jacobla1/Scale'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      # The Tauri crate embeds ../dist at compile time, so the frontend must be
+      # built before cargo can compile the test binary.
+      - name: Build frontend
+        run: npm run build
+
+      - name: Frontend tests (vitest)
+        run: npm test
+
+      - name: Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
   build:
-    needs: windows-terminal-access
+    needs: [windows-terminal-access, tests]
     # The public repository is a mirror, and `gh release create --repo
     # jacobla1/sovatela` creates a tag there — which started this workflow on
     # the mirror and uploaded its own build onto the release. Because the
@@ -148,6 +199,34 @@ jobs:
     permissions:
       contents: write # a draft release is not visible to a read-only token
     steps:
+      # tauri-action always uploads the macOS updater bundle. There is no
+      # updater — Settings → About has a manual version check, not a channel
+      # that consumes this — so it is a 12 MB file on the download page that
+      # nobody can use and that invites the question of what it is for. It has
+      # been deleted by hand on every release since the .dmg started shipping,
+      # which is exactly the kind of recurring manual step that produced the
+      # stray-installer bug. The guard below does not catch it: the tarball
+      # carries no version in its name, and files without one are exempt so
+      # that SHA256SUMS.txt passes.
+      - name: Drop the updater bundle nobody can use
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[].name' \
+            | grep -E '\.app\.tar\.gz(\.sig)?$' > bundles.txt || true
+          if [ ! -s bundles.txt ]; then
+            echo "No updater bundle on the release — nothing to remove."
+            exit 0
+          fi
+          while read -r name; do
+            echo "Removing $name"
+            gh release delete-asset "$TAG" "$name" \
+              --repo "$GITHUB_REPOSITORY" --yes
+          done < bundles.txt
+
       - name: Every asset matches the tag, and no platform is missing
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

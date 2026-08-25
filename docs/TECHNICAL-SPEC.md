@@ -73,9 +73,23 @@ entries written by pre-release versions are migrated on first launch.
 
 ### Network
 
-Every HTTPS call originates in Rust. The app contacts **only** the providers the
-user configured: no update check, no telemetry, no remote fonts or assets, no
-analytics.
+Every HTTPS call originates in Rust. No telemetry, no remote fonts or assets, no
+analytics, and nothing contacted on launch.
+
+Besides the providers the user configured, exactly two hosts are reachable, both
+only on an explicit button press, both static files fetched anonymously:
+
+| Command | URL | Trigger |
+| --- | --- | --- |
+| `check_for_update` | `https://sovatela.eu/version.json` | *Settings → About* |
+| `update_pricing` | `raw.githubusercontent.com/jacobla1/sovatela/main/pricing/pricing.json` | *Settings → Usage* |
+
+`version.json` is emitted by `deploy/web/build.mjs` from the same `RELEASE`
+constant the download page uses — read off the artifact filenames and
+cross-checked against `package.json` — so it cannot advertise a version the
+page does not offer. Version comparison is numeric per component
+(`src-tauri/src/update.rs`); a file that will not parse reports a failure
+rather than "up to date", because a false "up to date" is worse than no check.
 
 ### Renderer and generated code
 
@@ -279,6 +293,8 @@ checkout is a superset and is not part of the repository.
 - No dependency scanning in CI
 - No schema version in stored JSON
 - No structured logging, so no post-hoc diagnosis
-- No auto-updater, so a security fix reaches users only if they notice a release
+- No auto-updater. *Settings → About* now has a manual **Check for updates**,
+  so a release is at least discoverable from inside the app, but a security
+  fix still reaches nobody who does not press it
 - Windows and Linux builds unsigned; macOS CI degrades silently to unsigned if
   the Apple secrets lapse
