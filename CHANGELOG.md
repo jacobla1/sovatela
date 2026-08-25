@@ -1,5 +1,65 @@
 # Changelog
 
+## 1.5.2 — 2026-08-26
+
+Findings from an external security and usability review, plus what running the
+project's own tooling turned up.
+
+- **A chat-history folder could lose files that were not ours.** History can be
+  pointed at any folder — documents, a project, a synced drive. Changing the
+  folder moved *every* `*.json` out of it, and *Delete all data* removed every
+  `*.json` and the whole `assets/` directory. Neither had any idea which files
+  this app wrote. Pointing history at a folder holding your own work and
+  pressing Delete all data destroyed it.
+
+  History now lives in a **`Sovatela/`** folder inside whatever you pick, so the
+  app owns a directory instead of sharing one, and both operations identify
+  files by reading them rather than by their extension. Chats saved by earlier
+  versions directly in a folder you chose are moved into the subfolder the first
+  time 1.5.2 opens it.
+
+- **Web content could steer the app into reading local files and sending them
+  out.** With web search on and a workspace granted, one loop offered both
+  `fetch_page` — which takes a URL the model chose — and `read_workspace_file`.
+  A hostile page could tell the model to read a file and put its contents in the
+  next URL it requested. Reading a workspace file now closes web access for the
+  rest of that turn. Research is unaffected; reading a file and *then* fetching
+  is not possible in one turn, and that is the direction data leaves in.
+
+- **Image generation looked unconfigured for OVHcloud users.** The interface
+  tested for a Black Forest Labs key whichever provider was set, and defaulted
+  an unset provider to BFL while the backend defaulted it to OVHcloud. An
+  OVHcloud-only setup — the sovereign configuration this app recommends — was
+  told to go and configure what was already configured.
+
+- **A saved token followed its endpoint to a new host.** Changing a self-hosted
+  search or image URL and leaving the token box blank sent the old token to the
+  new address. It is cleared when the origin changes.
+
+- **Narrower holes**, all closed: the Black Forest Labs polling address (which
+  receives your key) is pinned to their origin; a generated image is fetched
+  only over public HTTPS with a size cap, unless it is on the endpoint you
+  configured yourself; `GLM_CHAT_ENDPOINT` is compiled into test builds only,
+  so an inherited environment variable cannot redirect your key; workspace
+  listings no longer follow symlinks out of the granted folder.
+
+- **A custom image endpoint answering with an empty field** alongside a usable
+  one produced an empty image and no error. Found by a lint that had never been
+  run against this code.
+
+- **Accuracy of the security and privacy pages.** Several statements described
+  software this is not — that the app contacts only your providers, that
+  uploaded files are never stored, that keys never enter the interface, that
+  nothing is contacted at launch. Each is corrected and the reasons are stated
+  rather than softened.
+
+- **Accessible names** on the message box and the artifact selector, which
+  screen readers previously announced without one.
+
+- The download page no longer says Windows is "just run it". It is unsigned,
+  SmartScreen warns, and the page now says so before you download rather than
+  leaving you to discover it.
+
 ## 1.5.1 — 2026-08-25
 
 - **Six dependency advisories closed**, four of them on the path that reads an

@@ -143,11 +143,7 @@ const LEGACY_IDENTIFIER: &str = "com.scale.glmchat";
 
 fn legacy_ledger_path() -> Option<std::path::PathBuf> {
     let dir = crate::app_dir()?;
-    Some(
-        dir.parent()?
-            .join(LEGACY_IDENTIFIER)
-            .join("usage.json"),
-    )
+    Some(dir.parent()?.join(LEGACY_IDENTIFIER).join("usage.json"))
 }
 
 /// Fold any pre-rename ledger into the current one, once.
@@ -245,7 +241,10 @@ pub fn record_search(provider: &str, searches: u64) {
         let m = l.months.entry(current_month()).or_default();
         m.search.searches += searches;
         m.search.cost += cost;
-        let p = m.search_by_provider.entry(provider.to_string()).or_default();
+        let p = m
+            .search_by_provider
+            .entry(provider.to_string())
+            .or_default();
         p.count += searches;
         p.cost += cost;
     });

@@ -59,3 +59,15 @@ jobs:
       # pulled in by Tauri's Linux stack and cannot be moved from here.
       - name: Rust dependencies
         run: cargo audit --file src-tauri/Cargo.lock
+
+      - name: Formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+
+      # Deliberately without `-D warnings`. Clippy's correctness lints are
+      # deny-by-default and fail this on their own; the style lints do not,
+      # and are not worth reshaping settled signatures over. The lint that
+      # earned this step was `never_loop`, which found a response parser whose
+      # every branch returned — so an endpoint answering with an empty field
+      # alongside a usable one produced an empty image.
+      - name: Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets

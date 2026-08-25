@@ -51,8 +51,13 @@ Full instructions: [Uninstall and data deletion](UNINSTALL.md).
 
 ## 4. What is sent, and to whom
 
-The application transmits data only to providers you have configured, using your
-credentials:
+The application transmits data using your own credentials, to the providers you
+configured. Three destinations are not providers, and are listed here rather
+than left to be discovered: `sovatela.eu` when you press *Check for updates*,
+`raw.githubusercontent.com` when you press *Check for updated prices*, and —
+while web search is on — whichever public page the model decides to read. See
+[Security](../SECURITY.md) for what each one sends, which in the first two
+cases is nothing about you:
 
 | Provider | Receives | When |
 | --- | --- | --- |

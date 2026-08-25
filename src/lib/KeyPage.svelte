@@ -1456,8 +1456,21 @@
     </p>
     <div class="folder-row">
       <span class="folder-label">Folder</span>
-      <code class="folder-path">{historyDir || "Default app folder"}</code>
+      <code class="folder-path"
+        >{historyDir ? `${historyDir}/Sovatela` : "Default app folder"}</code
+      >
     </div>
+    {#if historyDir}
+      <!-- Show the subfolder rather than the folder that was picked. The app
+           writes only inside `Sovatela/`, and moving or deleting history
+           touches only files it wrote — someone can point this at a folder
+           that already holds their own work without it being taken over. -->
+      <p class="hint">
+        Chats go in a <strong>Sovatela</strong> folder inside the one you picked,
+        so nothing else in that folder is touched. Moving the folder or deleting
+        your data affects only files this app created.
+      </p>
+    {/if}
     <div class="actions">
       <button class="ghost" onclick={chooseHistoryFolder}>Choose folder…</button>
       <button class="ghost" onclick={showHistoryFolder}>Show folder</button>

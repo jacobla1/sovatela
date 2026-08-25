@@ -18,8 +18,12 @@ const PRIVATE_REPO = "jacobla1/Scale";
 // Only what a user's build can reach: shipped frontend, Rust source, and the
 // docs that go out with a release. CI workflows and maintainer-only tooling
 // legitimately name the private repo — that is where the work happens.
-const ROOTS = ["src", "src-tauri/src", "docs/release"];
-const EXTENSIONS = [".js", ".svelte", ".rs", ".json", ".md", ".html", ".css"];
+// `.github` is here because it was missed. The issue-template links pointed at
+// the private repo and answered 404 for every user who clicked them — the same
+// defect this file was written for, in a directory it did not look at. The
+// workflows legitimately name the private repo and are excluded by name.
+const ROOTS = ["src", "src-tauri/src", "docs/release", ".github/ISSUE_TEMPLATE"];
+const EXTENSIONS = [".js", ".svelte", ".rs", ".json", ".md", ".html", ".css", ".yml"];
 
 function walk(dir, out = []) {
   for (const entry of readdirSync(dir)) {

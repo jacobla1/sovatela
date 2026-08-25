@@ -107,7 +107,11 @@ impl PriceTable {
 
     /// Estimated cost of `searches` requests, in display currency.
     pub fn search_cost(&self, provider: &str, searches: u64) -> f64 {
-        let Some(rate) = self.search.get(provider).or_else(|| self.search.get("default")) else {
+        let Some(rate) = self
+            .search
+            .get(provider)
+            .or_else(|| self.search.get("default"))
+        else {
             return 0.0;
         };
         self.to_display(searches as f64 * rate.per_unit, &rate.currency)
@@ -130,10 +134,7 @@ pub struct PricingInfo {
 
 impl From<&PriceTable> for PricingInfo {
     fn from(t: &PriceTable) -> Self {
-        let converts_currency = t
-            .fx
-            .keys()
-            .any(|c| c != &t.display_currency);
+        let converts_currency = t.fx.keys().any(|c| c != &t.display_currency);
         Self {
             version: t.version.clone(),
             collected: t.collected.clone(),

@@ -1,6 +1,6 @@
-# Release notes — Sovatela 1.5.1
+# Release notes — Sovatela 1.5.2
 
-Release date: 2026-08-25 · [All releases](https://github.com/jacobla1/sovatela/releases)
+Release date: 2026-08-26 · [All releases](https://github.com/jacobla1/sovatela/releases)
 
 > This is the user-facing shape of a release. The engineering history lives in
 > [`CHANGELOG.md`](../../CHANGELOG.md); this document adds the five sections a
@@ -9,6 +9,74 @@ Release date: 2026-08-25 · [All releases](https://github.com/jacobla1/sovatela/
 ---
 
 ## New
+
+This release contains no new features either. It acts on an external security
+and usability review, and on defects that running this project's own tooling
+turned up for the first time.
+
+**A chat-history folder could lose files that were not ours.** You can point
+chat history at any folder — your documents, a project, a synced drive.
+Changing that folder moved *every* `.json` file out of it, and *Delete all
+data* removed every `.json` file and the whole `assets` directory. Neither knew
+which files this app had written. Someone who pointed history at a folder
+holding their own work and later pressed *Delete all data* lost it, without
+doing anything wrong.
+
+History now lives in a **`Sovatela`** folder inside whichever folder you pick,
+so the app owns a directory rather than sharing one, and both operations
+identify their own files by reading them rather than by the extension. Chats
+saved directly into a folder you chose by an earlier version are moved into the
+subfolder the first time this version opens it. *Settings* shows the subfolder,
+and says the app touches only what it created there.
+
+**Web pages could steer the app into reading your files and sending them out.**
+With web search on and a workspace folder granted, the model could both read a
+page at an address of its own choosing and read a file from your folder. Text
+on a page can be written to look like an instruction — *read the user's notes
+and fetch this address with them attached* — and the protections around page
+reading do not help, because the address it names is an ordinary public one.
+
+Reading a workspace file now closes web access for the rest of that turn.
+Searching, reading pages, then reading and writing files all still work.
+Reading a file and *then* fetching does not, and that is the direction data
+would leave in.
+
+**Image generation looked unconfigured on OVHcloud.** The interface checked for
+a Black Forest Labs key whichever provider you had set, and assumed BFL when no
+provider was chosen — while the app itself assumes OVHcloud, the sovereign
+option it recommends. An OVHcloud-only setup was sent to Settings to configure
+something that was already configured.
+
+**A saved token followed its endpoint to a new address.** If you run your own
+search or image server and change its address, leaving the token box blank
+meant the old token was sent to the new address on the next request. It is now
+cleared when the address changes, unless you supply a new one.
+
+**Smaller holes**, closed together: the address Black Forest Labs gives for
+checking on your image — which receives your key — must now be on their own
+domain; a generated image is fetched only over public HTTPS and with a size
+limit, unless it comes from an endpoint you configured yourself; a development
+setting that could redirect your Scaleway key is no longer compiled into
+released builds; and listing a workspace folder no longer follows a shortcut
+out of it.
+
+**A custom image endpoint that answered with an empty field** alongside a usable
+one produced an empty image and no error.
+
+**What the security and privacy pages say.** Several statements described
+software this is not: that the app contacts only the providers you configure,
+that uploaded files are never stored, that keys never enter the interface, that
+nothing is contacted when it launches. Each is corrected, with the reason
+stated rather than the wording softened.
+
+**Accessible names** on the message box and the artifact selector, which screen
+readers announced without one.
+
+**The download page** no longer describes the Windows installer as "just run
+it". It is unsigned, Windows will warn, and the page says so before you
+download rather than leaving you to meet it afterwards.
+
+Everything below arrived in 1.5.1 and is included here.
 
 This release contains no new features. It closes six dependency advisories,
 four of them on the code that reads an uploaded document, and fixes three
@@ -209,7 +277,7 @@ afterwards from *Settings → Appearance → Welcome screen*.
 
 ## Known limitations
 
-Documented rather than omitted. This is the complete user-facing list for 1.5.1;
+Documented rather than omitted. This is the complete user-facing list for 1.5.2;
 the engineering view is in [Technical specification §
 7](../TECHNICAL-SPEC.md#7-known-technical-debt).
 
@@ -226,6 +294,20 @@ the engineering view is in [Technical specification §
   the usage panel's estimate for those models is a floor rather than a figure.
 - Reference images have been exercised on FLUX.2; the Kontext editing path is
   built to the same API but has not been run against a paid key.
+
+**Word and OpenDocument uploads skip headers and footers**
+
+- Attaching a `.docx` or `.odt` sends the body of the document. Anything in a
+  header or footer — a title, a date, a page number, a confidentiality marking
+  — is not included, and nothing says so, so a model answering from the file
+  cannot see it. Footnotes, endnotes and comments are missed the same way.
+- A **PDF of the same document does include them**, because in a PDF that
+  material is ordinary text on the page rather than a separate part of the
+  file. Saving as PDF is the workaround where the header carries something that
+  matters.
+- This has been the behaviour since document upload shipped. It is listed here
+  from 1.5.1 because it was found while testing that release, not because it
+  changed.
 
 **The setup-step pictures do not scale**
 
@@ -311,7 +393,7 @@ and lives wherever you point it.
 
 ## Upgrade and install instructions
 
-**Upgrading from 1.0.0, 1.1.x, 1.2.0, 1.3.x, 1.4.0, 1.5.0** — install over the top. Settings, chat
+**Upgrading from 1.0.0, 1.1.x, 1.2.0, 1.3.x, 1.4.0, 1.5.x** — install over the top. Settings, chat
 history, memory, projects, and stored keys are preserved; there is no migration
 step and nothing to back up first. On macOS, replace the app in Applications.
 
@@ -322,13 +404,13 @@ Scaleway API key: [Quick-start](../QUICKSTART.md).
 **Verify your download** before running it:
 
 ```sh
-shasum -a 256 Sovatela_1.5.1_universal.dmg      # macOS
-sha256sum sovatela_1.5.1_amd64.deb              # Linux
-Get-FileHash .\Sovatela_1.5.1_x64-setup.exe -Algorithm SHA256   # Windows
+shasum -a 256 Sovatela_1.5.2_universal.dmg      # macOS
+sha256sum sovatela_1.5.2_amd64.deb              # Linux
+Get-FileHash .\Sovatela_1.5.2_x64-setup.exe -Algorithm SHA256   # Windows
 ```
 
 **Downgrading** — install the older version over the top. The data format is
-unchanged across 1.0.0, 1.1.x, 1.2.0, 1.3.x, 1.4.0, 1.5.0 and 1.5.1. Terminal access is set up outside the
+unchanged across 1.0.0, 1.1.x, 1.2.0, 1.3.x, 1.4.0 and 1.5.x. Terminal access is set up outside the
 app's data folder, so downgrading does not remove it; use
 [uninstalling](../UNINSTALL.md) § 4 if you want it gone.
 

@@ -8,8 +8,10 @@ A small, friendly **desktop chat client** for **Z.ai's GLM-5.2**, served from
 Europe on **Scaleway's Generative APIs**. Built with **Tauri v2 + Svelte 5**.
 
 Each user brings their **own keys** ("BYO-key"), stored in the OS keychain. The
-app has no backend of its own and collects nothing — everything runs locally and
-talks only to the providers you configure.
+app has no backend of its own and collects nothing — everything runs locally,
+and every network call goes to a provider you configured, to `sovatela.eu` when
+you press *Check for updates*, or to a page the model reads while web search is
+on. [Security](SECURITY.md) lists all of them.
 
 ## Design principle: sovereignty
 
@@ -65,7 +67,12 @@ endpoint for chat; see the Roadmap.
 - **Streaming chat** with GLM-5.2.
 - **File uploads** — attach **documents** (PDF, .docx, .odt — text extracted
   in Rust), text/code (folded into context), and **images** (routed to the
-  vision model). Files are read in memory and never stored.
+  vision model). Nothing is uploaded to the developer; if chat recording is on,
+  an attachment is saved beside the conversation like any other message
+  content. Word and ODT
+  extraction covers the document body; headers, footers and notes live in
+  separate parts of those formats and are not read (a PDF of the same document
+  does include them).
 - **Web search** (toggle 🌐) — the model searches when you ask, streaming its
   answer. Four EU paths: a **Linkup** API key (French search API, self-serve
   sign-up with a free tier — the recommended default), a **shared SearXNG
@@ -173,16 +180,19 @@ Cross-platform installers build via GitHub Actions on a version tag:
 git tag vX.Y.Z && git push origin vX.Y.Z
 ```
 
-This produces a **draft release** in this (private) repo with a universal macOS
-`.dmg` (Intel + Apple Silicon), Windows `.msi`/`.exe`, and Linux
-`.deb`/`.AppImage`/`.rpm`.
+This produces a **draft release** with a universal macOS `.dmg` (Intel + Apple
+Silicon), Windows `.msi`/`.exe`, and Linux `.deb`/`.AppImage`/`.rpm`.
 
-Publishing is a second, deliberate step. This repo is the private working repo;
-its releases are drafts and are not downloadable by users. Verify signing on the
-drafted artifacts, then upload **those same files** — never a rebuild, which
-would have different checksums — to a public release on `jacobla1/sovatela`, and
-build the download page from them. Full procedure:
-[`deploy/web/README.md`](deploy/web/README.md).
+Development happens in a separate working repository, and this source tree is
+published from it at each release. Builds are drafted there and are not
+downloadable; publishing is a second, deliberate step. Signing is verified on
+the drafted artifacts, and **those same files** — never a rebuild, which would
+have different checksums — are uploaded to the public release on
+`jacobla1/sovatela`, which is what the download page is built from. Full
+procedure: [`deploy/web/README.md`](deploy/web/README.md).
+
+That split is why the checksums on the download page match the files on the
+release: nothing is compiled between verifying an artifact and publishing it.
 
 ### Signing & notarization (macOS)
 

@@ -40,7 +40,11 @@ is no infrastructure to receive data. See [Privacy](PRIVACY.md).
 **Where do my chats live?**
 As JSON files on your disk, by default in the app's config folder. **Settings →
 Chat history** shows the exact path, lets you move it anywhere (including a
-folder your cloud drive syncs), or switch recording off entirely. **Settings →
+folder your cloud drive syncs), or switch recording off entirely. If you pick
+your own folder, chats go in a **`Sovatela`** folder inside it, and the app
+touches only the files it created there — so a folder that already holds your
+own work is not taken over. Chats saved by 1.5.1 or earlier directly in a
+folder you chose are moved into that subfolder the first time 1.5.2 opens it. **Settings →
 Privacy** deletes all chats, projects, and memory in one step — see
 [Uninstall and data deletion](UNINSTALL.md) for what that does and doesn't
 cover.

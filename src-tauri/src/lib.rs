@@ -62,10 +62,19 @@ fn cancel_request(state: tauri::State<'_, Cancellations>, request_id: String) {
 }
 
 /// The chat endpoint. One choke point so the test suite can stand up a mock
-/// OpenAI-compatible server (GLM_CHAT_ENDPOINT); production builds always
-/// resolve to the Scaleway default.
+/// OpenAI-compatible server (GLM_CHAT_ENDPOINT).
+///
+/// The override is compiled into test builds only. It used to be read in every
+/// build while the comment here claimed otherwise, which meant an environment
+/// variable — inherited from a shell profile, a CI runner, or a parent process
+/// — could send the user's Scaleway key to an address of someone else's
+/// choosing, with nothing in the interface showing it.
 fn base_url() -> String {
-    std::env::var("GLM_CHAT_ENDPOINT").unwrap_or_else(|_| glm::DEFAULT_ENDPOINT.to_string())
+    #[cfg(test)]
+    if let Ok(endpoint) = std::env::var("GLM_CHAT_ENDPOINT") {
+        return endpoint;
+    }
+    glm::DEFAULT_ENDPOINT.to_string()
 }
 const MODEL: &str = glm::DEFAULT_MODEL;
 // GLM-5.2 is text-only (no vision encoder), so messages containing images are
@@ -548,8 +557,38 @@ async fn get_search_settings(app: tauri::AppHandle) -> Result<SearchSettings, St
     })
 }
 
+/// Scheme, host and port of a URL — what a credential is actually issued
+/// against. Anything unparseable compares as `None`, which is treated as a
+/// change, so a malformed entry errs towards forgetting the token.
+fn origin_of(url: &str) -> Option<String> {
+    let u = reqwest::Url::parse(url.trim()).ok()?;
+    let host = u.host_str()?.to_string();
+    Some(match u.port() {
+        Some(p) => format!("{}://{}:{}", u.scheme(), host, p),
+        None => format!("{}://{}", u.scheme(), host),
+    })
+}
+
+/// A token belongs to the endpoint it was issued for. The interface never
+/// echoes a saved secret, so an empty field means "keep what is stored" — and
+/// that meant pointing a self-hosted endpoint at a different host, leaving the
+/// token box blank, and sending the old token to the new host on the next
+/// request. Someone testing a friend's server, or following a URL from a
+/// search result, would hand over a credential without doing anything that
+/// looked like it.
+///
+/// So when the origin changes and no replacement is supplied, the stored token
+/// is cleared instead of carried over. Editing a path, or retyping the same
+/// host, keeps it.
+fn token_survives_url_change(old_url: &str, new_url: &str, replacement: &str) -> bool {
+    !replacement.trim().is_empty() || origin_of(old_url) == origin_of(new_url)
+}
+
 #[tauri::command]
-async fn set_search_settings(app: tauri::AppHandle, settings: SearchSettings) -> Result<(), String> {
+async fn set_search_settings(
+    app: tauri::AppHandle,
+    settings: SearchSettings,
+) -> Result<(), String> {
     // Blank secret fields mean "keep what's stored" (the UI never echoes them).
     if !settings.linkup_key.trim().is_empty()
         || !settings.staan_key.trim().is_empty()
@@ -568,6 +607,9 @@ async fn set_search_settings(app: tauri::AppHandle, settings: SearchSettings) ->
         })?;
     }
     let mut s = load_settings(&app)?;
+    if !token_survives_url_change(&s.url, &settings.url, &settings.token) {
+        update_secrets(|sec| sec.searxng_token.clear())?;
+    }
     s.search_provider = settings.provider;
     s.url = settings.url;
     save_settings(&app, &s)
@@ -597,12 +639,51 @@ struct ImageSettings {
     ovh_key_set: bool,
     #[serde(default)]
     token_set: bool,
+    /// Which provider an empty setting resolves to. Serialized so the
+    /// interface reads the backend's answer instead of recomputing it.
+    #[serde(default)]
+    provider_resolved: String,
+    /// Whether that provider can actually run. Same reason.
+    #[serde(default)]
+    configured: bool,
+}
+
+/// Which image provider a settings snapshot means. An empty provider is the
+/// recommended sovereign option (OVHcloud) unless a custom URL is already set.
+///
+/// Both the generator and the interface ask this rather than deciding for
+/// themselves. They used to decide separately and disagreed: the backend
+/// defaulted an empty provider to OVHcloud while the interface defaulted it to
+/// Black Forest Labs, and the interface then tested every non-custom provider
+/// for a BFL key. An OVHcloud-only user — the configuration this app
+/// recommends — was told image generation was not set up, while the backend
+/// would have generated happily.
+fn resolve_image_provider(s: &AppSettings) -> &str {
+    if !s.image_provider.trim().is_empty() {
+        s.image_provider.trim()
+    } else if !s.image_url.trim().is_empty() {
+        "custom"
+    } else {
+        "ovh"
+    }
+}
+
+/// Whether that provider has what it needs to run.
+fn image_is_configured(s: &AppSettings, sec: &Secrets) -> bool {
+    match resolve_image_provider(s) {
+        "custom" => !s.image_url.trim().is_empty(),
+        "ovh" => !sec.ovh_key.trim().is_empty(),
+        _ => !sec.bfl_key.trim().is_empty(),
+    }
 }
 
 #[tauri::command]
 async fn get_image_settings(app: tauri::AppHandle) -> Result<ImageSettings, String> {
     let s = load_settings(&app)?;
     let sec = load_secrets().unwrap_or_default();
+    // Computed before the struct literal moves fields out of `s`.
+    let provider_resolved = resolve_image_provider(&s).to_string();
+    let configured = image_is_configured(&s, &sec);
     Ok(ImageSettings {
         provider: s.image_provider,
         bfl_key: String::new(),
@@ -614,6 +695,8 @@ async fn get_image_settings(app: tauri::AppHandle) -> Result<ImageSettings, Stri
         bfl_key_set: !sec.bfl_key.trim().is_empty(),
         ovh_key_set: !sec.ovh_key.trim().is_empty(),
         token_set: !sec.image_token.trim().is_empty(),
+        provider_resolved,
+        configured,
     })
 }
 
@@ -636,6 +719,9 @@ async fn set_image_settings(app: tauri::AppHandle, settings: ImageSettings) -> R
         })?;
     }
     let mut s = load_settings(&app)?;
+    if !token_survives_url_change(&s.image_url, &settings.url, &settings.token) {
+        update_secrets(|sec| sec.image_token.clear())?;
+    }
     s.image_provider = settings.provider;
     s.bfl_model = settings.bfl_model;
     s.image_url = settings.url;
@@ -671,7 +757,7 @@ fn set_history_settings(app: tauri::AppHandle, settings: HistorySettings) -> Res
     let new_dir = history_dir_for(&app, &s)?;
     // Moving the location shouldn't make existing chats vanish — carry them over.
     if old_dir != new_dir {
-        move_json_files(&old_dir, &new_dir);
+        move_our_history(&old_dir, &new_dir);
     }
     save_settings(&app, &s)
 }
@@ -770,7 +856,9 @@ struct MemoryItem {
     created_at: String, // epoch millis as a string
 }
 
-fn memories_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<std::path::PathBuf, String> {
+fn memories_path<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<std::path::PathBuf, String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir.join("memories.json"))
@@ -822,7 +910,10 @@ async fn list_memories(app: tauri::AppHandle) -> Result<Vec<MemoryItem>, String>
 
 /// Append one or more remembered facts, skipping empties and near-duplicates.
 #[tauri::command]
-async fn add_memories(app: tauri::AppHandle, texts: Vec<String>) -> Result<Vec<MemoryItem>, String> {
+async fn add_memories(
+    app: tauri::AppHandle,
+    texts: Vec<String>,
+) -> Result<Vec<MemoryItem>, String> {
     let mut items = load_memories(&app)?;
     let millis = now_millis();
     for (i, text) in texts.into_iter().enumerate() {
@@ -831,9 +922,7 @@ async fn add_memories(app: tauri::AppHandle, texts: Vec<String>) -> Result<Vec<M
             continue;
         }
         let lower = text.to_lowercase();
-        let dup = items
-            .iter()
-            .any(|m| m.text.to_lowercase() == lower);
+        let dup = items.iter().any(|m| m.text.to_lowercase() == lower);
         if dup {
             continue;
         }
@@ -970,43 +1059,141 @@ fn move_file(path: &std::path::Path, dest: &std::path::Path) {
     }
 }
 
-/// Best-effort move of every `*.json` (and the `assets/` folder holding
-/// externalized images) from one history folder to another.
-fn move_json_files(from: &std::path::Path, to: &std::path::Path) {
-    if let Ok(entries) = std::fs::read_dir(from) {
+/// Identify a file this app wrote, by reading it rather than by trusting its
+/// name. Returns the conversation id.
+///
+/// Two conditions, both required. The file must deserialize as a conversation
+/// header, and its filename must be the id it carries — which is how every
+/// conversation is written (`conversation_path`). A name-shaped test alone is
+/// not enough: `sanitize_id` accepts any alphanumeric stem, so `package.json`
+/// and `tsconfig.json` would pass one.
+fn conversation_id_of(path: &std::path::Path) -> Option<String> {
+    if path.extension().and_then(|e| e.to_str()) != Some("json") {
+        return None;
+    }
+    let stem = path.file_stem()?.to_str()?;
+    let text = std::fs::read_to_string(path).ok()?;
+    let header: ConversationHeader = serde_json::from_str(&text).ok()?;
+    (stem == sanitize_id(&header.id).ok()?).then_some(header.id)
+}
+
+/// Every file in `dir` that belongs to this app, and the ids they carry.
+///
+/// A history folder may be one the user chose and shares with their own files,
+/// so nothing is claimed by pattern. Conversations are identified by content;
+/// `index.json` only if it parses as our index; assets only if their name
+/// carries the id of a conversation we just claimed — the naming written by
+/// `externalize_assets`.
+fn owned_history_files(dir: &std::path::Path) -> (Vec<std::path::PathBuf>, Vec<String>) {
+    let mut files = Vec::new();
+    let mut ids = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                continue;
+            if let Some(id) = conversation_id_of(&path) {
+                ids.push(id);
+                files.push(path);
             }
-            let Some(name) = path.file_name() else {
-                continue;
-            };
-            move_file(&path, &to.join(name));
         }
     }
-    // Conversation image assets travel with their conversations.
-    let from_assets = assets_dir_of(from);
-    if let Ok(entries) = std::fs::read_dir(&from_assets) {
+    let index = dir.join(CONV_INDEX_FILE);
+    if std::fs::read_to_string(&index)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Vec<ConversationMeta>>(&t).ok())
+        .is_some()
+    {
+        files.push(index);
+    }
+    (files, ids)
+}
+
+/// Assets belonging to the given conversation ids. `externalize_assets` writes
+/// them as `<conversation id>-<content hash>`, so the id prefix is the claim.
+fn owned_asset_files(dir: &std::path::Path, ids: &[String]) -> Vec<std::path::PathBuf> {
+    let prefixes: Vec<String> = ids
+        .iter()
+        .filter_map(|id| sanitize_id(id).ok())
+        .map(|id| format!("{id}-"))
+        .collect();
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(assets_dir_of(dir)) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if prefixes.iter().any(|p| name.starts_with(p)) {
+                out.push(entry.path());
+            }
+        }
+    }
+    out
+}
+
+/// Move this app's history from one folder to another, and nothing else.
+///
+/// Through 1.5.1 this moved every `*.json` in the folder and the whole
+/// `assets/` directory. A history folder can be one the user picked — their
+/// documents, a project, a synced drive root — so changing the folder moved
+/// unrelated files out of it. Only files this app can prove it wrote are
+/// touched now.
+fn move_our_history(from: &std::path::Path, to: &std::path::Path) {
+    let (files, ids) = owned_history_files(from);
+    for path in &files {
+        if let Some(name) = path.file_name() {
+            move_file(path, &to.join(name));
+        }
+    }
+    let assets = owned_asset_files(from, &ids);
+    if !assets.is_empty() {
         let to_assets = assets_dir_of(to);
         if std::fs::create_dir_all(&to_assets).is_ok() {
-            for entry in entries.flatten() {
-                let path = entry.path();
+            for path in &assets {
                 if let Some(name) = path.file_name() {
-                    move_file(&path, &to_assets.join(name));
+                    move_file(path, &to_assets.join(name));
                 }
             }
         }
+        let from_assets = assets_dir_of(from);
         let _ = std::fs::remove_dir(&from_assets); // only removes if now empty
     }
 }
 
 /// Download an image URL and return it as a base64 data URL, so it survives the
 /// original (often short-lived) URL expiring.
-async fn fetch_as_data_url(client: &reqwest::Client, url: &str) -> Result<String, String> {
+/// A generated image is fetched from an address the provider chose, not one
+/// the user configured — BFL returns a short-lived delivery URL, and a custom
+/// endpoint returns whatever it likes. So the same checks apply as to any
+/// other address this app did not pick.
+const MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024;
+
+/// `trusted_origin` is the endpoint the user configured, when there is one.
+/// An address on that origin is followed as-is: someone running an image
+/// server on their own machine chose that address deliberately, and refusing
+/// `http://127.0.0.1:7860` would break a setup this app offers. Anything
+/// *else* is an address the app did not pick, so it must be public HTTPS.
+async fn fetch_as_data_url(
+    client: &reqwest::Client,
+    url: &str,
+    trusted_origin: Option<&str>,
+) -> Result<String, String> {
+    let parsed = reqwest::Url::parse(url.trim()).map_err(|_| "invalid image URL".to_string())?;
+    let same_origin = trusted_origin
+        .and_then(origin_of)
+        .is_some_and(|t| origin_of(url) == Some(t));
+    if !same_origin {
+        // Without this, an endpoint could answer with 127.0.0.1 or a LAN
+        // address and use this app to reach a service only this machine can
+        // see, reading the reply back into the chat.
+        if parsed.scheme() != "https" {
+            return Err("the generated image must be served over HTTPS".into());
+        }
+        vetted_ip(&parsed).await?;
+    }
+
     let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
-        return Err(format!("could not fetch generated image ({})", resp.status()));
+        return Err(format!(
+            "could not fetch generated image ({})",
+            resp.status()
+        ));
     }
     let content_type = resp
         .headers()
@@ -1014,7 +1201,21 @@ async fn fetch_as_data_url(client: &reqwest::Client, url: &str) -> Result<String
         .and_then(|v| v.to_str().ok())
         .unwrap_or("image/png")
         .to_string();
-    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+
+    // Read in chunks against a cap rather than `bytes()`, which would buffer
+    // whatever is sent. The whole image ends up base64 in a chat message, so
+    // an unbounded response is memory this process does not get back.
+    let mut resp = resp;
+    let mut bytes: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        if bytes.len() + chunk.len() > MAX_IMAGE_BYTES {
+            return Err(format!(
+                "the generated image is larger than {} MB",
+                MAX_IMAGE_BYTES / (1024 * 1024)
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
     Ok(format!(
         "data:{content_type};base64,{}",
         BASE64_STANDARD.encode(&bytes)
@@ -1123,6 +1324,12 @@ async fn bfl_generate(
         .as_str()
         .ok_or("Black Forest Labs: no polling_url in response")?
         .to_string();
+    // The key is sent to this address on every poll, and the address came out
+    // of a response body. Keep it on the origin the key belongs to, so a
+    // tampered or unexpected response cannot direct the credential elsewhere.
+    if origin_of(&polling_url) != origin_of(BFL_BASE) {
+        return Err("Black Forest Labs: the polling address was not on api.eu.bfl.ai".into());
+    }
 
     // Poll until the image is ready (results expire fast, so we fetch right after).
     // Transient poll failures (network blips, 5xx) shouldn't abort a generation
@@ -1144,7 +1351,9 @@ async fn bfl_generate(
             if !pr.status().is_success() {
                 return Err(format!("poll returned {}", pr.status()));
             }
-            pr.json::<serde_json::Value>().await.map_err(|e| e.to_string())
+            pr.json::<serde_json::Value>()
+                .await
+                .map_err(|e| e.to_string())
         };
         let pv = match poll.await {
             Ok(v) => {
@@ -1238,7 +1447,10 @@ async fn custom_image_generate(
         body["model"] = serde_json::Value::String(s.image_model.trim().to_string());
     }
     let mut req = client.post(s.image_url.trim()).json(&body);
-    if let Some(token) = load_secrets().ok().and_then(|sec| trimmed_nonempty(&sec.image_token)) {
+    if let Some(token) = load_secrets()
+        .ok()
+        .and_then(|sec| trimmed_nonempty(&sec.image_token))
+    {
         req = req.bearer_auth(token);
     }
     let resp = req.send().await.map_err(|e| e.to_string())?;
@@ -1248,7 +1460,13 @@ async fn custom_image_generate(
         return Err(format!("Image endpoint returned {status}: {text}"));
     }
     let v: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-    for candidate in [
+    // Endpoints disagree about where they put the image, so take the first
+    // field that actually carries one. This was written as a loop whose every
+    // branch returned, so only the first *present* field was ever considered —
+    // an endpoint answering `"b64_json": ""` alongside a usable `url` produced
+    // an empty image. Blank candidates are skipped now, which is what the loop
+    // shape suggested was intended.
+    let candidate = [
         v["data"][0]["b64_json"].as_str(),
         v["data"][0]["url"].as_str(),
         v["images"][0].as_str(),
@@ -1256,16 +1474,19 @@ async fn custom_image_generate(
     ]
     .into_iter()
     .flatten()
-    {
-        if candidate.starts_with("data:") {
-            return Ok(candidate.to_string());
-        }
-        if candidate.starts_with("http") {
-            return fetch_as_data_url(client, candidate).await;
-        }
-        return Ok(format!("data:image/png;base64,{candidate}"));
+    .map(str::trim)
+    .find(|c| !c.is_empty());
+
+    let Some(candidate) = candidate else {
+        return Err("Image endpoint returned an unrecognized response.".into());
+    };
+    if candidate.starts_with("data:") {
+        return Ok(candidate.to_string());
     }
-    Err("Image endpoint returned an unrecognized response.".into())
+    if candidate.starts_with("http") {
+        return fetch_as_data_url(client, candidate, Some(&s.image_url)).await;
+    }
+    Ok(format!("data:image/png;base64,{candidate}"))
 }
 
 // ---------- Usage & cost tally ----------
@@ -1328,7 +1549,9 @@ async fn check_for_update() -> Result<update::UpdateCheck, String> {
     Ok(update::UpdateCheck {
         update_available: update::is_newer(&published.version, &current),
         latest: published.version,
-        url: published.url.unwrap_or_else(|| update::DOWNLOAD_PAGE.to_string()),
+        url: published
+            .url
+            .unwrap_or_else(|| update::DOWNLOAD_PAGE.to_string()),
         current,
     })
 }
@@ -1370,15 +1593,7 @@ async fn generate_image(
     let _cleanup = CancelCleanup(state.inner(), request_id.clone());
     let client = http_client();
 
-    // Empty provider defaults to the recommended sovereign option (OVHcloud),
-    // unless a custom URL is already configured.
-    let provider = if !s.image_provider.trim().is_empty() {
-        s.image_provider.trim()
-    } else if !s.image_url.trim().is_empty() {
-        "custom"
-    } else {
-        "ovh"
-    };
+    let provider = resolve_image_provider(&s);
 
     if provider == "custom" {
         if s.image_url.trim().is_empty() {
@@ -1398,7 +1613,10 @@ async fn generate_image(
     }
 
     if provider == "ovh" {
-        let Some(key) = load_secrets().ok().and_then(|sec| trimmed_nonempty(&sec.ovh_key)) else {
+        let Some(key) = load_secrets()
+            .ok()
+            .and_then(|sec| trimmed_nonempty(&sec.ovh_key))
+        else {
             return Err("No OVHcloud API key set — add one in Settings → Image generation.".into());
         };
         if !references.is_empty() {
@@ -1412,7 +1630,10 @@ async fn generate_image(
         });
     }
 
-    let Some(key) = load_secrets().ok().and_then(|sec| trimmed_nonempty(&sec.bfl_key)) else {
+    let Some(key) = load_secrets()
+        .ok()
+        .and_then(|sec| trimmed_nonempty(&sec.bfl_key))
+    else {
         return Err(
             "No Black Forest Labs API key set — add one in Settings → Image generation.".into(),
         );
@@ -1433,7 +1654,7 @@ async fn generate_image(
         ));
     }
     let sample = bfl_generate(&client, key.trim(), model, &prompt, &references, &cancel).await?;
-    let image = fetch_as_data_url(&client, &sample).await?;
+    let image = fetch_as_data_url(&client, &sample, None).await?;
     usage::record_image("bfl", model, 1);
     let label = match references.len() {
         0 => format!("Black Forest Labs · {model}"),
@@ -1607,8 +1828,16 @@ async fn staan_search(client: &reqwest::Client, key: &str, query: &str) -> Resul
             if body.trim().is_empty() {
                 body = r["snippet"].as_str().unwrap_or("").to_string();
             }
-            let dated = if date.is_empty() { String::new() } else { format!(" ({date})") };
-            out.push_str(&format!("[{}] {title}{dated}\n{link}\n{}\n\n", i + 1, body.trim()));
+            let dated = if date.is_empty() {
+                String::new()
+            } else {
+                format!(" ({date})")
+            };
+            out.push_str(&format!(
+                "[{}] {title}{dated}\n{link}\n{}\n\n",
+                i + 1,
+                body.trim()
+            ));
         }
     }
     if out.is_empty() {
@@ -1649,8 +1878,17 @@ async fn linkup_search(client: &reqwest::Client, key: &str, query: &str) -> Resu
             let link = r["url"].as_str().unwrap_or("");
             // Linkup content chunks can run long — cap each so one verbose
             // result can't crowd the others out of the tool budget.
-            let content: String = r["content"].as_str().unwrap_or("").chars().take(2000).collect();
-            out.push_str(&format!("[{}] {title}\n{link}\n{}\n\n", i + 1, content.trim()));
+            let content: String = r["content"]
+                .as_str()
+                .unwrap_or("")
+                .chars()
+                .take(2000)
+                .collect();
+            out.push_str(&format!(
+                "[{}] {title}\n{link}\n{}\n\n",
+                i + 1,
+                content.trim()
+            ));
         }
     }
     if out.is_empty() {
@@ -2013,9 +2251,8 @@ fn trim_tool_history(convo: &mut [serde_json::Value]) {
         }
         let len = m["content"].as_str().map(str::len).unwrap_or(0);
         if spent >= TOOL_BUDGET_CHARS {
-            m["content"] = serde_json::Value::String(
-                "[earlier tool result omitted to save context]".into(),
-            );
+            m["content"] =
+                serde_json::Value::String("[earlier tool result omitted to save context]".into());
         } else {
             spent += len;
         }
@@ -2050,7 +2287,9 @@ async fn fetch_page(url: &str) -> Result<String, String> {
             return Err("only http(s) URLs can be fetched".into());
         }
         let pinned = vetted_ip(&current).await?;
-        let host = current.host_str().ok_or_else(|| "invalid URL".to_string())?;
+        let host = current
+            .host_str()
+            .ok_or_else(|| "invalid URL".to_string())?;
         let client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(15))
             .read_timeout(std::time::Duration::from_secs(60))
@@ -2112,9 +2351,11 @@ async fn fetch_page(url: &str) -> Result<String, String> {
     };
     let text = tidy_text(&text);
     if text.is_empty() {
-        return Err("no readable text (the page likely renders its content with \
+        return Err(
+            "no readable text (the page likely renders its content with \
                     JavaScript, which can't be read here)"
-            .into());
+                .into(),
+        );
     }
     if text.chars().count() > FETCH_MAX_CHARS {
         let cut: String = text.chars().take(FETCH_MAX_CHARS).collect();
@@ -2154,6 +2395,53 @@ fn calc_eval(expr: &str) -> Result<String, String> {
 /// `execute_tool`, but reusing an identical call's earlier result within the
 /// same turn (keyed by tool name + args) so a retrying model doesn't re-hit
 /// the search backend for the same query.
+/// The tools that can reach the network. Withdrawn for the rest of a turn once
+/// a workspace file has been read.
+const EGRESS_TOOLS: [&str; 2] = ["web_search", "fetch_page"];
+
+const EGRESS_CLOSED_MSG: &str = "Web access is closed for the rest of this \
+turn, because a file from the user's workspace has been read. This is a fixed \
+rule and not something the user can be asked to lift. Answer from what you \
+already have. If the task genuinely needs a search as well, say so and let the \
+user ask again in a new message — searching first and reading the file \
+afterwards works in a single turn.";
+
+/// Read local, then reach the network — the sequence that turns a page the
+/// model was told to read into a way of sending a user's file somewhere.
+///
+/// `fetch_page` takes a URL the model chose, and a hostile page can instruct
+/// the model to put a file's contents into the next URL it requests. The SSRF
+/// guard does not help: the address is public and perfectly legitimate. So the
+/// two capabilities are separated in time rather than by trying to detect the
+/// intent. Research still works — search, read pages, then read and write
+/// files. What no longer works in one turn is reading a local file and *then*
+/// fetching, which is the direction that leaks.
+///
+/// Deliberately keyed on reading a file, not on listing one. Listing discloses
+/// names and sizes, which is a smaller disclosure, and closing on it would
+/// break the common opening move of looking at the folder before researching.
+/// That residual is stated in SECURITY.md rather than hidden here.
+fn egress_refusal(name: &str, closed: bool) -> Option<String> {
+    (closed && EGRESS_TOOLS.contains(&name)).then(|| EGRESS_CLOSED_MSG.to_string())
+}
+
+/// The tool list minus anything that reaches the network.
+fn without_egress(tools: &serde_json::Value) -> serde_json::Value {
+    serde_json::Value::Array(
+        tools
+            .as_array()
+            .map(|list| {
+                list.iter()
+                    .filter(|t| {
+                        !EGRESS_TOOLS.contains(&t["function"]["name"].as_str().unwrap_or(""))
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default(),
+    )
+}
+
 async fn execute_tool_cached<R: tauri::Runtime>(
     cache: &mut std::collections::HashMap<String, String>,
     ctx: &ToolCtx<'_, R>,
@@ -2169,7 +2457,9 @@ async fn execute_tool_cached<R: tauri::Runtime>(
             let _ = on_event.send(StreamEvent::Status(
                 "↩︎ Reusing an earlier result (same call)".into(),
             ));
-            return format!("{prev}\n\n[Note: identical to an earlier call this turn — don't repeat it again.]");
+            return format!(
+                "{prev}\n\n[Note: identical to an earlier call this turn — don't repeat it again.]"
+            );
         }
     }
     let result = execute_tool(ctx, name, args, on_event).await;
@@ -2214,13 +2504,16 @@ async fn execute_tool<R: tauri::Runtime>(
                 ));
                 query = shorten_query(ctx.client, ctx.key, &query).await;
             }
-            let _ = on_event.send(StreamEvent::Status(format!("🔎 Searching the web: {query}")));
+            let _ = on_event.send(StreamEvent::Status(format!(
+                "🔎 Searching the web: {query}"
+            )));
             let (provider, result) = match backend {
                 SearchBackend::Linkup(k) => ("linkup", linkup_search(ctx.client, k, &query).await),
                 SearchBackend::Staan(k) => ("staan", staan_search(ctx.client, k, &query).await),
-                SearchBackend::Searxng(url, token) => {
-                    ("searxng", searxng_search(ctx.client, url, token, &query).await)
-                }
+                SearchBackend::Searxng(url, token) => (
+                    "searxng",
+                    searxng_search(ctx.client, url, token, &query).await,
+                ),
             };
             match result {
                 Ok(text) => {
@@ -2247,8 +2540,8 @@ async fn execute_tool<R: tauri::Runtime>(
             match fetch_page(&url).await {
                 Ok(text) => text,
                 Err(e) => {
-                    let _ = on_event
-                        .send(StreamEvent::Status(format!("⚠️ Couldn't read {host}: {e}")));
+                    let _ =
+                        on_event.send(StreamEvent::Status(format!("⚠️ Couldn't read {host}: {e}")));
                     format!(
                         "Could not fetch the page: {e}. Interactive pages (official \
                          statistics-bank tables, marketplace search results) usually \
@@ -2355,7 +2648,12 @@ async fn execute_tool<R: tauri::Runtime>(
 /// Native, blocking confirm dialog for a workspace write. Runs on this request's
 /// task; the Tauri event loop (main thread) drives the dialog, so the UI stays
 /// responsive. Returns true only if the user approves.
-fn confirm_write<R: tauri::Runtime>(app: &tauri::AppHandle<R>, path: &str, verb: &str, bytes: usize) -> bool {
+fn confirm_write<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    path: &str,
+    verb: &str,
+    bytes: usize,
+) -> bool {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
     app.dialog()
         .message(format!(
@@ -2364,10 +2662,10 @@ fn confirm_write<R: tauri::Runtime>(app: &tauri::AppHandle<R>, path: &str, verb:
             path,
             bytes
         ))
-        .title(format!("{verb} this file?", ))
+        .title(format!("{verb} this file?",))
         .kind(MessageDialogKind::Warning)
         .buttons(MessageDialogButtons::OkCancelCustom(
-            format!("{verb}"),
+            verb.to_string(),
             "Cancel".into(),
         ))
         .blocking_show()
@@ -2669,11 +2967,7 @@ fn parse_leaked_tool_call(content: &str) -> Option<(String, serde_json::Value)> 
     // GLM template style: first line is the tool name, then arg tags.
     let first = after.trim_start().lines().next().unwrap_or("").trim();
     if !first.is_empty() && !first.starts_with('{') && after.contains("<arg_key>") {
-        let name = first
-            .split_whitespace()
-            .next()
-            .unwrap_or(first)
-            .to_string();
+        let name = first.split_whitespace().next().unwrap_or(first).to_string();
         return Some((name, serde_json::Value::Object(parse_template_args(after))));
     }
 
@@ -2706,7 +3000,9 @@ fn parse_leaked_tool_call(content: &str) -> Option<(String, serde_json::Value)> 
 fn strip_reasoning(text: &str) -> String {
     let mut s = text.to_string();
     loop {
-        let Some(start) = s.find("<think>") else { break };
+        let Some(start) = s.find("<think>") else {
+            break;
+        };
         match s[start..].find("</think>") {
             Some(end) => s.replace_range(start..start + end + "</think>".len(), ""),
             None => {
@@ -2849,7 +3145,10 @@ struct Compaction {
     up_to: usize, // number of leading (non-system) turns folded into `recap`
 }
 
-fn compaction_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>, id: &str) -> Result<std::path::PathBuf, String> {
+fn compaction_path<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    id: &str,
+) -> Result<std::path::PathBuf, String> {
     let safe = sanitize_id(id)?;
     let dir = app
         .path()
@@ -2988,7 +3287,9 @@ async fn compact_payload<R: tauri::Runtime>(
         return candidate;
     }
 
-    let _ = on_event.send(StreamEvent::Status("🧠 Condensing earlier messages…".into()));
+    let _ = on_event.send(StreamEvent::Status(
+        "🧠 Condensing earlier messages…".into(),
+    ));
     let new_recap = summarize_turns(client, key, &transcript).await;
     if new_recap.trim().is_empty() {
         return candidate; // summarization failed — send as-is; friendly error backstops
@@ -3115,7 +3416,10 @@ async fn run_chat<R: tauri::Runtime>(
     }
     if !system_parts.is_empty() {
         let content = system_parts.join("\n\n");
-        convo.insert(0, serde_json::json!({ "role": "system", "content": content }));
+        convo.insert(
+            0,
+            serde_json::json!({ "role": "system", "content": content }),
+        );
     }
 
     // Condense older turns if the payload has grown large (keeps long chats
@@ -3290,6 +3594,9 @@ async fn run_chat<R: tauri::Runtime>(
         // (possibly rate-limited) search backend. Reuse the earlier result.
         let mut tool_cache: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
+        // Set once a workspace file has been read; withdraws the web tools for
+        // the rest of the turn. See `egress_refusal`.
+        let mut egress_closed = false;
         for round in 0..MAX_ROUNDS {
             if is_cancelled(&cancel) {
                 let _ = on_event.send(StreamEvent::Done);
@@ -3318,11 +3625,20 @@ async fn run_chat<R: tauri::Runtime>(
                     )
                 }));
             }
+            // Offer only what is still permitted this turn. Withdrawing the
+            // tool is the primary control; `egress_refusal` below is the
+            // backstop for a model that calls one anyway, from a leaked call
+            // or a stale list.
+            let round_tools = if egress_closed {
+                without_egress(&tools)
+            } else {
+                tools.clone()
+            };
             // 16k output budget: a concluding round can carry a full synthesis
             // plus a large HTML artifact, which overflowed the old 8k cap and
             // truncated mid-artifact. Reasoning counts against this too.
             let mut body = serde_json::json!({
-                "model": model, "messages": round_msgs, "tools": tools, "stream": true,
+                "model": model, "messages": round_msgs, "tools": round_tools, "stream": true,
                 "max_tokens": MAX_OUTPUT_TOKENS,
                 "stream_options": { "include_usage": true }
             });
@@ -3360,10 +3676,16 @@ async fn run_chat<R: tauri::Runtime>(
                 // <tool_call> text. Salvage it, run the tool, keep going.
                 if let Some((name, args)) = parse_leaked_tool_call(&acc.content) {
                     eprintln!("[search] round {round}: salvaged leaked {name} call");
-                    let results = execute_tool_cached(
-                        &mut tool_cache, &tool_ctx, &name, &args, &on_event,
-                    )
-                    .await;
+                    let results = match egress_refusal(&name, egress_closed) {
+                        Some(refusal) => refusal,
+                        None => {
+                            execute_tool_cached(&mut tool_cache, &tool_ctx, &name, &args, &on_event)
+                                .await
+                        }
+                    };
+                    if name == "read_workspace_file" && tool_ctx.workspace.is_some() {
+                        egress_closed = true;
+                    }
                     // There is no structured call to hang a `tool` message on,
                     // so feed the results back as a user turn any model accepts.
                     convo.push(serde_json::json!({ "role": "assistant", "content": acc.content }));
@@ -3440,13 +3762,22 @@ async fn run_chat<R: tauri::Runtime>(
                         ));
                         SEARCH_BUDGET_MSG.to_string()
                     }
-                    Some(args) => {
-                        if t.name == "web_search" {
-                            searches_used += 1;
-                        }
-                        execute_tool_cached(&mut tool_cache, &tool_ctx, &t.name, args, &on_event)
+                    Some(args) => match egress_refusal(&t.name, egress_closed) {
+                        Some(refusal) => refusal,
+                        None => {
+                            if t.name == "web_search" {
+                                searches_used += 1;
+                            }
+                            execute_tool_cached(
+                                &mut tool_cache,
+                                &tool_ctx,
+                                &t.name,
+                                args,
+                                &on_event,
+                            )
                             .await
-                    }
+                        }
+                    },
                     None => {
                         eprintln!(
                             "[search] round {round}: {} call had malformed arguments ({}B)",
@@ -3462,6 +3793,12 @@ async fn run_chat<R: tauri::Runtime>(
                         )
                     }
                 };
+                // Local data is now in this turn's context; the web tools are
+                // withdrawn from here on. Set after the call, so a read that
+                // was refused or found nothing does not close anything.
+                if t.name == "read_workspace_file" && tool_ctx.workspace.is_some() {
+                    egress_closed = true;
+                }
                 convo.push(serde_json::json!({
                     "role": "tool", "tool_call_id": t.id, "content": content
                 }));
@@ -3480,11 +3817,22 @@ async fn run_chat<R: tauri::Runtime>(
                 call any tools."
         }));
         // Extra token headroom so reasoning + a full synthesis both fit.
-        let (content, _) =
-            stream_completion_max(&client, &key, model, &convo, MAX_OUTPUT_TOKENS, None, &cancel, &on_event)
-                .await?;
+        let (content, _) = stream_completion_max(
+            &client,
+            &key,
+            model,
+            &convo,
+            MAX_OUTPUT_TOKENS,
+            None,
+            &cancel,
+            &on_event,
+        )
+        .await?;
         if strip_reasoning(&content).is_empty() && !is_cancelled(&cancel) {
-            eprintln!("[search] exhausted-rounds pass invisible ({}B raw)", content.len());
+            eprintln!(
+                "[search] exhausted-rounds pass invisible ({}B raw)",
+                content.len()
+            );
             let _ = on_event.send(StreamEvent::Error(
                 "I ran into trouble writing up the answer — please try asking again.".into(),
             ));
@@ -3647,24 +3995,58 @@ fn delete_assets_of(dir: &std::path::Path, safe_id: &str) {
     }
 }
 
-/// The effective history folder for a given settings snapshot: the user's
-/// custom folder if set, otherwise `<app config dir>/conversations`.
-fn history_dir_for(
-    app: &tauri::AppHandle,
-    s: &AppSettings,
-) -> Result<std::path::PathBuf, String> {
-    let ours = s.history_dir.trim().is_empty();
-    let dir = if ours {
+/// The folder created inside whatever the user picks. History is never written
+/// directly into the chosen folder: someone can pick their documents, a
+/// project, or the root of a synced drive, and this app should not be one of
+/// several things writing there.
+const HISTORY_SUBDIR: &str = "Sovatela";
+
+/// Written into a folder once this app owns it. Its presence means the
+/// adoption below has already run; `delete_all_data` also refuses a folder
+/// that does not carry it.
+const HISTORY_MARKER: &str = ".sovatela-history";
+
+const HISTORY_MARKER_TEXT: &str = "\
+This folder holds Sovatela's chat history. The app treats it as its own:
+changing the history folder moves these files, and Settings -> Privacy & data
+-> Delete all data removes them. Deleting this marker does not delete your
+chats, but the app will stop recognising the folder as its own.
+";
+
+/// Move history written by 1.5.1 and earlier — which wrote directly into the
+/// folder the user picked — into the subfolder used from 1.5.2. Only files
+/// this app can prove it wrote are moved; anything else the user keeps there
+/// stays where it is.
+fn adopt_legacy_history(chosen: &std::path::Path, dir: &std::path::Path) {
+    if chosen == dir {
+        return;
+    }
+    move_our_history(chosen, dir);
+}
+
+/// The effective history folder for a given settings snapshot: `Sovatela/`
+/// inside the user's custom folder if set, otherwise
+/// `<app config dir>/conversations`.
+fn history_dir_for(app: &tauri::AppHandle, s: &AppSettings) -> Result<std::path::PathBuf, String> {
+    let chosen = s.history_dir.trim();
+    let dir = if chosen.is_empty() {
         app.path()
             .app_config_dir()
             .map_err(|e| e.to_string())?
             .join("conversations")
     } else {
-        std::path::PathBuf::from(s.history_dir.trim())
+        std::path::PathBuf::from(chosen).join(HISTORY_SUBDIR)
     };
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    if ours {
-        restrict_dir(&dir);
+    // Owner-only in both cases now. The app's own folder was restricted in
+    // 1.4.0; a folder inside the user's own is equally ours and equally
+    // private, and on a synced drive the permission travels with it.
+    restrict_dir(&dir);
+    if !dir.join(HISTORY_MARKER).exists() {
+        if !chosen.is_empty() {
+            adopt_legacy_history(std::path::Path::new(chosen), &dir);
+        }
+        let _ = std::fs::write(dir.join(HISTORY_MARKER), HISTORY_MARKER_TEXT);
     }
     Ok(dir)
 }
@@ -3898,15 +4280,20 @@ async fn reveal_history_dir(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 async fn delete_all_data(app: tauri::AppHandle) -> Result<(), String> {
     let dir = conversations_dir(&app)?;
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.extension().and_then(|x| x.to_str()) == Some("json") {
-                let _ = std::fs::remove_file(&p);
-            }
-        }
+    // Delete only what this app wrote. Through 1.5.1 this removed every
+    // `*.json` in the folder and then `remove_dir_all` on `assets/` — in a
+    // folder the user chose, which could be their documents or a synced drive
+    // root. Both are now identified by content, not by extension.
+    let (files, ids) = owned_history_files(&dir);
+    for path in files {
+        let _ = std::fs::remove_file(path);
     }
-    let _ = std::fs::remove_dir_all(assets_dir_of(&dir));
+    for path in owned_asset_files(&dir, &ids) {
+        let _ = std::fs::remove_file(path);
+    }
+    // Only if it is now empty; never recursively.
+    let _ = std::fs::remove_dir(assets_dir_of(&dir));
+    let _ = std::fs::remove_file(dir.join(HISTORY_MARKER));
 
     let config = app.path().app_config_dir().map_err(|e| e.to_string())?;
     let _ = std::fs::remove_dir_all(config.join("compactions"));
@@ -3951,7 +4338,9 @@ struct ProjectMeta {
     updated_at: String,
 }
 
-fn projects_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<std::path::PathBuf, String> {
+fn projects_dir<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<std::path::PathBuf, String> {
     let dir = app
         .path()
         .app_config_dir()
@@ -3961,7 +4350,10 @@ fn projects_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<std::pat
     Ok(dir)
 }
 
-fn project_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>, id: &str) -> Result<std::path::PathBuf, String> {
+fn project_path<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    id: &str,
+) -> Result<std::path::PathBuf, String> {
     let safe = sanitize_id(id)?;
     Ok(projects_dir(app)?.join(format!("{safe}.json")))
 }
@@ -4072,7 +4464,10 @@ mod tests {
     #[test]
     fn asset_roundtrip_externalizes_and_inlines() {
         let dir = temp_dir("roundtrip");
-        let big = format!("data:image/png;base64,{}", "A".repeat(ASSET_INLINE_LIMIT * 2));
+        let big = format!(
+            "data:image/png;base64,{}",
+            "A".repeat(ASSET_INLINE_LIMIT * 2)
+        );
         let small = "data:image/png;base64,tiny";
         let mut messages = serde_json::json!([
             { "role": "user", "text": "hi", "attachments": [{ "kind": "image", "name": "x.png", "dataUrl": big }] },
@@ -4087,7 +4482,10 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with("asset://conv1-"));
-        assert!(messages[1]["image"].as_str().unwrap().starts_with("asset://"));
+        assert!(messages[1]["image"]
+            .as_str()
+            .unwrap()
+            .starts_with("asset://"));
         assert_eq!(messages[2]["image"], *small);
         // Content-addressed: the same image is stored once.
         assert_eq!(std::fs::read_dir(assets_dir_of(&dir)).unwrap().count(), 1);
@@ -4137,7 +4535,10 @@ mod tests {
 
         // FLUX.2 numbers its references from the second one on — this is the
         // family that holds a style across a set.
-        let three: Vec<String> = ["AAAA", "BBBB", "CCCC"].iter().map(|s| s.to_string()).collect();
+        let three: Vec<String> = ["AAAA", "BBBB", "CCCC"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let flux2 = bfl_body("flux-2-pro", "a matching download icon", &three);
         assert_eq!(flux2["input_image"], "AAAA");
         assert_eq!(flux2["input_image_2"], "BBBB");
@@ -4235,7 +4636,9 @@ mod tests {
         // return type.
         let src = include_str!("lib.rs");
         for reader in ["async fn get_key_hint", "async fn get_terminal_key_status"] {
-            let at = src.find(reader).unwrap_or_else(|| panic!("{reader} is gone"));
+            let at = src
+                .find(reader)
+                .unwrap_or_else(|| panic!("{reader} is gone"));
             let body = &src[at..at + 400];
             assert!(
                 body.contains("key_hint("),
@@ -4273,6 +4676,466 @@ mod tests {
         );
     }
 
+    // ---- A token belongs to the endpoint it was issued for ------------------
+
+    #[test]
+    fn changing_the_endpoint_host_drops_the_stored_token() {
+        // The interface never echoes a saved secret, so an empty token field
+        // means "keep what is stored". That carried a token onto a new host.
+        assert!(!token_survives_url_change(
+            "https://search.mine.example/search",
+            "https://someone-elses.example/search",
+            ""
+        ));
+        // A supplied replacement is for the new host, so it stands.
+        assert!(token_survives_url_change(
+            "https://search.mine.example/search",
+            "https://someone-elses.example/search",
+            "new-token"
+        ));
+    }
+
+    #[test]
+    fn editing_a_path_or_retyping_the_same_host_keeps_the_token() {
+        assert!(token_survives_url_change(
+            "https://search.mine.example/search",
+            "https://search.mine.example/api/search",
+            ""
+        ));
+        assert!(token_survives_url_change(
+            "https://search.mine.example/search",
+            "  https://search.mine.example/search  ",
+            ""
+        ));
+    }
+
+    #[test]
+    fn a_port_or_scheme_change_is_a_different_endpoint() {
+        assert!(!token_survives_url_change(
+            "https://box.local:8080/search",
+            "https://box.local:9090/search",
+            ""
+        ));
+        // http and https are different origins, and downgrading would put the
+        // token on the wire in clear.
+        assert!(!token_survives_url_change(
+            "https://box.local/search",
+            "http://box.local/search",
+            ""
+        ));
+    }
+
+    #[test]
+    fn an_unreadable_url_forgets_the_token_rather_than_guessing() {
+        assert!(!token_survives_url_change(
+            "https://a.example",
+            "not a url",
+            ""
+        ));
+        assert!(!token_survives_url_change("", "https://a.example", ""));
+    }
+
+    #[test]
+    fn the_bfl_polling_address_must_stay_on_the_bfl_origin() {
+        // The key is sent to this address on every poll and it comes out of a
+        // response body.
+        assert_eq!(
+            origin_of(BFL_BASE).as_deref(),
+            Some("https://api.eu.bfl.ai")
+        );
+        assert_eq!(
+            origin_of("https://api.eu.bfl.ai/v1/get_result?id=x"),
+            origin_of(BFL_BASE)
+        );
+        for elsewhere in [
+            "https://api.eu.bfl.ai.evil.example/v1/get_result",
+            "http://api.eu.bfl.ai/v1/get_result",
+            "https://api.us.bfl.ai/v1/get_result",
+        ] {
+            assert_ne!(origin_of(elsewhere), origin_of(BFL_BASE), "{elsewhere}");
+        }
+    }
+
+    #[test]
+    fn the_chat_endpoint_override_is_not_compiled_into_shipping_builds() {
+        // The override exists so tests can point at a mock server. It was read
+        // in every build, so an inherited environment variable could send the
+        // user's Scaleway key elsewhere. This test runs under cfg(test), where
+        // the override is live — what it pins is that the source guards it.
+        let src = include_str!("lib.rs");
+        let at = src.find("fn base_url()").expect("base_url is gone");
+        let body = &src[..at];
+        assert!(
+            body.trim_end().ends_with("#[cfg(test)]") || src[at..at + 200].contains("#[cfg(test)]"),
+            "GLM_CHAT_ENDPOINT must be read only under cfg(test)"
+        );
+    }
+
+    // ---- Reading local files closes web access -----------------------------
+    //
+    // The exposure: with web search and a workspace both active, the same loop
+    // holds `fetch_page` — which takes a URL the model chose — and
+    // `read_workspace_file`. A hostile page can tell the model to read a file
+    // and put its contents in the next URL it requests, and the SSRF guard
+    // cannot help, because that URL is public and well-formed.
+    //
+    // The two capabilities are separated in time rather than by trying to
+    // recognise a malicious instruction, which is not a thing that can be done
+    // reliably. Research works as before; reading a local file and then
+    // fetching does not.
+
+    fn tool_named(name: &str) -> serde_json::Value {
+        serde_json::json!({ "type": "function", "function": { "name": name } })
+    }
+
+    fn full_tool_set() -> serde_json::Value {
+        serde_json::Value::Array(
+            [
+                "web_search",
+                "fetch_page",
+                "calculate",
+                "list_workspace_files",
+                "read_workspace_file",
+                "write_workspace_file",
+            ]
+            .iter()
+            .map(|n| tool_named(n))
+            .collect(),
+        )
+    }
+
+    fn names_of(tools: &serde_json::Value) -> Vec<String> {
+        tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["function"]["name"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn withdrawing_egress_leaves_every_local_tool() {
+        let left = names_of(&without_egress(&full_tool_set()));
+        assert!(!left.contains(&"web_search".to_string()));
+        assert!(!left.contains(&"fetch_page".to_string()));
+        // The point is to stop data leaving, not to end the turn: the model
+        // must still be able to finish the job it was asked to do.
+        for kept in [
+            "calculate",
+            "list_workspace_files",
+            "read_workspace_file",
+            "write_workspace_file",
+        ] {
+            assert!(left.contains(&kept.to_string()), "{kept} was withdrawn too");
+        }
+    }
+
+    #[test]
+    fn a_fetch_after_a_local_read_is_refused() {
+        // Withdrawing the tool is the control; this is the backstop for a
+        // model that calls one anyway — from a leaked <tool_call> or a stale
+        // list — and it is the path an injected instruction would take.
+        assert!(egress_refusal("fetch_page", true).is_some());
+        assert!(egress_refusal("web_search", true).is_some());
+        // Before any local read, both are allowed.
+        assert!(egress_refusal("fetch_page", false).is_none());
+        assert!(egress_refusal("web_search", false).is_none());
+    }
+
+    #[test]
+    fn local_tools_are_never_refused() {
+        for name in [
+            "calculate",
+            "list_workspace_files",
+            "read_workspace_file",
+            "write_workspace_file",
+        ] {
+            assert!(
+                egress_refusal(name, true).is_none(),
+                "{name} was refused, but it reaches nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn the_refusal_does_not_invite_the_model_to_ask_for_an_exception() {
+        // An injected page's next move is to tell the model to ask the user to
+        // lift the restriction, or to claim the user already agreed. The
+        // message says the rule is fixed and offers the legitimate route
+        // (search first, read afterwards) instead of a negotiation.
+        let msg = egress_refusal("fetch_page", true).unwrap();
+        assert!(msg.contains("fixed rule"));
+        assert!(msg.contains("not something the user can be asked to lift"));
+        assert!(msg.to_lowercase().contains("new message"));
+    }
+
+    #[test]
+    fn ordering_is_what_matters_not_the_tools_present() {
+        // Search-then-read is the research flow and stays whole: nothing is
+        // withdrawn until a read has actually happened.
+        let mut closed = false;
+        for step in ["web_search", "fetch_page", "read_workspace_file"] {
+            assert!(
+                egress_refusal(step, closed).is_none(),
+                "{step} blocked too early"
+            );
+            if step == "read_workspace_file" {
+                closed = true;
+            }
+        }
+        // Only the step after the read is stopped.
+        assert!(egress_refusal("fetch_page", closed).is_some());
+        assert!(egress_refusal("write_workspace_file", closed).is_none());
+    }
+
+    // ---- Which image provider, and is it ready ---------------------------
+    //
+    // The interface used to answer both of these itself and disagreed with the
+    // backend on both: an empty provider meant OVHcloud here and Black Forest
+    // Labs there, and readiness was tested against a BFL key whichever
+    // provider was set. An OVHcloud-only user — the recommended sovereign
+    // configuration — was sent to Settings to configure something already
+    // configured. One answer now, and these pin it.
+
+    fn img_settings(provider: &str, url: &str) -> AppSettings {
+        AppSettings {
+            image_provider: provider.into(),
+            image_url: url.into(),
+            ..Default::default()
+        }
+    }
+
+    fn img_secrets(bfl: &str, ovh: &str) -> Secrets {
+        Secrets {
+            bfl_key: bfl.into(),
+            ovh_key: ovh.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn an_unset_provider_means_ovhcloud() {
+        assert_eq!(resolve_image_provider(&img_settings("", "")), "ovh");
+        // …unless a custom endpoint is already configured.
+        assert_eq!(
+            resolve_image_provider(&img_settings("", "https://example.invalid/v1")),
+            "custom"
+        );
+        // An explicit choice always wins.
+        assert_eq!(resolve_image_provider(&img_settings("bfl", "")), "bfl");
+        assert_eq!(
+            resolve_image_provider(&img_settings("ovh", "https://example.invalid/v1")),
+            "ovh"
+        );
+    }
+
+    #[test]
+    fn ovh_only_is_configured() {
+        // The regression: an OVHcloud key and no BFL key. Reported as
+        // unconfigured through 1.5.1.
+        let s = img_settings("ovh", "");
+        assert!(image_is_configured(&s, &img_secrets("", "OVH-KEY")));
+        assert!(!image_is_configured(&s, &img_secrets("BFL-KEY", "")));
+
+        // Same again with the provider left empty, which resolves to OVHcloud.
+        let s = img_settings("", "");
+        assert!(image_is_configured(&s, &img_secrets("", "OVH-KEY")));
+        assert!(!image_is_configured(&s, &img_secrets("BFL-KEY", "")));
+    }
+
+    #[test]
+    fn bfl_only_is_configured() {
+        let s = img_settings("bfl", "");
+        assert!(image_is_configured(&s, &img_secrets("BFL-KEY", "")));
+        assert!(!image_is_configured(&s, &img_secrets("", "OVH-KEY")));
+    }
+
+    #[test]
+    fn a_custom_endpoint_needs_only_its_url() {
+        let s = img_settings("custom", "https://example.invalid/v1/images");
+        assert!(image_is_configured(&s, &img_secrets("", "")));
+        // No URL, no endpoint to call.
+        assert!(!image_is_configured(
+            &img_settings("custom", ""),
+            &img_secrets("", "")
+        ));
+    }
+
+    #[test]
+    fn nothing_configured_is_not_configured() {
+        assert!(!image_is_configured(
+            &img_settings("", ""),
+            &img_secrets("", "")
+        ));
+        // Whitespace is not a key.
+        assert!(!image_is_configured(
+            &img_settings("ovh", ""),
+            &img_secrets("", "   ")
+        ));
+        assert!(!image_is_configured(
+            &img_settings("bfl", ""),
+            &img_secrets("  ", "")
+        ));
+    }
+
+    // ---- History folders hold other people's files ------------------------
+    //
+    // A user can point history at any folder — their documents, a project, the
+    // root of a synced drive. Through 1.5.1, changing the folder moved every
+    // `*.json` out of it, and Delete all data removed every `*.json` plus
+    // `remove_dir_all(assets/)`. Both are now content-identified. Every test
+    // below plants files that must survive, and fails if they do not.
+
+    fn history_root(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "sov-hist-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Write a conversation exactly as the app writes one: named for its id.
+    fn write_conversation(dir: &std::path::Path, id: &str) {
+        std::fs::write(
+            dir.join(format!("{id}.json")),
+            serde_json::json!({
+                "id": id, "title": "a chat", "updated_at": "2026-08-25T00:00:00Z",
+                "messages": [{ "role": "user", "text": "hi" }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    /// The files a real folder might already hold. None are ours.
+    fn plant_bystanders(dir: &std::path::Path) {
+        std::fs::write(dir.join("package.json"), r#"{"name":"their-app"}"#).unwrap();
+        std::fs::write(dir.join("tsconfig.json"), r#"{"compilerOptions":{}}"#).unwrap();
+        std::fs::write(dir.join("important.json"), r#"{"payroll":true}"#).unwrap();
+        std::fs::write(dir.join("notes.md"), "keep me").unwrap();
+        // A JSON with an id and title, but not named after its id — close
+        // enough to be adopted by a weaker ownership test.
+        std::fs::write(
+            dir.join("looks-similar.json"),
+            r#"{"id":"something-else","title":"not ours","messages":[]}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        std::fs::write(dir.join("assets/keep-me.png"), b"their image").unwrap();
+    }
+
+    fn bystanders_intact(dir: &std::path::Path) {
+        for f in [
+            "package.json",
+            "tsconfig.json",
+            "important.json",
+            "notes.md",
+            "looks-similar.json",
+            "assets/keep-me.png",
+        ] {
+            assert!(
+                dir.join(f).exists(),
+                "{f} was destroyed — it was never ours"
+            );
+        }
+    }
+
+    #[test]
+    fn moving_history_leaves_other_files_where_they_are() {
+        let from = history_root("move-from");
+        let to = history_root("move-to");
+        plant_bystanders(&from);
+        write_conversation(&from, "conv-one");
+        write_conversation(&from, "conv-two");
+        std::fs::write(
+            from.join("index.json"),
+            r#"[{"id":"conv-one","title":"a chat"}]"#,
+        )
+        .unwrap();
+        std::fs::write(from.join("assets/conv-one-9f2b"), b"our image").unwrap();
+
+        move_our_history(&from, &to);
+
+        bystanders_intact(&from);
+        assert!(to.join("conv-one.json").exists());
+        assert!(to.join("conv-two.json").exists());
+        assert!(to.join("index.json").exists());
+        assert!(to.join("assets/conv-one-9f2b").exists());
+        assert!(
+            !from.join("conv-one.json").exists(),
+            "ours should have moved"
+        );
+        let _ = std::fs::remove_dir_all(&from);
+        let _ = std::fs::remove_dir_all(&to);
+    }
+
+    #[test]
+    fn deleting_everything_deletes_only_ours() {
+        let dir = history_root("delete");
+        plant_bystanders(&dir);
+        write_conversation(&dir, "conv-one");
+        std::fs::write(dir.join("assets/conv-one-9f2b"), b"our image").unwrap();
+
+        // The body of delete_all_data that touches the history folder.
+        let (files, ids) = owned_history_files(&dir);
+        for path in files {
+            let _ = std::fs::remove_file(path);
+        }
+        for path in owned_asset_files(&dir, &ids) {
+            let _ = std::fs::remove_file(path);
+        }
+        let _ = std::fs::remove_dir(assets_dir_of(&dir));
+
+        assert!(!dir.join("conv-one.json").exists(), "ours should be gone");
+        assert!(!dir.join("assets/conv-one-9f2b").exists());
+        bystanders_intact(&dir);
+        assert!(
+            dir.join("assets").is_dir(),
+            "the assets folder still held someone else's file and must survive"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_json_that_is_not_named_for_its_id_is_not_ours() {
+        let dir = history_root("naming");
+        write_conversation(&dir, "conv-one");
+        assert_eq!(
+            conversation_id_of(&dir.join("conv-one.json")).as_deref(),
+            Some("conv-one")
+        );
+
+        // Same content, wrong filename: this is how an unrelated file that
+        // happens to carry an id would look, and it must not be claimed.
+        std::fs::copy(dir.join("conv-one.json"), dir.join("copy.json")).unwrap();
+        assert_eq!(conversation_id_of(&dir.join("copy.json")), None);
+
+        std::fs::write(dir.join("package.json"), r#"{"name":"x","version":"1"}"#).unwrap();
+        assert_eq!(conversation_id_of(&dir.join("package.json")), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn assets_are_claimed_only_by_conversation_prefix() {
+        let dir = history_root("assets");
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        std::fs::write(dir.join("assets/conv-one-9f2b"), b"ours").unwrap();
+        std::fs::write(dir.join("assets/holiday.png"), b"theirs").unwrap();
+        // A name that starts with a *different* id must not be swept in.
+        std::fs::write(dir.join("assets/conv-two-1111"), b"another chat's").unwrap();
+
+        let owned = owned_asset_files(&dir, &["conv-one".to_string()]);
+        let names: Vec<String> = owned
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["conv-one-9f2b".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // ---- Real-document round-trips -------------------------------------
     //
     // The tests below build genuine files — a zip with the entry the extractor
@@ -4307,7 +5170,7 @@ mod tests {
     /// content stream.
     fn build_pdf(text: &str, page_extra: &str) -> Vec<u8> {
         let stream = format!("BT /F1 24 Tf 72 700 Td ({text}) Tj ET\n");
-        let objects = vec![
+        let objects = [
             "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
             "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
             format!(
@@ -4434,9 +5297,8 @@ mod tests {
         // rather than unwinding, so pdf_to_text's catch_unwind cannot contain
         // it. If that regresses, this test does not fail; it takes the whole
         // test binary down, which is the alarm.
-        match &result {
-            Ok(text) => assert!(text.contains("ok"), "parsed but lost the text: {text:?}"),
-            Err(_) => {}
+        if let Ok(text) = &result {
+            assert!(text.contains("ok"), "parsed but lost the text: {text:?}")
         }
         assert!(
             elapsed < std::time::Duration::from_secs(20),
@@ -4447,10 +5309,9 @@ mod tests {
     #[test]
     fn a_start_tag_with_many_attributes_does_not_take_quadratic_time() {
         // RUSTSEC-2026-0194: duplicate-name checking was O(n^2) per tag.
-        let attrs: String = (0..20_000)
-            .map(|i| format!(" a{i}=\"v\""))
-            .collect();
-        let xml = format!("<w:document><w:body><w:p{attrs}><w:t>done</w:t></w:p></w:body></w:document>");
+        let attrs: String = (0..20_000).map(|i| format!(" a{i}=\"v\"")).collect();
+        let xml =
+            format!("<w:document><w:body><w:p{attrs}><w:t>done</w:t></w:p></w:body></w:document>");
         let started = std::time::Instant::now();
         let text = document_text("wide.docx", &zip_with("word/document.xml", &xml));
         assert!(
@@ -4547,13 +5408,17 @@ mod tests {
         acc.feed(&serde_json::json!({ "choices": [{ "delta": { "tool_calls": [
             { "index": 0, "id": "call_1", "function": { "name": "web_search", "arguments": "{\"qu" } }
         ] } }] }));
-        acc.feed(&serde_json::json!({ "choices": [{ "delta": { "tool_calls": [
+        acc.feed(
+            &serde_json::json!({ "choices": [{ "delta": { "tool_calls": [
             { "index": 0, "function": { "arguments": "ery\": \"eu ai act\"}" } }
-        ] } }] }));
+        ] } }] }),
+        );
         // A second parallel call at index 1.
-        acc.feed(&serde_json::json!({ "choices": [{ "delta": { "tool_calls": [
+        acc.feed(
+            &serde_json::json!({ "choices": [{ "delta": { "tool_calls": [
             { "index": 1, "id": "call_2", "function": { "name": "web_search", "arguments": "{}" } }
-        ] } }] }));
+        ] } }] }),
+        );
         assert_eq!(acc.tool_calls.len(), 2);
         assert_eq!(acc.tool_calls[0].id, "call_1");
         assert_eq!(acc.tool_calls[0].name, "web_search");
@@ -4641,9 +5506,19 @@ mod tests {
     #[test]
     fn private_hosts_are_rejected() {
         for h in [
-            "localhost", "127.0.0.1", "10.0.0.5", "192.168.1.1", "172.16.0.1",
-            "169.254.1.1", "0.0.0.0", "::1", "[::1]", "fd00::1", "fe80::1",
-            "myserver.local", "",
+            "localhost",
+            "127.0.0.1",
+            "10.0.0.5",
+            "192.168.1.1",
+            "172.16.0.1",
+            "169.254.1.1",
+            "0.0.0.0",
+            "::1",
+            "[::1]",
+            "fd00::1",
+            "fe80::1",
+            "myserver.local",
+            "",
             // Bypasses found by the July 2026 assessment + follow-up review:
             "[::ffff:127.0.0.1]", // IPv4-mapped V6 passed the old V6-only arm
             "::ffff:10.0.0.1",
@@ -4660,7 +5535,10 @@ mod tests {
             assert!(is_private_host(h), "{h} should be rejected");
         }
         for h in [
-            "example.com", "93.184.216.34", "statbank.dk", "2606:2800:220:1::1",
+            "example.com",
+            "93.184.216.34",
+            "statbank.dk",
+            "2606:2800:220:1::1",
             "100.128.0.1", // just past CGNAT's /10
             "198.20.0.1",  // just past benchmarking's /15
         ] {
@@ -4679,7 +5557,11 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(json.contains("Denmark"), "unexpected body: {}", &json[..json.len().min(200)]);
+        assert!(
+            json.contains("Denmark"),
+            "unexpected body: {}",
+            &json[..json.len().min(200)]
+        );
         // http→https redirect is followed manually and re-vetted per hop.
         let page = fetch_page("http://github.com/").await.unwrap();
         assert!(!page.is_empty());
@@ -4725,7 +5607,10 @@ mod tests {
         })];
         // GLM-5.2 spends tokens on a hidden reasoning phase before any visible
         // content, so a realistic budget is needed or the reply comes back empty.
-        let opts = glm::CompletionOptions { max_tokens: 512, ..Default::default() };
+        let opts = glm::CompletionOptions {
+            max_tokens: 512,
+            ..Default::default()
+        };
         let usage = std::cell::Cell::new(None);
         let content = glm::complete(&client, key.trim(), &messages, &opts, None, |ev, _| {
             if let glm::CompletionEvent::Usage(u) = ev {
@@ -4736,8 +5621,13 @@ mod tests {
         .await
         .expect("Scaleway chat completion failed");
         assert!(!content.trim().is_empty(), "empty reply");
-        let u = usage.get().expect("no usage reported — cost tracking would break");
-        assert!(u.prompt > 0 && u.completion > 0, "token split looks wrong: {u:?}");
+        let u = usage
+            .get()
+            .expect("no usage reported — cost tracking would break");
+        assert!(
+            u.prompt > 0 && u.completion > 0,
+            "token split looks wrong: {u:?}"
+        );
         eprintln!(
             "PASS scaleway chat: reply={:?} tokens={}in+{}out",
             content.trim(),
@@ -4759,7 +5649,11 @@ mod tests {
             .send()
             .await
             .expect("request failed");
-        assert!(resp.status().is_success(), "Scaleway rejected the key: {}", resp.status());
+        assert!(
+            resp.status().is_success(),
+            "Scaleway rejected the key: {}",
+            resp.status()
+        );
         eprintln!("PASS scaleway key validates");
     }
 
@@ -4820,11 +5714,14 @@ mod tests {
         )
         .await
         .expect("BFL image generation failed");
-        assert!(sample.starts_with("http"), "unexpected sample URL: {sample}");
+        assert!(
+            sample.starts_with("http"),
+            "unexpected sample URL: {sample}"
+        );
         // Full app path: BFL returns a short-lived URL that generate_image then
         // fetches and embeds as a data URL — verify that second step too, since
         // the URL expires within ~10 minutes.
-        let data = fetch_as_data_url(&client, &sample)
+        let data = fetch_as_data_url(&client, &sample, None)
             .await
             .expect("fetching/embedding the BFL image failed");
         assert!(
@@ -4832,7 +5729,10 @@ mod tests {
             "expected an image data URL, got: {}",
             &data[..data.len().min(40)]
         );
-        eprintln!("PASS bfl image: url returned, embedded {} bytes", data.len());
+        eprintln!(
+            "PASS bfl image: url returned, embedded {} bytes",
+            data.len()
+        );
     }
 
     /// The multi-reference path end to end, which is the one that matters for a
@@ -4857,7 +5757,9 @@ mod tests {
                 &client,
                 key.trim(),
                 "flux-2-pro",
-                &format!("a flat line icon of {subject}, thin dark strokes, plain white background"),
+                &format!(
+                    "a flat line icon of {subject}, thin dark strokes, plain white background"
+                ),
                 &[],
                 &cancel,
             )
@@ -4865,7 +5767,7 @@ mod tests {
             .expect("BFL image generation failed");
             references.push(
                 reference_payload(
-                    &fetch_as_data_url(&client, &url)
+                    &fetch_as_data_url(&client, &url, None)
                         .await
                         .expect("fetching the reference image failed"),
                 )
@@ -4883,7 +5785,10 @@ mod tests {
         )
         .await
         .expect("BFL generation from reference images failed");
-        assert!(sample.starts_with("http"), "unexpected sample URL: {sample}");
+        assert!(
+            sample.starts_with("http"),
+            "unexpected sample URL: {sample}"
+        );
         eprintln!(
             "PASS bfl image from {} references — inspect it by hand for style match: {sample}",
             references.len()
@@ -4958,8 +5863,8 @@ mod tests {
             scaleway.trim().to_string(),
             None,
             messages,
-            true, // web_search on
-            true, // and forced, as on the turn the user switches it on
+            true,  // web_search on
+            true,  // and forced, as on the turn the user switches it on
             false, // quick answers off
             None,
             None,
@@ -4984,8 +5889,14 @@ mod tests {
         let after = usage::summary();
         let searches = after.all_time.search.searches - before.all_time.search.searches;
         let out_tokens = after.all_time.ai.output_tokens - before.all_time.ai.output_tokens;
-        assert!(searches >= 1, "the web search was not recorded in the usage ledger");
-        assert!(out_tokens > 0, "chat tokens were not recorded in the usage ledger");
+        assert!(
+            searches >= 1,
+            "the web search was not recorded in the usage ledger"
+        );
+        assert!(
+            out_tokens > 0,
+            "chat tokens were not recorded in the usage ledger"
+        );
         eprintln!(
             "PASS send_chat agent loop: {} events, recorded {} search(es) + {} output tokens",
             events.len(),
@@ -5054,10 +5965,8 @@ mod tests {
         for case in cases {
             let category = case["category"].as_str().unwrap_or("").to_string();
             let empty = vec![case.clone()];
-            let turns: Vec<serde_json::Value> = case["conversation"]
-                .as_array()
-                .cloned()
-                .unwrap_or(empty);
+            let turns: Vec<serde_json::Value> =
+                case["conversation"].as_array().cloned().unwrap_or(empty);
 
             // One conversation per case, so multi-turn cases genuinely carry
             // their history the way the app does.
@@ -5156,7 +6065,6 @@ mod tests {
         eprintln!("\nwrote {}", out_path.display());
     }
 
-
     /// Conversations, memories and settings all land through `write_atomic`.
     /// They were 0644 — the default umask — until 2026-08-21, i.e. readable by
     /// every other local account on a shared machine. This pins the fix so a
@@ -5176,7 +6084,10 @@ mod tests {
         // Rewriting an existing file must not restore the umask default.
         write_atomic(&path, "{\"hello\":\"again\"}").unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "expected owner-only after rewrite, got {mode:o}");
+        assert_eq!(
+            mode, 0o600,
+            "expected owner-only after rewrite, got {mode:o}"
+        );
 
         // A directory we own is closed to everyone else, which is what covers
         // files written before the change without a migration sweep.
@@ -5218,7 +6129,10 @@ mod tests {
         // Newest two fit the 48k budget and stay; the oldest is trimmed.
         assert_eq!(convo[3]["content"].as_str().unwrap().len(), 30_000);
         assert_eq!(convo[2]["content"].as_str().unwrap().len(), 30_000);
-        assert!(convo[1]["content"].as_str().unwrap().starts_with("[earlier tool result"));
+        assert!(convo[1]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("[earlier tool result"));
         // Non-tool messages are untouched.
         assert_eq!(convo[0]["content"], "hi");
     }
@@ -5254,7 +6168,10 @@ mod tests {
         // Per-token this was 30,000 full-buffer scans; sampling bounds it to
         // roughly len / interval.
         assert!(scans <= 60, "expected ~57 scans, got {scans}");
-        assert!(scans >= 50, "sampling too sparse to catch a runaway: {scans}");
+        assert!(
+            scans >= 50,
+            "sampling too sparse to catch a runaway: {scans}"
+        );
     }
 
     #[test]
@@ -5267,8 +6184,14 @@ mod tests {
         assert!(runaway_check_due(4000, &mut checked_at));
         assert_eq!(checked_at, 4000);
         // Then not again until another interval has accumulated.
-        assert!(!runaway_check_due(4000 + RUNAWAY_CHECK_INTERVAL - 1, &mut checked_at));
-        assert!(runaway_check_due(4000 + RUNAWAY_CHECK_INTERVAL, &mut checked_at));
+        assert!(!runaway_check_due(
+            4000 + RUNAWAY_CHECK_INTERVAL - 1,
+            &mut checked_at
+        ));
+        assert!(runaway_check_due(
+            4000 + RUNAWAY_CHECK_INTERVAL,
+            &mut checked_at
+        ));
     }
 
     #[test]
@@ -5307,9 +6230,15 @@ mod tests {
         let bar = r#"<div style="display:flex; align-items:center; gap:10px;"><div style="width:140px; font-weight:600;">Name</div><div style="height:26px; background:#f0f0f0; border-radius:4px;"><div style="height:100%; width:34%; background:#2f7d8a; border-radius:4px;"></div></div></div>"#;
         let chart = format!("Here's the comparison:\n\n```html\n{}", bar.repeat(30));
         assert!(chart.len() > 4000);
-        assert!(!is_runaway(&chart), "repetitive markup in an open fence must not trip");
+        assert!(
+            !is_runaway(&chart),
+            "repetitive markup in an open fence must not trip"
+        );
         // But a real loop in the prose *after* a closed fence still trips.
-        let closed = format!("```html\n<div/>\n```\n\n{}", "Let me search again. </think>".repeat(300));
+        let closed = format!(
+            "```html\n<div/>\n```\n\n{}",
+            "Let me search again. </think>".repeat(300)
+        );
         assert!(is_runaway(&closed));
     }
 
@@ -5324,16 +6253,28 @@ mod tests {
         // turn on them.
         assert_eq!(strip_reasoning("<think>planning a search"), "");
         assert_eq!(strip_reasoning("<think>a</think>"), "");
-        assert_eq!(strip_reasoning("<tool_call>web_search{\"query\":\"x\"}"), "");
+        assert_eq!(
+            strip_reasoning("<tool_call>web_search{\"query\":\"x\"}"),
+            ""
+        );
         // Real answers survive.
-        assert_eq!(strip_reasoning("<think>a</think>The answer."), "The answer.");
-        assert_eq!(strip_reasoning("Answer first.<tool_call>junk"), "Answer first.");
+        assert_eq!(
+            strip_reasoning("<think>a</think>The answer."),
+            "The answer."
+        );
+        assert_eq!(
+            strip_reasoning("Answer first.<tool_call>junk"),
+            "Answer first."
+        );
     }
 
     #[test]
     fn clamp_query_prefers_a_usable_rewrite() {
         // Good rewrite → used (trimmed).
-        assert_eq!(clamp_query("orig", "  eu ai act timeline  "), "eu ai act timeline");
+        assert_eq!(
+            clamp_query("orig", "  eu ai act timeline  "),
+            "eu ai act timeline"
+        );
         // Empty or over-long rewrite → hard-truncated original.
         let long_original: String = "x".repeat(500);
         assert_eq!(clamp_query(&long_original, ""), "x".repeat(400));
@@ -5368,7 +6309,10 @@ mod tests {
         let files: std::collections::HashSet<String> =
             ["a", "b"].iter().map(|s| s.to_string()).collect();
         // Index knows "a" (still present) and "gone" (file deleted); "b" is new.
-        let index = vec![conv_meta("a", "2026-07-01"), conv_meta("gone", "2026-06-01")];
+        let index = vec![
+            conv_meta("a", "2026-07-01"),
+            conv_meta("gone", "2026-06-01"),
+        ];
         let (out, changed) = reconcile_conv_index(&files, index, |stem| {
             (stem == "b").then(|| conv_meta("b", "2026-07-05"))
         });
@@ -5412,10 +6356,7 @@ mod tests {
 
     /// A Channel that records every event's JSON for assertions.
     #[cfg(not(target_os = "windows"))]
-    fn capture_channel() -> (
-        Channel<StreamEvent>,
-        Arc<std::sync::Mutex<Vec<String>>>,
-    ) {
+    fn capture_channel() -> (Channel<StreamEvent>, Arc<std::sync::Mutex<Vec<String>>>) {
         let events = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let sink = events.clone();
         let ch = Channel::new(move |body: tauri::ipc::InvokeResponseBody| {
@@ -5539,13 +6480,20 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let (result, events) =
-                run_against(&app, test_settings(&server.uri()), vec![user("ai act?")], true)
-                    .await;
+            let (result, events) = run_against(
+                &app,
+                test_settings(&server.uri()),
+                vec![user("ai act?")],
+                true,
+            )
+            .await;
             result.unwrap();
             let all = events.join("\n");
             assert!(all.contains("Searching the web"), "no search status: {all}");
-            assert!(all.contains("The AI Act applies from 2026."), "no answer: {all}");
+            assert!(
+                all.contains("The AI Act applies from 2026."),
+                "no answer: {all}"
+            );
             assert!(all.contains("\"Done\""), "no Done: {all}");
             server.verify().await;
         }
@@ -5591,9 +6539,13 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let (result, events) =
-                run_against(&app, test_settings(&server.uri()), vec![user("ai act?")], true)
-                    .await;
+            let (result, events) = run_against(
+                &app,
+                test_settings(&server.uri()),
+                vec![user("ai act?")],
+                true,
+            )
+            .await;
             result.unwrap();
             let all = events.join("\n");
             assert!(all.contains("Salvage worked."), "no salvaged answer: {all}");
@@ -5614,8 +6566,7 @@ mod tests {
             Mock::given(method("POST"))
                 .and(path("/chat/completions"))
                 .respond_with(
-                    ResponseTemplate::new(200)
-                        .set_body_raw(sse_body(&chunks), "text/event-stream"),
+                    ResponseTemplate::new(200).set_body_raw(sse_body(&chunks), "text/event-stream"),
                 )
                 .expect(1) // aborted mid-round; no second round is attempted
                 .mount(&server)
@@ -5625,7 +6576,10 @@ mod tests {
                 run_against(&app, test_settings(&server.uri()), vec![user("hi")], true).await;
             result.unwrap();
             let all = events.join("\n");
-            assert!(all.contains("stuck repeating itself"), "no runaway error: {all}");
+            assert!(
+                all.contains("stuck repeating itself"),
+                "no runaway error: {all}"
+            );
             assert!(all.contains("\"Done\""), "no Done: {all}");
             server.verify().await;
         }
@@ -5675,7 +6629,10 @@ mod tests {
                 run_against(&app, test_settings(&server.uri()), convo, false).await;
             result.unwrap();
             let all = events.join("\n");
-            assert!(all.contains("Condensing earlier messages"), "no condense status: {all}");
+            assert!(
+                all.contains("Condensing earlier messages"),
+                "no condense status: {all}"
+            );
             assert!(all.contains("Continuing with context."), "no answer: {all}");
             assert!(all.contains("\"Done\""), "no Done: {all}");
             server.verify().await;
@@ -5716,7 +6673,10 @@ mod tests {
             .await;
             let all = events.join("\n");
             // Budget reached → further searches refused with a nudge to conclude.
-            assert!(all.contains("Reached the search limit"), "budget not enforced: {all}");
+            assert!(
+                all.contains("Reached the search limit"),
+                "budget not enforced: {all}"
+            );
             // Exactly SEARCH_BUDGET (6) searches ran (executed or served from
             // cache); everything past that was refused, not sent to the backend.
             let ran = events
@@ -5758,7 +6718,10 @@ mod tests {
             .await;
             result.unwrap();
             let all = events.join("\n");
-            assert!(all.contains("Shorter: it applies from 2026."), "no answer: {all}");
+            assert!(
+                all.contains("Shorter: it applies from 2026."),
+                "no answer: {all}"
+            );
 
             // The point of the scenario: nothing was pinned, and one round did it.
             let sent = server.received_requests().await.unwrap();
@@ -5767,14 +6730,22 @@ mod tests {
                 .filter(|r| r.url.path() == "/chat/completions")
                 .map(|r| String::from_utf8_lossy(&r.body).into_owned())
                 .collect();
-            assert_eq!(completions.len(), 1, "expected a single round, got {}", completions.len());
+            assert_eq!(
+                completions.len(),
+                1,
+                "expected a single round, got {}",
+                completions.len()
+            );
             assert!(
                 !completions[0].contains("tool_choice"),
                 "round 0 pinned tool_choice on an unforced turn: {}",
                 completions[0]
             );
             // Tools are still offered — this is not the same as turning search off.
-            assert!(completions[0].contains("web_search"), "tools were not offered");
+            assert!(
+                completions[0].contains("web_search"),
+                "tools were not offered"
+            );
             server.verify().await;
         }
 
@@ -5822,8 +6793,14 @@ mod tests {
                 .expect("no completion request");
             // Offering a tool with no backend behind it is what made the model
             // promise searches it could not run.
-            assert!(!body.contains("web_search"), "web_search offered with no backend: {body}");
-            assert!(!body.contains("tool_choice"), "pinned a tool with no backend: {body}");
+            assert!(
+                !body.contains("web_search"),
+                "web_search offered with no backend: {body}"
+            );
+            assert!(
+                !body.contains("tool_choice"),
+                "pinned a tool with no backend: {body}"
+            );
 
             let _ = std::fs::remove_dir_all(&workspace);
         }
@@ -5851,9 +6828,19 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let plain = AppSettings { save_history: false, ..Default::default() };
-            let (result, events) =
-                run_against_forced(&app, plain, vec![user("write me a big artifact")], false, false, false).await;
+            let plain = AppSettings {
+                save_history: false,
+                ..Default::default()
+            };
+            let (result, events) = run_against_forced(
+                &app,
+                plain,
+                vec![user("write me a big artifact")],
+                false,
+                false,
+                false,
+            )
+            .await;
             result.unwrap();
             let all = events.join("\n");
             assert!(
@@ -5880,7 +6867,10 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let plain = AppSettings { save_history: false, ..Default::default() };
+            let plain = AppSettings {
+                save_history: false,
+                ..Default::default()
+            };
             let (result, events) =
                 run_against_forced(&app, plain, vec![user("hi")], false, false, false).await;
             result.unwrap();
@@ -5918,7 +6908,10 @@ mod tests {
                     { "type": "image_url", "image_url": { "url": "data:image/png;base64,AAA" } }
                 ]
             });
-            let plain = AppSettings { save_history: false, ..Default::default() };
+            let plain = AppSettings {
+                save_history: false,
+                ..Default::default()
+            };
             let (result, events) = run_against_forced(
                 &app,
                 plain,
@@ -5960,7 +6953,10 @@ mod tests {
                 .await;
 
             // Plain chat (no search backend, no workspace) with quick on.
-            let plain = AppSettings { save_history: false, ..Default::default() };
+            let plain = AppSettings {
+                save_history: false,
+                ..Default::default()
+            };
             let (result, events) =
                 run_against_forced(&app, plain, vec![user("hi")], false, false, true).await;
             result.unwrap();
@@ -6059,7 +7055,11 @@ struct ClaudeGlmStatus {
 /// user's PATH directly.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn claude_glm_has(cmd: &str) -> bool {
-    let shell = if cfg!(target_os = "macos") { "zsh" } else { "bash" };
+    let shell = if cfg!(target_os = "macos") {
+        "zsh"
+    } else {
+        "bash"
+    };
     std::process::Command::new(shell)
         .args(["-lic", &format!("command -v {cmd} >/dev/null 2>&1")])
         .status()
@@ -6080,7 +7080,11 @@ fn claude_glm_has(cmd: &str) -> bool {
 /// The user's home directory (HOME on Unix, USERPROFILE on Windows).
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 fn claude_glm_home() -> Option<std::path::PathBuf> {
-    let var = if cfg!(target_os = "windows") { "USERPROFILE" } else { "HOME" };
+    let var = if cfg!(target_os = "windows") {
+        "USERPROFILE"
+    } else {
+        "HOME"
+    };
     std::env::var_os(var).map(std::path::PathBuf::from)
 }
 
@@ -6119,7 +7123,9 @@ async fn claude_glm_status() -> Result<ClaudeGlmStatus, String> {
         tokio::task::spawn_blocking(move || ClaudeGlmStatus {
             supported: true,
             claude_installed: claude_glm_has("claude"),
-            launcher_installed: claude_glm_launcher_path().map(|p| p.exists()).unwrap_or(false),
+            launcher_installed: claude_glm_launcher_path()
+                .map(|p| p.exists())
+                .unwrap_or(false),
             proxy_running: claude_glm_proxy_running(),
             key_stored,
         })
@@ -6185,7 +7191,9 @@ fn run_claude_glm_installer(on_line: Channel<String>) -> Result<i32, String> {
     #[cfg(unix)]
     command.args(["-lic", &format!("'{}' 2>&1", script.display())]);
     #[cfg(windows)]
-    command.args(["-ExecutionPolicy", "Bypass", "-NoProfile", "-File"]).arg(&script);
+    command
+        .args(["-ExecutionPolicy", "Bypass", "-NoProfile", "-File"])
+        .arg(&script);
 
     command.stdout(std::process::Stdio::piped());
     #[cfg(unix)]

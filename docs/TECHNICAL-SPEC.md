@@ -1,6 +1,6 @@
 # Technical and security specification
 
-Sovatela v1.1.0 · Companion to Product spec ·
+Sovatela v1.5.2 · Companion to Product spec ·
 UX spec · [Security policy](../SECURITY.md)
 
 Fuller engineering rationale is kept internally in `ENGINEERING_NOTES.md`, which
@@ -74,15 +74,28 @@ entries written by pre-release versions are migrated on first launch.
 ### Network
 
 Every HTTPS call originates in Rust. No telemetry, no remote fonts or assets, no
-analytics, and nothing contacted on launch.
+analytics.
 
-Besides the providers the user configured, exactly two hosts are reachable, both
-only on an explicit button press, both static files fetched anonymously:
-
-| Command | URL | Trigger |
+| Command | Destination | Trigger |
 | --- | --- | --- |
-| `check_for_update` | `https://sovatela.eu/version.json` | *Settings → About* |
-| `update_pricing` | `raw.githubusercontent.com/jacobla1/sovatela/main/pricing/pricing.json` | *Settings → Usage* |
+| `check_connection` | `{scaleway}/models`, bearer-authenticated | **Automatic, at launch.** `Chat.svelte` calls it on init to render the connection dot. The only unprompted call in the app |
+| `send_chat`, `generate_image`, search | The configured providers | User action |
+| `fetch_as_data_url` | The delivery address returned in BFL's `result.sample` — a different host from `api.eu.bfl.ai`, chosen by the provider and short-lived | After an image is generated |
+| `fetch_page` | **Any public host**, chosen by the model | Web search on, model decides to read a page |
+| `check_for_update` | `https://sovatela.eu/version.json` | *Settings → About*, on a press |
+| `update_pricing` | `raw.githubusercontent.com/jacobla1/sovatela/main/pricing/pricing.json` | *Settings → Usage*, on a press |
+
+`fetch_page` is the widest of these and the only one whose destination is not
+chosen by the user. `vetted_ip` refuses private and loopback addresses, pins
+the resolved address against rebinding, and re-vets each of at most six
+redirect hops; which public host is read is not constrained, and search results
+are untrusted input to a model that picks the next hop.
+
+Two claims in this section were wrong before the traffic was ever captured:
+that only the providers were contacted (false once `update_pricing` existed),
+and that nothing was contacted at launch (false since `check_connection`, which
+predates both). `qa/network-capture` exists so the next such error is found by
+running the app rather than by reading it.
 
 `version.json` is emitted by `deploy/web/build.mjs` from the same `RELEASE`
 constant the download page uses — read off the artifact filenames and
@@ -284,6 +297,11 @@ repository is `jacobla1/sovatela`, assembled by `deploy/publish-source.mjs`.
 This is the published list. The internal `KNOWN_LIMITATIONS.md` in a working
 checkout is a superset and is not part of the repository.
 
+- Word and OpenDocument uploads read the body only — `word/document.xml`
+  and `content.xml`. Headers, footers, footnotes, endnotes and comments
+  live in sibling parts (`word/header1.xml`, `word/footer1.xml`, and in
+  ODT the master-page styles in `styles.xml`) and are silently absent.
+  PDFs are unaffected: their page furniture is ordinary text on the page
 - Custom image endpoint requests are not cancellable
 - Project reference files are never compacted
 - Dangling project IDs when a project is deleted with chats still in it

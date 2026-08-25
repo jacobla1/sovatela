@@ -30,9 +30,7 @@ pub fn safe_join(root: &Path, rel: &str) -> Result<PathBuf, String> {
         match comp {
             Component::Normal(part) => normalized.push(part),
             Component::CurDir => {}
-            Component::ParentDir => {
-                return Err("path escapes the workspace folder (..)".into())
-            }
+            Component::ParentDir => return Err("path escapes the workspace folder (..)".into()),
             Component::RootDir | Component::Prefix(_) => {
                 return Err("only paths inside the workspace folder are allowed".into())
             }
@@ -96,6 +94,14 @@ pub fn list_files(root: &Path) -> Result<Vec<Entry>, String> {
             let Ok(rel) = path.strip_prefix(&root) else {
                 continue;
             };
+            // Don't follow symlinks while listing. `safe_join` already
+            // refuses to *read* through one, but descending into a symlinked
+            // directory here would put names and sizes from outside the
+            // workspace into the listing — a smaller disclosure than the file
+            // contents, and still outside the folder the user granted.
+            if entry.file_type().map(|t| t.is_symlink()).unwrap_or(true) {
+                continue;
+            }
             let meta = entry.metadata().ok();
             let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
             out.push(Entry {
@@ -135,10 +141,13 @@ pub fn read_file(root: &Path, rel: &str) -> Result<String, String> {
     if path.is_dir() {
         return Err("that path is a folder, not a file".into());
     }
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("could not read the file: {e}"))?;
+    let text =
+        std::fs::read_to_string(&path).map_err(|e| format!("could not read the file: {e}"))?;
     if text.chars().count() > WORKSPACE_MAX_READ_CHARS {
         let cut: String = text.chars().take(WORKSPACE_MAX_READ_CHARS).collect();
-        return Ok(format!("{cut}\n\n[File truncated — too long to include in full.]"));
+        return Ok(format!(
+            "{cut}\n\n[File truncated — too long to include in full.]"
+        ));
     }
     Ok(text)
 }
@@ -209,6 +218,44 @@ mod tests {
         std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
         // Reading through the symlink must be refused (canonicalize resolves out).
         assert!(safe_join(&root, "link/secret.txt").is_err());
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn listing_does_not_follow_a_symlink_out_of_the_workspace() {
+        let root = temp_root("list-symlink");
+        let outside = temp_root("list-symlink-outside");
+        std::fs::write(outside.join("private.txt"), "not theirs").unwrap();
+        std::fs::create_dir_all(outside.join("secrets")).unwrap();
+        std::fs::write(outside.join("secrets/keys.txt"), "nor this").unwrap();
+        std::fs::write(root.join("mine.txt"), "theirs").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+
+        let listed: Vec<String> = list_files(&root)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.path)
+            .collect();
+
+        assert!(
+            listed.iter().any(|p| p == "mine.txt"),
+            "real files must list"
+        );
+        // Reading through the link was already refused; the names and sizes
+        // behind it must not appear either.
+        for leaked in [
+            "link",
+            "link/private.txt",
+            "link/secrets",
+            "link/secrets/keys.txt",
+        ] {
+            assert!(
+                !listed.iter().any(|p| p == leaked),
+                "listing disclosed {leaked} from outside the workspace: {listed:?}"
+            );
+        }
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&outside);
     }

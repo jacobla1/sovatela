@@ -57,6 +57,11 @@ any text or code file. The text is extracted on your machine and folded into the
 conversation. Attach an image instead and it routes to a European vision model,
 because GLM-5.2 itself is text-only.
 
+One thing to know about Word and ODT files: the **body** is sent, but headers,
+footers, footnotes and comments are not, and nothing warns you. If a title or
+date you want the model to see lives in the header, save the file as a PDF
+instead — a PDF carries that material as ordinary text on the page.
+
 **Ask for something visual.** *"Chart the population of the Nordic countries"* or
 *"build me a tip calculator"*. It renders live in a panel beside the chat, in a
 sandbox with no access to your files, your keys, or the network.

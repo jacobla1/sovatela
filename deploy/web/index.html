@@ -157,6 +157,9 @@
       background: var(--accent); border-radius: 999px; padding: 8px 16px;
       white-space: nowrap;
     }
+    .signing { max-width: 640px; margin: 20px auto 0; font-size: 14px;
+      line-height: 1.6; color: var(--muted, #9aa3b2); text-align: center; }
+    .signing strong { color: inherit; }
     .secondary { text-align: center; margin-top: 16px; font-size: 14px; }
     .secondary a { color: var(--accent-2); }
 
@@ -224,7 +227,7 @@
         <span class="dl-os"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.1 10.4 4v7.5H3zM10.4 12.5V20L3 18.9v-6.4zM11.6 3.83 21 2.5v9H11.6zM21 12.5v9l-9.4-1.33V12.5z"/></svg></span>
         <span class="dl-body">
           <span class="dl-title">Windows</span>
-          <span class="dl-meta">.exe installer · 64-bit — just run it</span>
+          <span class="dl-meta">.exe installer · 64-bit — unsigned, Windows will warn</span>
         </span>
         <span class="dl-cta">Download</span>
       </a>
@@ -240,6 +243,16 @@
       </a>
     </main>
 
+
+    <p class="signing">
+      <strong>macOS</strong> builds are signed and notarized by the developer, so
+      they open normally. <strong>Windows and Linux</strong> builds are not signed
+      yet — on Windows, SmartScreen will say the publisher is unknown, and opening
+      it takes <em>More info → Run anyway</em>. That warning is accurate: it means
+      nobody has paid a certificate authority to vouch for this installer. Checking
+      the SHA-256 below is the verification that actually matters there, and it does
+      not depend on trusting us.
+    </p>
 
     <p class="secondary">
       Also available: <a href="/downloads/Sovatela_1.1.1_x64_en-US.msi">Windows .msi</a> (for managed deployment) ·
