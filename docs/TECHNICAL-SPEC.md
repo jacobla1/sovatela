@@ -290,7 +290,8 @@ checkout is a superset and is not part of the repository.
 - Orphaned assets if a conversation file is deleted outside the app
 - Token estimation undercounts CJK (~4 chars/token heuristic)
 - `nom v1.2.4` future-incompatibility warning (transitive)
-- No dependency scanning in CI
+- 19 `cargo audit` warnings for unmaintained gtk-rs GTK3 bindings, pulled in by
+  Tauri's Linux stack and not movable from here
 - No schema version in stored JSON
 - No structured logging, so no post-hoc diagnosis
 - No auto-updater. *Settings → About* now has a manual **Check for updates**,

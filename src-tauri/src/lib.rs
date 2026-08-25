@@ -241,15 +241,32 @@ async fn has_api_key() -> Result<bool, String> {
     Ok(get_api_key()?.is_some())
 }
 
+/// The only form of a stored key that is allowed out of this layer: its last
+/// few characters, so a user can tell which key is saved without the key
+/// itself crossing into the webview.
+///
+/// A short key returns nothing rather than a short hint. `saturating_sub`
+/// clamps to zero, so a key of five characters or fewer would otherwise be
+/// returned whole and the "hint" would be the secret. Real Scaleway keys are
+/// UUIDs and never hit this, which is precisely why it would not have been
+/// noticed.
+pub fn key_hint(key: &str) -> Option<String> {
+    let len = key.chars().count();
+    if len <= HINT_CHARS {
+        return None;
+    }
+    Some(key.chars().skip(len - HINT_CHARS).collect())
+}
+
+/// How much of a key the interface may show.
+const HINT_CHARS: usize = 5;
+
 /// Returns only the last few characters of the stored key, for display in the
 /// UI (e.g. "…85597"). The full secret never leaves the Rust/keychain layer.
 #[tauri::command]
 async fn get_key_hint() -> Result<Option<String>, String> {
     match get_api_key()? {
-        Some(k) => {
-            let skip = k.chars().count().saturating_sub(5);
-            Ok(Some(k.chars().skip(skip).collect()))
-        }
+        Some(k) => Ok(key_hint(&k)),
         None => Ok(None),
     }
 }
@@ -266,10 +283,8 @@ async fn delete_api_key() -> Result<(), String> {
 async fn get_terminal_key_status() -> Result<(bool, Option<String>), String> {
     let key = load_secrets()?.claude_glm_api_key;
     match trimmed_nonempty(&key) {
-        Some(k) => {
-            let skip = k.chars().count().saturating_sub(5);
-            Ok((true, Some(k.chars().skip(skip).collect())))
-        }
+        // A key is set either way; the hint is what may be shown of it.
+        Some(k) => Ok((true, key_hint(&k))),
         None => Ok((false, None)),
     }
 }
@@ -1691,10 +1706,53 @@ fn xml_to_text(xml: &str, para_tags: &[&str]) -> String {
     loop {
         match reader.read_event() {
             Ok(Event::Text(t)) => {
-                if let Ok(s) = t.unescape() {
-                    // Whitespace-only nodes are XML formatting, not content.
+                // quick-xml 0.38 replaced `unescape()` with version-explicit
+                // accessors. .docx and .odt are XML 1.0, so this is the direct
+                // equivalent: decode, then resolve entity references.
+                if let Ok(s) = t.xml10_content() {
                     if !s.trim().is_empty() {
                         out.push_str(&s);
+                    } else if !s.is_empty() && !s.contains('\n') {
+                        // Whitespace-only, but on one line: this is the gap
+                        // between two inline runs, not indentation. It has to
+                        // be kept, and the distinction only started mattering
+                        // when quick-xml 0.38 began splitting text nodes at
+                        // entity references — "terms &amp; actions" leaves the
+                        // space stranded in a node of its own, and dropping it
+                        // gave "terms& actions".
+                        out.push(' ');
+                    }
+                    // Whitespace containing a line break is pretty-printing
+                    // between tags; that is what this rule was written for.
+                }
+            }
+            // quick-xml 0.38 stopped folding entity references into the
+            // surrounding text and emits them as their own event. Without this
+            // arm they fall into the catch-all below and vanish: "a &amp; b"
+            // came out as "a  b" — a silent corruption of the user's document,
+            // not a parse error. Character refs (&#38;) resolve to their
+            // character; named refs outside XML's five built-ins have no
+            // definition here, so they are kept verbatim rather than dropped.
+            Ok(Event::GeneralRef(r)) => {
+                // A BytesRef holds only what sits between `&` and `;` — for
+                // `&amp;` that is the string "amp", not the character. It has
+                // to be resolved explicitly: numeric refs (`&#38;`) through
+                // resolve_char_ref, named ones through the table of XML's five
+                // predefined entities.
+                if let Ok(Some(c)) = r.resolve_char_ref() {
+                    out.push(c);
+                } else if let Ok(name) = r.decode() {
+                    match quick_xml::escape::resolve_predefined_entity(&name) {
+                        Some(text) => out.push_str(text),
+                        // A .docx or .odt can declare its own entities in a
+                        // DTD we do not read. Keeping the reference verbatim
+                        // is wrong-looking but honest; dropping it silently
+                        // edits the user's document, which is how this broke.
+                        None => {
+                            out.push('&');
+                            out.push_str(&name);
+                            out.push(';');
+                        }
                     }
                 }
             }
@@ -4116,6 +4174,314 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // ---- Credentials never leave this layer ------------------------------
+    //
+    // SECURITY.md promises that keys are "never returned to the user interface
+    // after saving" and "held only in the Rust backend, never passed into the
+    // webview". The interface still has to show *which* key is saved, so one
+    // narrow channel exists: the last few characters. These pin that channel
+    // to what it is allowed to carry.
+
+    #[test]
+    fn a_hint_reveals_only_the_tail_of_a_key() {
+        // The shape a Scaleway key actually has.
+        let key = "SCWXXXXXXXXXXXXXXXXX-1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b85597";
+        let hint = key_hint(key).unwrap();
+        assert_eq!(hint, "85597");
+        assert_eq!(hint.chars().count(), HINT_CHARS);
+        assert!(key.ends_with(&hint));
+        // The part that matters: what came out is not enough to reconstruct
+        // what went in.
+        assert!(hint.chars().count() < key.chars().count() / 4);
+        assert!(!key.starts_with(&hint));
+    }
+
+    #[test]
+    fn a_key_too_short_to_hide_is_not_hinted_at_all() {
+        // saturating_sub clamped to zero, so before `key_hint` existed these
+        // were returned whole and the "hint" was the secret. Real keys are
+        // UUID-shaped and never reach this, which is exactly why it survived.
+        for key in ["a", "abc", "abcde"] {
+            assert_eq!(key_hint(key), None, "{key:?} leaked as its own hint");
+        }
+        // One character more than the hint length is the first safe case, and
+        // it must still not be the whole key.
+        let hint = key_hint("abcdef").unwrap();
+        assert_eq!(hint, "bcdef");
+        assert_ne!(hint, "abcdef");
+    }
+
+    #[test]
+    fn a_hint_is_counted_in_characters_not_bytes() {
+        // Slicing by byte offset would panic mid-codepoint, taking the request
+        // down, and on a mixed key could emit a partial character.
+        let key = "kéy-wîth-nön-ascii-ünïcode-🔑🔒🗝️";
+        let hint = key_hint(key).unwrap();
+        assert_eq!(hint.chars().count(), HINT_CHARS);
+        assert!(key.ends_with(&hint));
+    }
+
+    #[test]
+    fn an_empty_key_has_no_hint() {
+        assert_eq!(key_hint(""), None);
+    }
+
+    #[test]
+    fn every_command_that_touches_a_key_returns_a_hint_or_a_flag() {
+        // A guard on the shape of the API rather than on one function: the
+        // failure this is written against is a future command added to read a
+        // key "just for the settings page". Both existing readers must route
+        // through key_hint, and no command may name a secret field in its
+        // return type.
+        let src = include_str!("lib.rs");
+        for reader in ["async fn get_key_hint", "async fn get_terminal_key_status"] {
+            let at = src.find(reader).unwrap_or_else(|| panic!("{reader} is gone"));
+            let body = &src[at..at + 400];
+            assert!(
+                body.contains("key_hint("),
+                "{reader} no longer routes through key_hint"
+            );
+        }
+        // No *command* hands the secrets struct to the webview. Internal
+        // helpers such as load_secrets legitimately return it — the boundary
+        // being guarded is #[tauri::command], which is what the frontend can
+        // actually call.
+        let lines: Vec<&str> = src.lines().collect();
+        let mut inspected = 0usize;
+        for (i, line) in lines.iter().enumerate() {
+            if line.trim() != "#[tauri::command]" {
+                continue;
+            }
+            inspected += 1;
+            // The signature is the next line that declares a function.
+            let sig = lines[i + 1..]
+                .iter()
+                .find(|l| l.contains("fn "))
+                .expect("a #[tauri::command] with no function after it");
+            assert!(
+                !sig.contains("Secrets"),
+                "a command hands the secrets struct to the webview: {}",
+                sig.trim()
+            );
+        }
+        // Without this the loop would pass by examining nothing at all — if
+        // the attribute is ever written differently, or this file is split up,
+        // the guard would go quiet rather than fail.
+        assert!(
+            inspected > 30,
+            "only {inspected} commands inspected; the scan is not finding them"
+        );
+    }
+
+    // ---- Real-document round-trips -------------------------------------
+    //
+    // The tests below build genuine files — a zip with the entry the extractor
+    // looks for, a PDF with a real xref table — and push them through
+    // `document_text`, the same function the upload command calls.
+    //
+    // They exist because the extractor stack was upgraded across five minor
+    // versions of pdf-extract and four of quick-xml to clear four advisories,
+    // and everything that guarded that path used three-line synthetic XML
+    // strings. `pdf_to_text` had no test at all: it compiled, which says
+    // nothing about whether the text still comes out in the right order.
+
+    /// Assemble a .docx/.odt-shaped zip holding one entry.
+    fn zip_with(entry: &str, contents: &str) -> Vec<u8> {
+        use std::io::Write;
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        w.start_file(entry, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        w.write_all(contents.as_bytes()).unwrap();
+        w.finish().unwrap().into_inner()
+    }
+
+    /// Build a structurally valid PDF: catalog, page tree, a content stream
+    /// drawing `text`, and an xref table with real byte offsets.
+    ///
+    /// `page_extra` is spliced into the *page dictionary*, not added as a
+    /// loose object. That placement is the whole point for the nesting test
+    /// below: lopdf does not parse objects nothing references — verified by
+    /// putting a syntactically broken object in the file and watching it pass
+    /// — so a pathological object parked at the end of the file proves
+    /// nothing. Inside the page dictionary it has to be read to find the
+    /// content stream.
+    fn build_pdf(text: &str, page_extra: &str) -> Vec<u8> {
+        let stream = format!("BT /F1 24 Tf 72 700 Td ({text}) Tj ET\n");
+        let objects = vec![
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+                  /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >>{page_extra} >>"
+            ),
+            format!(
+                "<< /Length {} >>\nstream\n{}endstream",
+                stream.len(),
+                stream
+            ),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+        ];
+        let mut out = Vec::from(&b"%PDF-1.4\n"[..]);
+        let mut offsets = Vec::new();
+        for (i, body) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n{}\nendobj\n", i + 1, body).as_bytes());
+        }
+        let xref_at = out.len();
+        out.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f \n");
+        for off in &offsets {
+            out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+                objects.len() + 1,
+                xref_at
+            )
+            .as_bytes(),
+        );
+        out
+    }
+
+    #[test]
+    fn document_text_reads_a_real_docx() {
+        // Namespaced, with run properties and a table — the shape Word emits,
+        // not the bare <w:p><w:t> of the unit tests above.
+        let xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Quarterly Report</w:t></w:r></w:p>
+    <w:p><w:r><w:rPr><w:b/></w:rPr><w:t>Revenue </w:t></w:r><w:r><w:t>rose &amp; held.</w:t></w:r></w:p>
+    <w:tbl><w:tr><w:tc><w:p><w:r><w:t>Cell one</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+  </w:body>
+</w:document>"#;
+        let text = document_text("report.docx", &zip_with("word/document.xml", xml)).unwrap();
+        assert!(text.contains("Quarterly Report"), "got: {text:?}");
+        assert!(text.contains("Revenue rose & held."), "got: {text:?}");
+        assert!(text.contains("Cell one"), "table text is lost: {text:?}");
+    }
+
+    #[test]
+    fn document_text_reads_a_real_odt() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document-content
+    xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+    xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">
+  <office:body><office:text>
+    <text:h text:outline-level="1">Meeting Notes</text:h>
+    <text:p>Agreed <text:span>terms</text:span> &amp; actions.</text:p>
+  </office:text></office:body>
+</office:document-content>"#;
+        let text = document_text("notes.odt", &zip_with("content.xml", xml)).unwrap();
+        assert!(text.contains("Meeting Notes"), "got: {text:?}");
+        assert!(text.contains("Agreed terms & actions."), "got: {text:?}");
+    }
+
+    #[test]
+    fn document_text_reads_a_real_pdf() {
+        let pdf = build_pdf("Invoice total 42 EUR", "");
+        let text = document_text("invoice.pdf", &pdf).unwrap();
+        assert!(
+            text.contains("Invoice total 42 EUR"),
+            "pdf-extract returned {text:?}"
+        );
+    }
+
+    #[test]
+    fn a_zip_without_the_expected_entry_is_refused_not_panicked() {
+        let bad = zip_with("something/else.xml", "<a/>");
+        assert!(document_text("x.docx", &bad).is_err());
+        assert!(document_text("x.odt", &bad).is_err());
+        // Not a zip at all.
+        assert!(document_text("x.docx", b"not a zip").is_err());
+        // Not a PDF at all.
+        assert!(document_text("x.pdf", b"not a pdf").is_err());
+    }
+
+    // ---- Hostile documents ------------------------------------------------
+    //
+    // Each of these is the shape of an advisory that was open until the
+    // dependency bump: RUSTSEC-2026-0187 (lopdf, stack overflow on deeply
+    // nested objects) and RUSTSEC-2026-0194/0195 (quick-xml, quadratic
+    // attribute scanning and unbounded namespace allocation).
+    //
+    // The assertion is termination, not a particular answer: refusing the file
+    // and extracting nothing are both acceptable, hanging or dying is not. A
+    // stack overflow aborts the process rather than unwinding, so pdf_to_text's
+    // catch_unwind would not contain one — if the fix regresses, this test
+    // takes the whole suite down with it, which is the correct alarm.
+
+    #[test]
+    fn deeply_nested_pdf_objects_do_not_overflow_the_stack() {
+        // Control: the same document without the nesting must extract, so a
+        // pass below cannot come from a fixture that was never readable.
+        assert!(document_text("plain.pdf", &build_pdf("ok", ""))
+            .unwrap()
+            .contains("ok"));
+
+        let depth = 20_000;
+        let nested = format!(" /Nested {}{}", "[".repeat(depth), "]".repeat(depth));
+        let pdf = build_pdf("ok", &nested);
+
+        let started = std::time::Instant::now();
+        let result = document_text("bomb.pdf", &pdf);
+        let elapsed = started.elapsed();
+
+        // Either answer is a safe one: parsing the nesting and still finding
+        // the text, or refusing the file. What this actually guards against is
+        // the third outcome — a stack overflow, which aborts the process
+        // rather than unwinding, so pdf_to_text's catch_unwind cannot contain
+        // it. If that regresses, this test does not fail; it takes the whole
+        // test binary down, which is the alarm.
+        match &result {
+            Ok(text) => assert!(text.contains("ok"), "parsed but lost the text: {text:?}"),
+            Err(_) => {}
+        }
+        assert!(
+            elapsed < std::time::Duration::from_secs(20),
+            "parsing a {depth}-deep PDF took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn a_start_tag_with_many_attributes_does_not_take_quadratic_time() {
+        // RUSTSEC-2026-0194: duplicate-name checking was O(n^2) per tag.
+        let attrs: String = (0..20_000)
+            .map(|i| format!(" a{i}=\"v\""))
+            .collect();
+        let xml = format!("<w:document><w:body><w:p{attrs}><w:t>done</w:t></w:p></w:body></w:document>");
+        let started = std::time::Instant::now();
+        let text = document_text("wide.docx", &zip_with("word/document.xml", &xml));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "a tag with 20k attributes took {:?}",
+            started.elapsed()
+        );
+        // The content after the pathological tag is still recovered.
+        assert!(text.map(|t| t.contains("done")).unwrap_or(false));
+    }
+
+    #[test]
+    fn many_namespace_declarations_do_not_exhaust_memory() {
+        // RUSTSEC-2026-0195. This extractor uses Reader rather than NsReader,
+        // so it was likely never reachable here — pinned anyway, because that
+        // is a property of the current call site, not of the file format, and
+        // switching to NsReader would silently reintroduce it.
+        let decls: String = (0..20_000)
+            .map(|i| format!(" xmlns:n{i}=\"urn:x:{i}\""))
+            .collect();
+        let xml = format!("<w:document{decls}><w:p><w:t>survived</w:t></w:p></w:document>");
+        let started = std::time::Instant::now();
+        let text = document_text("ns.docx", &zip_with("word/document.xml", &xml));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "20k namespace declarations took {:?}",
+            started.elapsed()
+        );
+        assert!(text.map(|t| t.contains("survived")).unwrap_or(false));
+    }
+
     #[test]
     fn xml_to_text_extracts_docx_paragraphs() {
         let xml = r#"<w:document><w:body>
@@ -4124,6 +4490,34 @@ mod tests {
         </w:body></w:document>"#;
         let text = tidy_text(&xml_to_text(xml, &["w:p"]));
         assert_eq!(text, "Hello world & more\nSecond paragraph");
+    }
+
+    /// Entity references are their own event since quick-xml 0.38, and the
+    /// first port of that change dropped them: "a &amp; b" became "a  b", then
+    /// "a amp b". Both were silent corruption of a user's document rather than
+    /// a parse failure, so each form is pinned here.
+    #[test]
+    fn xml_to_text_resolves_entity_references() {
+        // The five predefined entities. The separating spaces survive: they
+        // are whitespace-only text nodes now that entities split the text, but
+        // they contain no line break, so they are inline spacing rather than
+        // pretty-printing. Getting this wrong collapsed "a & b" to "a& b".
+        let xml = "<w:p><w:t>&amp; &lt; &gt; &quot; &apos;</w:t></w:p>";
+        assert_eq!(xml_to_text(xml, &["w:p"]), "& < > \" '\n");
+
+        // Surrounded by real text, spacing is preserved — this is the shape
+        // that actually occurs in a document.
+        let xml = "<w:p><w:t>Smith &amp; Sons</w:t></w:p>";
+        assert_eq!(xml_to_text(xml, &["w:p"]), "Smith & Sons\n");
+
+        // Numeric character references, decimal and hexadecimal.
+        let xml = "<w:p><w:t>&#38;&#x26;</w:t></w:p>";
+        assert_eq!(xml_to_text(xml, &["w:p"]), "&&\n");
+
+        // An entity this parser has no definition for is kept verbatim rather
+        // than silently removed.
+        let xml = "<w:p><w:t>a &custom; b</w:t></w:p>";
+        assert_eq!(xml_to_text(xml, &["w:p"]), "a &custom; b\n");
     }
 
     #[test]

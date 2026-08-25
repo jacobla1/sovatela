@@ -1,5 +1,48 @@
 # Changelog
 
+## 1.5.1 — 2026-08-25
+
+- **Six dependency advisories closed**, four of them on the path that reads an
+  uploaded document.
+
+  - `lopdf` (RUSTSEC-2026-0187, 7.5): a stack overflow reachable from any PDF
+    dropped into the composer. `pdf_to_text` already wrapped extraction in
+    `catch_unwind`, which does not help — a stack overflow aborts the process
+    rather than unwinding, so this was a crash nothing local could contain.
+    Fixed by moving `pdf-extract` 0.7 → 0.12, which brings `lopdf` 0.42.
+  - `quick-xml` (RUSTSEC-2026-0194 and -0195, both 7.5): quadratic time when
+    checking a start tag for duplicate attributes, and unbounded allocation for
+    namespace declarations. Fixed by 0.37 → 0.41.
+  - `h2` (RUSTSEC-2026-0258): unbounded empty DATA frames. Fixed in range.
+  - `dompurify` (GHSA-55q2-fjhq-7xh7): not exploitable here — it needs
+    `IN_PLACE` and hook removal, and this app calls plain `sanitize()` with
+    neither. Bumped anyway, because this library is the whole barrier between
+    model output and the interface.
+  - `nanoid` and `postcss`, both build-time only, through Vite.
+
+- **Three defects in document text extraction**, all introduced by the
+  `quick-xml` upgrade above and all caught before release by tests written for
+  it. The library stopped folding entity references into surrounding text, and
+  each fix exposed the next one: `Smith &amp; Sons` came out first as
+  `Smith  Sons`, then as `Smith amp Sons`, then as `Smith& Sons`. Ampersands,
+  quotes and angle brackets in Word and OpenDocument files now survive intact,
+  along with the spacing around them.
+
+- **A short API key was shown in full.** The interface displays the last five
+  characters of a saved key so you can tell which one it is. A key of five
+  characters or fewer was returned whole, so the hint was the key. Real
+  Scaleway keys are far longer and never hit this. Short keys now show nothing.
+
+- **Dependency scanning in CI**, on every proposed change and weekly — the
+  weekly run being the point, since an advisory can be filed against a
+  lockfile that has not changed in months.
+
+- **Tests for the claims on the security page.** The artifact sandbox and the
+  window policy are now pinned by tests rather than by reading the source, and
+  document extraction is exercised with real files — a Word document with
+  namespaces and tables, a PDF with a genuine cross-reference table — plus the
+  malformed shapes the advisories above describe.
+
 ## 1.5.0 — 2026-08-25
 
 - **The app can now tell you a release exists.** *Settings → About* gains

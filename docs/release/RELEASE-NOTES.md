@@ -1,4 +1,4 @@
-# Release notes — Sovatela 1.5.0
+# Release notes — Sovatela 1.5.1
 
 Release date: 2026-08-25 · [All releases](https://github.com/jacobla1/sovatela/releases)
 
@@ -9,6 +9,51 @@ Release date: 2026-08-25 · [All releases](https://github.com/jacobla1/sovatela/
 ---
 
 ## New
+
+This release contains no new features. It closes six dependency advisories,
+four of them on the code that reads an uploaded document, and fixes three
+defects that the work of closing them introduced and the tests written for it
+caught.
+
+**PDFs, Word and OpenDocument files.** The library that reads PDFs had a
+7.5-severity flaw: a document with deeply enough nested objects overflowed the
+stack. Extraction was already wrapped so a malformed file could not take the
+backend down, and that wrapping does not help here — a stack overflow ends the
+process outright rather than raising an error that can be caught. Any PDF
+dropped into the composer could have done it. The XML reader behind `.docx` and
+`.odt` had two more, both denial-of-service: a file could be built that took
+quadratic time to parse, or that allocated without bound.
+
+All three are fixed by moving to current versions of both libraries.
+
+**Ampersands in documents.** Upgrading the XML reader changed how it reports
+entity references, and text extraction had three separate bugs as a result —
+each exposed by fixing the one before it. `Smith & Sons` in a Word file came out
+first as `Smith  Sons`, then `Smith amp Sons`, then `Smith& Sons`. Ampersands,
+quotes and angle brackets now survive, with the spacing around them.
+
+None of the three were parse errors. Each silently altered the text handed to
+the model, which is the kind of defect a user has no way to notice.
+
+**A short API key was shown in full.** *Settings* displays the last five
+characters of your saved key so you can tell which one is in use. A key of five
+characters or fewer was returned whole, so what was displayed was the key
+itself. Scaleway keys are far longer and never hit this; keys too short to
+abbreviate now show nothing at all.
+
+**Sanitisation of chat text** moved to a version without a published advisory.
+The flaw did not apply to how this app calls the library, but that library is
+the whole barrier between what the model writes and what the interface renders,
+so it does not sit on a version with a known issue.
+
+**Checks that were missing.** Dependency scanning now runs on every proposed
+change and weekly — weekly being the point, since an advisory can be filed
+against code that has not changed in months. The security page's claims about
+the artifact sandbox and the window policy are now held in place by tests
+rather than by reading the source. Document extraction is exercised with real
+files rather than fragments.
+
+Everything below arrived in 1.5.0 and is included here.
 
 **The app can tell you a release exists.** *Settings → About* has a **Check for
 updates** button. It reads a version number from `sovatela.eu`, says whether a
@@ -164,7 +209,7 @@ afterwards from *Settings → Appearance → Welcome screen*.
 
 ## Known limitations
 
-Documented rather than omitted. This is the complete user-facing list for 1.5.0;
+Documented rather than omitted. This is the complete user-facing list for 1.5.1;
 the engineering view is in [Technical specification §
 7](../TECHNICAL-SPEC.md#7-known-technical-debt).
 
@@ -266,7 +311,7 @@ and lives wherever you point it.
 
 ## Upgrade and install instructions
 
-**Upgrading from 1.0.0, 1.1.x, 1.2.0, 1.3.x, 1.4.0** — install over the top. Settings, chat
+**Upgrading from 1.0.0, 1.1.x, 1.2.0, 1.3.x, 1.4.0, 1.5.0** — install over the top. Settings, chat
 history, memory, projects, and stored keys are preserved; there is no migration
 step and nothing to back up first. On macOS, replace the app in Applications.
 
@@ -277,13 +322,13 @@ Scaleway API key: [Quick-start](../QUICKSTART.md).
 **Verify your download** before running it:
 
 ```sh
-shasum -a 256 Sovatela_1.5.0_universal.dmg      # macOS
-sha256sum sovatela_1.5.0_amd64.deb              # Linux
-Get-FileHash .\Sovatela_1.5.0_x64-setup.exe -Algorithm SHA256   # Windows
+shasum -a 256 Sovatela_1.5.1_universal.dmg      # macOS
+sha256sum sovatela_1.5.1_amd64.deb              # Linux
+Get-FileHash .\Sovatela_1.5.1_x64-setup.exe -Algorithm SHA256   # Windows
 ```
 
 **Downgrading** — install the older version over the top. The data format is
-unchanged across 1.0.0, 1.1.x, 1.2.0, 1.3.x, 1.4.0 and 1.5.0. Terminal access is set up outside the
+unchanged across 1.0.0, 1.1.x, 1.2.0, 1.3.x, 1.4.0, 1.5.0 and 1.5.1. Terminal access is set up outside the
 app's data folder, so downgrading does not remove it; use
 [uninstalling](../UNINSTALL.md) § 4 if you want it gone.
 

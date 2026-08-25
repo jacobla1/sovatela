@@ -1,6 +1,6 @@
 [package]
 name = "scale"
-version = "1.5.0"
+version = "1.5.1"
 description = "BYO-key desktop chat client for GLM-5.2 on Scaleway"
 authors = ["Jacob Bergmann Larsen"]
 license = "MIT"
@@ -31,9 +31,9 @@ keyring = { version = "3", features = [
   "crypto-rust",
 ] }
 # Document text extraction (PDF / .docx / .odt uploads)
-pdf-extract = "0.7"
+pdf-extract = "0.12"
 zip = "2"
-quick-xml = "0.37"
+quick-xml = "0.41"
 # System locale, for the Staan search market
 sys-locale = "0.3"
 # HTML → readable text, for the agent's fetch_page tool

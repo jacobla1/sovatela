@@ -1,6 +1,6 @@
 {
   "name": "sovatela",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "type": "module",
   "description": "A BYO-key desktop chat client for Z.ai GLM-5.2 hosted on Scaleway",
   "license": "MIT",
@@ -21,7 +21,7 @@
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2",
     "@tauri-apps/plugin-opener": "^2",
-    "dompurify": "3.4.12",
+    "dompurify": "3.4.14",
     "marked": "^18.0.6"
   },
   "devDependencies": {

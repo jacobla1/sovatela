@@ -1,0 +1,61 @@
+name: audit
+
+# Dependency scanning for both toolchains.
+#
+# Deliberately NOT a release gate. `release.yml` runs the test suites before it
+# builds, because a failing test means this code is broken. An advisory is
+# different: it can be published against an unchanged lockfile on any morning,
+# including one where a fix needs to ship. Blocking the release on that would
+# mean a newly-disclosed bug in a transitive dependency could stop a security
+# fix from going out, which is backwards. So this runs on pull requests, on a
+# weekly schedule to catch advisories filed against code that has not changed,
+# and on demand.
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    # Mondays, 06:00 UTC.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  npm:
+    if: github.repository == 'jacobla1/Scale'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm ci
+
+      # What ships to users. dompurify is the whole defence between
+      # model-generated markdown and {@html}, so `moderate` is the bar here
+      # rather than `high`: the advisory that prompted this scanning was a
+      # moderate-severity XSS in exactly that library.
+      - name: Production dependencies
+        run: npm audit --omit=dev --audit-level=moderate
+
+      # Build-time only. These do not reach a user's machine, but a compromised
+      # build chain reaches every user, so it fails rather than warns.
+      - name: Build and development dependencies
+        run: npm audit --audit-level=high
+
+  cargo:
+    if: github.repository == 'jacobla1/Scale'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      # Everything in Cargo.lock ships inside the binary. Warnings for
+      # unmaintained crates are not failures: the gtk-rs GTK3 bindings are
+      # pulled in by Tauri's Linux stack and cannot be moved from here.
+      - name: Rust dependencies
+        run: cargo audit --file src-tauri/Cargo.lock
