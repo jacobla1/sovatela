@@ -157,9 +157,27 @@ typed an http URL for"; both are addresses you chose deliberately, and refusing
 the second would refuse the first. **If your image endpoint is not on your own
 machine, give it an `https://` address.**
 
-The exemption is no wider than that origin. An endpoint on `:4000` cannot
-redirect the app to another port on the same host, and providers you did not
-self-host — Black Forest Labs, OVHcloud — get no exemption at all.
+Providers you did not self-host — Black Forest Labs, OVHcloud — get no
+exemption at all.
+
+**Correction, and an open gap in 1.5.2.** This paragraph previously said that an
+endpoint on `:4000` cannot redirect the app to another port on the same host.
+That is not true of 1.5.2, the version you can download today. Redirects are
+followed automatically and only the first address is checked, so an image
+service can pass the check and then send the app somewhere else — including a
+loopback or private address that only your machine can reach. The sentence was
+written from what the code was meant to do rather than from what it does.
+
+Reaching it requires the image provider itself to be hostile or compromised:
+Black Forest Labs, OVHcloud, or an endpoint you configured. A web page cannot
+trigger it, and neither can anyone who is not already serving your images. If
+you use no image provider, it does not apply to you at all.
+
+The fix — following redirects by hand and judging scheme, origin and resolved
+address at every hop, as the web-page reader already does — is written and
+tested, and ships in the next release. It is recorded here rather than quietly
+corrected later, because this page is the one that invites you to check the
+claims rather than trust them.
 
 ### Workspace
 
