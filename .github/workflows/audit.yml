@@ -63,11 +63,21 @@ jobs:
       - name: Formatting
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
 
-      # Deliberately without `-D warnings`. Clippy's correctness lints are
-      # deny-by-default and fail this on their own; the style lints do not,
-      # and are not worth reshaping settled signatures over. The lint that
-      # earned this step was `never_loop`, which found a response parser whose
-      # every branch returned — so an endpoint answering with an empty field
-      # alongside a usable one produced an empty image.
+      # `-D warnings`, which this could not use until the standing warnings were
+      # dealt with: two were fixed, and four are annotated at the code with the
+      # reason they stay — two wide signatures where a parameter struct would
+      # rename the problem rather than solve it, and two migration tables whose
+      # shape is the thing a reader came to read.
+      #
+      # The lint that earned this step in the first place was `never_loop`,
+      # which is deny-by-default and found a response parser whose every branch
+      # returned: an endpoint answering with an empty field alongside a usable
+      # one produced an empty image.
+      #
+      # The cost of the strict bar, stated so it is not a surprise: the
+      # toolchain is `stable`, so a future clippy release can add a lint and
+      # turn this red without anyone having changed the code. That is survivable
+      # here because this workflow is not a release gate — it runs on pull
+      # requests and weekly, and a tag does not wait for it.
       - name: Clippy
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings

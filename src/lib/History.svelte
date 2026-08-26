@@ -52,9 +52,15 @@
     }
     return buckets.filter(([, items]) => items.length);
   });
+
+  // Stable ids for the date headings, so each list can point at its own.
+  const slug = (label) => label.toLowerCase().replace(/[^a-z0-9]+/g, "-");
 </script>
 
-<aside class="history">
+<!-- nav rather than aside: this is how someone moves between conversations,
+     which is navigation. Named, because a landmark without a name is announced
+     only as "navigation". -->
+<nav class="history" aria-label="Chats and projects">
   <button class="new-chat" onclick={() => onNew?.()}>
     <span class="new-chat-icon" aria-hidden="true">+</span>
     <span>{activeProject ? `New chat in ${activeProject.name}` : "New chat"}</span>
@@ -85,7 +91,7 @@
       {:else}
         {#each projects as p (p.id)}
           <button class="proj-item" onclick={() => onSelectProject?.(p.id)} title={p.name}>
-            📁 <span class="proj-item-name">{p.name}</span>
+            <span aria-hidden="true">📁</span> <span class="proj-item-name">{p.name}</span>
           </button>
         {/each}
       {/if}
@@ -102,25 +108,39 @@
         {activeProject ? "No chats in this project yet." : "No saved chats yet."}
       </p>
     {/if}
+    <!-- Real lists, grouped under their date heading. As a pile of divs a
+         screen reader announced a run of buttons with no sense of how many
+         chats there were or which one this was; a list says "3 of 12". The
+         heading is referenced rather than repeated into every row. -->
     {#each groups as [label, items] (label)}
-      <div class="history-group-head">{label}</div>
-      {#each items as c (c.id)}
-        <div class="history-item {c.id === currentId ? 'active' : ''}">
-          <button class="history-open" onclick={() => onSelect?.(c.id)} title={c.title}>
-            <span class="history-title">
-              {#if runningIds[c.id]}<span class="run-dot" title="Working…" aria-label="Working"></span>
-              {:else if doneIds[c.id]}<span class="done-dot" title="Finished" aria-label="Finished">●</span>{/if}
-              {c.title || "Untitled"}
-            </span>
-          </button>
-          <button
-            class="history-del"
-            title="Delete"
-            aria-label="Delete conversation"
-            onclick={() => onDelete?.(c.id)}
-          >×</button>
-        </div>
-      {/each}
+      <div class="history-group-head" id="hist-group-{slug(label)}">{label}</div>
+      <!-- role="list" restores what list-style:none takes away in WebKit,
+           which is the engine this app runs on: VoiceOver otherwise stops
+           announcing an unstyled list as a list at all. -->
+      <ul class="history-group" role="list" aria-labelledby="hist-group-{slug(label)}">
+        {#each items as c (c.id)}
+          <li class="history-item {c.id === currentId ? 'active' : ''}">
+            <button
+              class="history-open"
+              onclick={() => onSelect?.(c.id)}
+              title={c.title}
+              aria-current={c.id === currentId ? "true" : undefined}
+            >
+              <span class="history-title">
+                {#if runningIds[c.id]}<span class="run-dot" title="Working…" aria-label="Working"></span>
+                {:else if doneIds[c.id]}<span class="done-dot" title="Finished" aria-label="Finished">●</span>{/if}
+                {c.title || "Untitled"}
+              </span>
+            </button>
+            <button
+              class="history-del"
+              title="Delete"
+              aria-label={`Delete conversation: ${c.title || "Untitled"}`}
+              onclick={() => onDelete?.(c.id)}
+            >×</button>
+          </li>
+        {/each}
+      </ul>
     {/each}
   </div>
-</aside>
+</nav>

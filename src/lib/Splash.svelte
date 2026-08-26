@@ -3,16 +3,18 @@
   // going to take?" before anyone is asked to read instructions or paste a key:
   // four pictures, four short labels, one way forward.
   //
-  // Each step is one rendered card — artwork, title and note in a single
-  // picture — built by scripts/build_step_cards.py from the sources in assets/.
-  // The wording is composited in there, so it is repeated in each image's alt
-  // text: that is the only copy a screen reader can reach, and the only copy
-  // that survives the picture failing to load.
+  // Each step is a picture with its wording beside it, not baked into it. The
+  // cards used to carry title and note composited into the image, which meant
+  // that wording did not grow with the text-size control, did not follow the
+  // light theme, and reached a screen reader only through alt text — so a
+  // reader who raised the type watched everything else grow while these four
+  // stayed put. The artwork is now wordless (build_step_cards.py --with_text
+  // False for the app set) and the words are ordinary text.
   //
-  // Bundled rather than fetched: this screen draws before anything is
-  // configured, possibly before there is a working connection. The cards carry
-  // their own dark tile and their own type, so they follow neither the theme nor
-  // the text-size setting — the trade taken for artwork rather than line icons.
+  // The pictures stay bundled rather than fetched: this screen draws before
+  // anything is configured, possibly before there is a working connection. They
+  // are decorative now — the words next to them say the same thing — so their
+  // alt is empty rather than a duplicate a screen reader would read twice.
   import createAccountArt from "../assets/steps/createAccount.webp";
   import genKeyArt from "../assets/steps/genKey.webp";
   import pasteKeyArt from "../assets/steps/pasteKey.webp";
@@ -56,16 +58,12 @@
   <ol class="splash-steps">
     {#each STEPS as step, i}
       <li class:done={step.done}>
-        <!-- Not decorative: the card carries its own wording, so the alt text is
-             where that wording lives for anyone who cannot see it. -->
-        <img
-          class="splash-art"
-          src={step.art}
-          alt="{step.label}. {step.note}"
-          width="640"
-          height="640"
-        />
-        <span class="splash-n">{step.done ? "✓" : i + 1}</span>
+        <!-- alt="" on purpose: the words below say the same thing, and a
+             duplicate here would be read out twice. -->
+        <img class="splash-art" src={step.art} alt="" width="640" height="640" />
+        <span class="splash-n" aria-hidden="true">{step.done ? "✓" : i + 1}</span>
+        <span class="splash-label">{step.label}</span>
+        <span class="splash-note">{step.note}</span>
       </li>
     {/each}
   </ol>

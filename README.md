@@ -116,7 +116,7 @@ endpoint for chat; see the Roadmap.
 - **Streaming** uses a Tauri `Channel`: Rust parses Scaleway's SSE stream and
   pushes tokens (and search-status / artifact events) to the Svelte UI.
 - **Model routing**: text → `glm-5.2`; any image in the conversation →
-  `mistral-small-3.1-24b-instruct-2503` (vision).
+  `mistral-small-3.2-24b-instruct-2506` (vision).
 - **Web search**: when enabled, the model is forced to call a `web_search` tool;
   Rust queries Staan or SearXNG, feeds results back, and answers from them
   (multi-round, so it can search again). Today's date is injected so the model
@@ -151,7 +151,8 @@ deploy/flux-litellm/     LiteLLM proxy → BFL EU FLUX (legacy; native BFL is bu
 
 ## Development
 
-**Prerequisites:** Node 18+, **Rust** (`curl --proto '=https' --tlsv1.2 -sSf
+**Prerequisites:** Node 20 (see `.nvmrc`; 22+ ships an experimental
+global `localStorage` that collides with jsdom and fails the test suite), **Rust** (`curl --proto '=https' --tlsv1.2 -sSf
 https://sh.rustup.rs | sh`), and platform build tools (macOS:
 `xcode-select --install`; see <https://tauri.app/start/prerequisites/>).
 

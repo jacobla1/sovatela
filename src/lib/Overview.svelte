@@ -4,7 +4,7 @@
   let { onDone, onOpenSettings, onQuickStart, needsKey = false } = $props();
 </script>
 
-<div class="onboarding">
+<main class="onboarding">
   <h1>Welcome to Sovatela 👋</h1>
   <p class="lead">
     Sovatela is your private client for <strong>GLM-5.2</strong>, hosted in
@@ -24,4 +24,4 @@
       <button class="ghost" onclick={() => onOpenSettings?.()}>Open Settings</button>
     {/if}
   </div>
-</div>
+</main>

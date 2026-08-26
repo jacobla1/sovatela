@@ -1,8 +1,14 @@
 <script>
   // Non-intrusive card: the assistant's suggested memories, for the user to approve.
+  import { untrack } from "svelte";
+
   let { facts, onSave, onDismiss } = $props();
 
-  let keep = $state(facts.map(() => true));
+  // Seeded once. The effect below is what keeps this in step with `facts`,
+  // deliberately preserving what the user has already ticked — so this must
+  // not re-run from the prop. `untrack` states that; the compiler warned
+  // about the ambiguity rather than about a defect.
+  let keep = $state(untrack(() => facts.map(() => true)));
 
   // More facts can be appended while this card is open (another chat wrapping
   // up). Grow `keep` to match, defaulting new entries to checked, so they

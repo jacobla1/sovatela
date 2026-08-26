@@ -8,9 +8,17 @@
   --reply-bg: #ffffff;
   --prompt-bg: #e7eaf1;
   --text: #1a1a1a;
-  --muted: #6b7280;
+  --muted: #676d7b;
   --border: #e4e6eb;
   --accent: #6b4bff;
+  /* The accent as a filled surface under --accent-text, kept dark enough for
+     white to stay readable on it. Separate from --accent because the two roles
+     pull opposite ways: text on the page wants to move away from the
+     background, a filled button wants to stay away from white. */
+  --accent-fill: #5a37f0;
+  /* An input's edge is a component boundary (WCAG 1.4.11, 3:1), not
+     decoration. --border stays soft for dividers and panel edges. */
+  --border-control: #8f9094;
   /* A touch deeper/more saturated for filled CTAs (Send, primary buttons), so
      white text reads crisply instead of washed. */
   --accent-strong: #5a37f0;
@@ -22,9 +30,9 @@
   --user-text: #ffffff;
   --assistant-bubble: #f0f1f4;
   --assistant-text: #1a1a1a;
-  --error: #d64545;
-  --success: #2ba84a;
-  --warn: #c98a1b;
+  --error: #cb4141;
+  --success: #22833a;
+  --warn: #996915;
 
   /* ---- Scale tokens (theme-independent) ---- */
   /* Type ramp: 6 quantized steps replace ~11 ad-hoc sizes.
@@ -49,15 +57,23 @@
   /* Motion: one duration + easing for every hover/opacity/accordion. */
   --dur: 150ms;
   --ease: cubic-bezier(0.2, 0.6, 0.2, 1);
-  /* Spacing scale (4px base). Drives gaps and layout rhythm. */
-  --sp-0: 2px;
-  --sp-1: 4px;
-  --sp-2: 8px;
-  --sp-3: 12px;
-  --sp-4: 16px;
-  --sp-5: 24px;
-  --sp-6: 32px;
-  --sp-7: 48px;
+  /* Spacing scale, in rem so it grows with the text-size control. These were
+     px, which meant larger text was packed into the same gaps — the layout
+     tightened as the type grew, which is the opposite of what someone raising
+     the text size is asking for. WCAG 1.4.12 asks for spacing to survive being
+     increased; scaling with the type is the version of that a desktop app can
+     offer, since there is no browser zoom here.
+
+     Values are the old pixel sizes at a 16px root, so the default rendering is
+     unchanged. */
+  --sp-0: 0.125rem; /* 2px  */
+  --sp-1: 0.25rem; /*  4px  */
+  --sp-2: 0.5rem; /*   8px  */
+  --sp-3: 0.75rem; /*  12px */
+  --sp-4: 1rem; /*     16px */
+  --sp-5: 1.5rem; /*   24px */
+  --sp-6: 2rem; /*     32px */
+  --sp-7: 3rem; /*     48px */
 }
 
 @media (prefers-color-scheme: dark) {
@@ -70,8 +86,18 @@
     --text: #ededed;
     --muted: #b4b9c2;
     --border: #2c2f36;
-    --accent: #8b6bff;
-    --accent-strong: #7c5cff;
+    /* Lighter than the light theme's accent: as text it has to carry against
+       a dark page. The filled surface goes the other way and keeps the darker
+       purple, so white on a button still reads. */
+    --accent: #9a77ff;
+    --accent-strong: #9d75ff;
+    --accent-fill: #6b4bff;
+    --border-control: #6a7181;
+    /* Kept light here. The light theme needs a darker amber to reach 4.5:1 on
+       a near-white page, and that same value falls to 3.07:1 on a dark one —
+       so this token cannot be shared between the themes, which is how it came
+       to fail in light in the first place. */
+    --warn: #c98a1b;
     /* Shadows read on near-black too if they're deep enough — gives the
        composer real lift off the dark bar. */
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 22px rgba(0, 0, 0, 0.36);
@@ -201,7 +227,7 @@ button.mini {
   background: color-mix(in srgb, var(--success) 14%, transparent);
   border: 1px solid color-mix(in srgb, var(--success) 40%, transparent);
   border-radius: var(--r-pill);
-  padding: 4px 12px;
+  padding: 0.25rem 0.75rem;
   font-variant-numeric: tabular-nums;
 }
 
@@ -223,7 +249,7 @@ button.mini {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
-  padding: 10px 14px;
+  padding: 0.625rem 0.875rem;
   margin-bottom: 12px;
   line-height: 1.5;
 }
@@ -263,7 +289,7 @@ button.danger {
   border: 1px solid var(--border);
   color: var(--error);
   border-radius: var(--r-sm);
-  padding: 12px 18px;
+  padding: 0.75rem 1.125rem;
   font-size: var(--fs-base);
   cursor: pointer;
 }
@@ -314,8 +340,8 @@ button.danger:hover {
 input:not([type="radio"]):not([type="checkbox"]),
 textarea {
   width: 100%;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
+  padding: 0.75rem 0.875rem;
+  border: 1px solid var(--border-control);
   border-radius: var(--r-sm);
   background: var(--panel);
   color: var(--text);
@@ -447,11 +473,11 @@ dl.about dd {
 }
 
 button.primary {
-  background: var(--accent-strong);
+  background: var(--accent-fill);
   color: var(--accent-text);
   border: none;
   border-radius: var(--r-sm);
-  padding: 12px 20px;
+  padding: 0.75rem 1.25rem;
   font-size: var(--fs-base);
   font-weight: 600;
   cursor: pointer;
@@ -511,7 +537,7 @@ button.primary:disabled {
   align-items: center;
   gap: var(--sp-3);
   margin: 10px;
-  padding: 10px 12px;
+  padding: 0.625rem 0.75rem;
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
   background: var(--panel);
@@ -565,6 +591,15 @@ button.primary:disabled {
   min-height: 0;
   overflow-y: auto;
   padding: 0 8px 8px;
+}
+
+/* The chats are a real <ul> so a screen reader can count them. list-style:none
+   makes WebKit drop the list semantics, so the markup carries an explicit
+   role="list" to put them back — see History.svelte. */
+.history-group {
+  list-style: none;
+  margin: 0;
+  padding: 0;
 }
 
 .history-empty {
@@ -756,7 +791,7 @@ button.primary:disabled {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 24px;
+  padding: 1.5rem;
   z-index: 50;
 }
 
@@ -826,7 +861,7 @@ button.primary:disabled {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  padding: 6px 10px;
+  padding: 0.375rem 0.625rem;
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
   font-size: var(--fs-sm);
@@ -866,7 +901,7 @@ button.primary:disabled {
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
-  padding: 14px 16px;
+  padding: 0.875rem 1rem;
   z-index: 60;
 }
 
@@ -992,7 +1027,7 @@ button.ghost {
   border: 1px solid var(--border);
   color: var(--muted);
   border-radius: var(--r-sm);
-  padding: 6px 12px;
+  padding: 0.375rem 0.75rem;
   font-size: var(--fs-sm);
   cursor: pointer;
 }
@@ -1025,7 +1060,7 @@ button.ghost:hover {
 .empty-state {
   margin: auto;
   max-width: 540px;
-  padding: 24px;
+  padding: 1.5rem;
   text-align: center;
 }
 
@@ -1177,10 +1212,11 @@ button.ghost:hover {
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
-  border: 1px solid var(--border);
+  /* The message box is the control people look for first. */
+  border: 1px solid var(--border-control);
   border-radius: var(--r-lg);
   background: var(--panel);
-  padding: 10px 12px;
+  padding: 0.625rem 0.75rem;
   box-shadow: var(--shadow-sm);
 }
 
@@ -1512,7 +1548,7 @@ button.ghost:hover {
 .folder-path {
   flex: 1 1 auto;
   min-width: 0;
-  padding: 6px 10px;
+  padding: 0.375rem 0.625rem;
   border: 1px solid var(--border);
   border-radius: var(--r-xs);
   font-size: var(--fs-sm);
@@ -1586,7 +1622,7 @@ button.ghost:hover {
 
 .guide-note {
   margin: 20px 0 4px;
-  padding: 10px 12px;
+  padding: 0.625rem 0.75rem;
   border: 1px solid var(--accent);
   border-radius: var(--r-sm);
   background: color-mix(in srgb, var(--accent) 8%, transparent);
@@ -1665,7 +1701,7 @@ button.ghost:hover {
 
 .section > summary {
   cursor: pointer;
-  padding: 14px 16px;
+  padding: 0.875rem 1rem;
   font-weight: 600;
   font-size: var(--fs-base);
   list-style: none;
@@ -1688,7 +1724,7 @@ button.ghost:hover {
 }
 
 .section-body {
-  padding: 0 16px 16px;
+  padding: 0 1rem 1rem;
 }
 
 .section-body .field:first-child,
@@ -1803,7 +1839,7 @@ button.ghost:hover {
   margin-top: 10px;
   max-height: 260px;
   overflow: auto;
-  padding: 10px 12px;
+  padding: 0.625rem 0.75rem;
   border: 1px solid var(--border);
   border-radius: var(--r-xs);
   background: var(--surface-2, rgba(127, 127, 127, 0.08));
@@ -1931,7 +1967,7 @@ button.ghost:hover {
   background: color-mix(in srgb, var(--text) 6%, transparent);
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
-  padding: 10px 12px;
+  padding: 0.625rem 0.75rem;
   margin: 0.55em 0;
 }
 
@@ -2027,7 +2063,7 @@ button.ghost:hover {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 14px;
+  padding: 0.625rem 0.875rem;
   border-bottom: 1px solid var(--border);
 }
 
@@ -2070,7 +2106,7 @@ button.ghost:hover {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 10px;
+  padding: 0.375rem 0.625rem;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
 }
@@ -2143,6 +2179,99 @@ button.mini:hover {
    vanish for exactly the readers this rule exists to help. So each pulse is
    replaced by a static form rather than removed: an unfilled ring reads as
    indeterminate, against the filled dot used for settled states. */
+/* Keyboard shortcut reference. */
+.modal.shortcuts {
+  max-width: 420px;
+}
+
+.shortcut-list {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px 16px;
+  margin: 0;
+  align-items: baseline;
+}
+
+.shortcut-list dt {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  justify-content: flex-end;
+  white-space: nowrap;
+}
+
+.shortcut-list dd {
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.shortcut-list kbd,
+.hint kbd {
+  font-family: inherit;
+  font-size: var(--fs-xs);
+  line-height: 1;
+  padding: 4px 7px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--r-xs);
+  background: var(--panel);
+  color: var(--text);
+}
+
+.kbd-plus {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+/* The footnote under the list. `.hint` carries a bottom margin only, so
+   without this it sits against the last row. */
+.modal.shortcuts .hint {
+  margin: var(--sp-5) 0 0;
+  text-align: center;
+}
+
+/* Present to assistive technology, absent from the page. Not display:none
+   and not visibility:hidden — both remove the element from the accessibility
+   tree too, so a live region declared that way announces nothing. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Some people ask their operating system for more contrast than the default.
+   That is a setting they have already made, so it is honoured here rather than
+   offered as a button in Settings — the same reasoning as reduced motion
+   below, and the reason there is no "high contrast mode" to find.
+   
+   The palette already meets WCAG AA without this. What follows goes past it:
+   the softest text and the decorative borders, which are within their
+   requirements but deliberately quiet, stop being quiet. */
+@media (prefers-contrast: more) {
+  :root {
+    --muted: #4a4f5a;
+    --border: #9a9ca1;
+    --border-control: #4a4f5a;
+    /* The accent carries links and focus rings — the one indicator a keyboard
+       user cannot do without. */
+    --accent: #4b28e8;
+  }
+}
+
+@media (prefers-contrast: more) and (prefers-color-scheme: dark) {
+  :root {
+    --muted: #d7dbe2;
+    --border: #6a7181;
+    --border-control: #aab1bd;
+    --accent: #b9a0ff;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   :root {
     /* Every transition in this file is expressed in --dur, including the
@@ -2216,11 +2345,30 @@ button.mini:hover {
   gap: var(--sp-3);
 }
 
-/* Each card is a picture that already has a frame, a background and its own
-   type. Wrapping that in a second bordered panel drew a box inside a box, so
-   the list item carries nothing of its own but the number underneath. */
+/* The picture already has its frame and background, so the list item adds no
+   panel of its own — just the number and the wording under it. The wording is
+   text rather than part of the picture, so it grows with the text-size control
+   and follows the theme. */
 .splash-steps li {
   text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.splash-label {
+  margin-top: var(--sp-1);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.3;
+}
+
+.splash-note {
+  margin-top: 0.15em;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  line-height: 1.4;
 }
 
 .splash-art {
@@ -2238,6 +2386,7 @@ button.mini:hover {
   width: 1.5rem;
   height: 1.5rem;
   margin-top: var(--sp-2);
+  flex: none;
   border-radius: 50%;
   background: color-mix(in srgb, var(--accent) 14%, transparent);
   color: var(--accent);
@@ -2308,7 +2457,7 @@ button.mini:hover {
   width: 1.9em;
   height: 1.9em;
   border-radius: 50%;
-  background: var(--accent);
+  background: var(--accent-fill);
   color: var(--accent-text);
   font-size: var(--fs-sm);
   font-weight: 600;

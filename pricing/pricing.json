@@ -15,7 +15,7 @@
     "fx": "https://www.ecb.europa.eu/stats/policy_and_exchange_rates/euro_reference_exchange_rates/html/index.en.html"
   },
   "free": {
-    "scaleway": "1M tokens/month",
+    "scaleway": "first 1M tokens free",
     "bfl": "none",
     "ovh": "rough estimate — OVHcloud bills by compute-time, no published per-image price; verify on your invoice",
     "linkup": "~$20 credit/month (~4,000 searches)",
@@ -25,7 +25,7 @@
   "ai": {
     "default": { "input_per_mtok": 1.80, "output_per_mtok": 5.50, "currency": "EUR" },
     "glm-5.2": { "input_per_mtok": 1.80, "output_per_mtok": 5.50, "currency": "EUR" },
-    "mistral-small-3.1-24b-instruct-2503": { "input_per_mtok": 0.15, "output_per_mtok": 0.35, "currency": "EUR" }
+    "mistral-small-3.2-24b-instruct-2506": { "input_per_mtok": 0.15, "output_per_mtok": 0.35, "currency": "EUR" }
   },
   "image": {
     "default": { "per_unit": 0.04, "currency": "USD" },

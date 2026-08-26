@@ -78,9 +78,14 @@ fn base_url() -> String {
 }
 const MODEL: &str = glm::DEFAULT_MODEL;
 // GLM-5.2 is text-only (no vision encoder), so messages containing images are
-// routed to a European (Mistral) vision model on Scaleway instead. Verify the
-// exact model ID in your Scaleway console.
-const VISION_MODEL: &str = "mistral-small-3.1-24b-instruct-2503";
+// routed to a European (Mistral) vision model on Scaleway instead.
+//
+// This was `mistral-small-3.1-24b-instruct-2503` until 1.5.3. That id no
+// longer appears in `GET /v1/models` for a Scaleway account at all: it reached
+// end of life and requests were being rerouted to its successor. Nothing
+// failed, which is exactly why it went unnoticed — and a silent reroute is a
+// dependency on someone else's grace, not a working configuration.
+const VISION_MODEL: &str = "mistral-small-3.2-24b-instruct-2506";
 
 /// Scaleway's output ceiling for glm-5.2 — it rejects anything larger with
 /// "max_completion_tokens is limited to 16384". Every path that writes a full
@@ -476,6 +481,10 @@ fn migrate_secrets_storage(app: &tauri::AppHandle) {
     };
     let before = sec.clone();
 
+    // clippy::type_complexity: an id paired with the field it lands in. A
+    // `type` alias here would name the shape without explaining it, and the
+    // shape is the point — this table is read to check what migrates where.
+    #[allow(clippy::type_complexity)]
     const LEGACY: [(&str, fn(&mut Secrets) -> &mut String); 5] = [
         ("scaleway-api-key", |s| &mut s.scaleway_api_key),
         ("staan-api-key", |s| &mut s.staan_key),
@@ -485,23 +494,27 @@ fn migrate_secrets_storage(app: &tauri::AppHandle) {
     ];
     let mut deletable: Vec<&str> = Vec::new();
     for (account, field) in LEGACY {
-        match keyring::Entry::new(KEYRING_SERVICE, account).and_then(|e| e.get_password()) {
-            Ok(v) => {
-                let dst = field(&mut sec);
-                if dst.trim().is_empty() {
-                    if let Some(v) = trimmed_nonempty(&v) {
-                        *dst = v;
-                    }
+        // No Err arm: an account that is absent, or a keychain that declines,
+        // simply has nothing to migrate — which is the normal case on every
+        // launch after the first.
+        if let Ok(v) = keyring::Entry::new(KEYRING_SERVICE, account).and_then(|e| e.get_password())
+        {
+            let dst = field(&mut sec);
+            if dst.trim().is_empty() {
+                if let Some(v) = trimmed_nonempty(&v) {
+                    *dst = v;
                 }
-                deletable.push(account); // value is safe in the blob (or superseded)
             }
-            Err(_) => {} // nothing stored, or unreadable — leave it alone
+            deletable.push(account); // value is safe in the blob (or superseded)
         }
     }
 
     // Plaintext settings.json fields (oldest scheme).
     let mut plaintext_found = false;
     if let Ok(s) = load_settings(app) {
+        // clippy::type_complexity: as above — where a plaintext value is read
+        // from and where it is written to, side by side.
+        #[allow(clippy::type_complexity)]
         const PLAIN: [(fn(&AppSettings) -> &String, fn(&mut Secrets) -> &mut String); 4] = [
             (|s| &s.staan_key, |x| &mut x.staan_key),
             (|s| &s.token, |x| &mut x.searxng_token),
@@ -1054,7 +1067,34 @@ fn parse_fact_array(raw: &str) -> Vec<String> {
 /// Best-effort move of one file, falling back to copy+remove across
 /// filesystems (e.g. into a cloud folder).
 fn move_file(path: &std::path::Path, dest: &std::path::Path) {
-    if std::fs::rename(path, dest).is_err() && std::fs::copy(path, dest).is_ok() {
+    // Never write over something already there. The destination folder may be
+    // one the user chose and already uses, and a same-named file in it is
+    // theirs until proven otherwise — so ours is set down beside it rather
+    // than on top of it.
+    let dest = if dest.exists() {
+        let stem = dest.file_stem().map(|s| s.to_string_lossy().into_owned());
+        let ext = dest.extension().map(|s| s.to_string_lossy().into_owned());
+        let mut candidate = None;
+        for n in 1..1000 {
+            let name = match (&stem, &ext) {
+                (Some(s), Some(e)) => format!("{s}-moved-{n}.{e}"),
+                (Some(s), None) => format!("{s}-moved-{n}"),
+                _ => return,
+            };
+            let alt = dest.with_file_name(name);
+            if !alt.exists() {
+                candidate = Some(alt);
+                break;
+            }
+        }
+        match candidate {
+            Some(alt) => alt,
+            None => return,
+        }
+    } else {
+        dest.to_path_buf()
+    };
+    if std::fs::rename(path, &dest).is_err() && std::fs::copy(path, &dest).is_ok() {
         let _ = std::fs::remove_file(path);
     }
 }
@@ -1073,8 +1113,16 @@ fn conversation_id_of(path: &std::path::Path) -> Option<String> {
     }
     let stem = path.file_stem()?.to_str()?;
     let text = std::fs::read_to_string(path).ok()?;
-    let header: ConversationHeader = serde_json::from_str(&text).ok()?;
-    (stem == sanitize_id(&header.id).ok()?).then_some(header.id)
+    // Deserialize as the whole conversation, not the header. The header needs
+    // only an id and a title, and plenty of unrelated files have both — a
+    // `project.json` holding `{"id":"project","title":"My project"}` matched
+    // its own filename and was claimed. A `messages` array is the structure
+    // that makes a file one of ours.
+    let convo: Conversation = serde_json::from_str(&text).ok()?;
+    if !convo.messages.is_array() {
+        return None;
+    }
+    (stem == sanitize_id(&convo.id).ok()?).then_some(convo.id)
 }
 
 /// Every file in `dir` that belongs to this app, and the ids they carry.
@@ -1096,12 +1144,16 @@ fn owned_history_files(dir: &std::path::Path) -> (Vec<std::path::PathBuf>, Vec<S
             }
         }
     }
+    // The index is ours only if it describes conversations we just claimed.
+    // Any array of {id, title} deserializes as our index, so parsing alone
+    // proves nothing — an unrelated index.json listing someone else's items
+    // would have been taken.
     let index = dir.join(CONV_INDEX_FILE);
-    if std::fs::read_to_string(&index)
+    let index_is_ours = std::fs::read_to_string(&index)
         .ok()
         .and_then(|t| serde_json::from_str::<Vec<ConversationMeta>>(&t).ok())
-        .is_some()
-    {
+        .is_some_and(|entries| !entries.is_empty() && entries.iter().all(|e| ids.contains(&e.id)));
+    if index_is_ours {
         files.push(index);
     }
     (files, ids)
@@ -1169,57 +1221,120 @@ const MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024;
 /// server on their own machine chose that address deliberately, and refusing
 /// `http://127.0.0.1:7860` would break a setup this app offers. Anything
 /// *else* is an address the app did not pick, so it must be public HTTPS.
-async fn fetch_as_data_url(
-    client: &reqwest::Client,
-    url: &str,
-    trusted_origin: Option<&str>,
-) -> Result<String, String> {
-    let parsed = reqwest::Url::parse(url.trim()).map_err(|_| "invalid image URL".to_string())?;
-    let same_origin = trusted_origin
-        .and_then(origin_of)
-        .is_some_and(|t| origin_of(url) == Some(t));
-    if !same_origin {
-        // Without this, an endpoint could answer with 127.0.0.1 or a LAN
-        // address and use this app to reach a service only this machine can
-        // see, reading the reply back into the chat.
-        if parsed.scheme() != "https" {
-            return Err("the generated image must be served over HTTPS".into());
+async fn fetch_as_data_url(url: &str, trusted_origin: Option<&str>) -> Result<String, String> {
+    let trusted = trusted_origin.and_then(origin_of);
+    let mut current =
+        reqwest::Url::parse(url.trim()).map_err(|_| "invalid image URL".to_string())?;
+
+    // Follow redirects by hand, checking every hop. The shared client follows
+    // them automatically, and until now only the first address was ever
+    // vetted — so a service could pass the check and then redirect to
+    // localhost, a LAN host, or a cloud metadata address, and this app would
+    // fetch it. The same page-reader logic is used here for the same reason:
+    // whoever chose the address is not the user.
+    for _hop in 0..6 {
+        let same_origin = trusted
+            .as_deref()
+            .is_some_and(|t| origin_of(current.as_str()).as_deref() == Some(t));
+        if !same_origin {
+            if current.scheme() != "https" {
+                return Err("the generated image must be served over HTTPS".into());
+            }
+            vetted_ip(&current).await?;
         }
-        vetted_ip(&parsed).await?;
-    }
+        let pinned = vetted_ip_or_literal(&current).await?;
+        let host = current
+            .host_str()
+            .ok_or_else(|| "invalid image URL".to_string())?
+            .to_string();
+        let hop_client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(15))
+            .read_timeout(std::time::Duration::from_secs(60))
+            .redirect(reqwest::redirect::Policy::none())
+            // Connect to the address that was checked, not to whatever the
+            // name resolves to a second time.
+            .resolve(&host, std::net::SocketAddr::new(pinned, 0))
+            .build()
+            .map_err(|e| e.to_string())?;
+        let resp = hop_client
+            .get(current.clone())
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
 
-    let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
-    if !resp.status().is_success() {
-        return Err(format!(
-            "could not fetch generated image ({})",
-            resp.status()
-        ));
-    }
-    let content_type = resp
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("image/png")
-        .to_string();
-
-    // Read in chunks against a cap rather than `bytes()`, which would buffer
-    // whatever is sent. The whole image ends up base64 in a chat message, so
-    // an unbounded response is memory this process does not get back.
-    let mut resp = resp;
-    let mut bytes: Vec<u8> = Vec::new();
-    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
-        if bytes.len() + chunk.len() > MAX_IMAGE_BYTES {
+        if resp.status().is_redirection() {
+            let location = resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .ok_or_else(|| "image redirect with no target".to_string())?;
+            current = current
+                .join(location)
+                .map_err(|_| "invalid image redirect target".to_string())?;
+            continue;
+        }
+        if !resp.status().is_success() {
             return Err(format!(
-                "the generated image is larger than {} MB",
-                MAX_IMAGE_BYTES / (1024 * 1024)
+                "could not fetch generated image ({})",
+                resp.status()
             ));
         }
-        bytes.extend_from_slice(&chunk);
+
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("image/png")
+            .to_string();
+        // An image endpoint that answers with HTML or JSON here is answering
+        // with something other than the image, and embedding it as one would
+        // put whatever it is into the conversation.
+        if !content_type.starts_with("image/") {
+            return Err(format!(
+                "the generated image came back as {content_type}, not an image"
+            ));
+        }
+
+        // Read in chunks against a cap rather than `bytes()`, which would
+        // buffer whatever is sent. The whole image ends up base64 in a chat
+        // message, so an unbounded response is memory this process does not
+        // get back.
+        let mut resp = resp;
+        let mut bytes: Vec<u8> = Vec::new();
+        while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+            if bytes.len() + chunk.len() > MAX_IMAGE_BYTES {
+                return Err(format!(
+                    "the generated image is larger than {} MB",
+                    MAX_IMAGE_BYTES / (1024 * 1024)
+                ));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        return Ok(format!(
+            "data:{content_type};base64,{}",
+            BASE64_STANDARD.encode(&bytes)
+        ));
     }
-    Ok(format!(
-        "data:{content_type};base64,{}",
-        BASE64_STANDARD.encode(&bytes)
-    ))
+    Err("the generated image redirected too many times".into())
+}
+
+/// The address to connect to for a hop. A same-origin hop to a host the user
+/// configured is allowed to be private — that is the whole point of the
+/// exemption — so its address is taken as resolved rather than vetted, while
+/// still being pinned for the connection.
+async fn vetted_ip_or_literal(url: &reqwest::Url) -> Result<std::net::IpAddr, String> {
+    let host = url.host_str().ok_or_else(|| "invalid URL".to_string())?;
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(ip) = bare.parse::<std::net::IpAddr>() {
+        return Ok(ip);
+    }
+    let port = url.port_or_known_default().unwrap_or(443);
+    tokio::net::lookup_host((bare, port))
+        .await
+        .map_err(|_| "could not resolve the image host".to_string())?
+        .next()
+        .map(|a| a.ip())
+        .ok_or_else(|| "could not resolve the image host".to_string())
 }
 
 const BFL_BASE: &str = "https://api.eu.bfl.ai/v1";
@@ -1484,7 +1599,7 @@ async fn custom_image_generate(
         return Ok(candidate.to_string());
     }
     if candidate.starts_with("http") {
-        return fetch_as_data_url(client, candidate, Some(&s.image_url)).await;
+        return fetch_as_data_url(candidate, Some(&s.image_url)).await;
     }
     Ok(format!("data:image/png;base64,{candidate}"))
 }
@@ -1654,7 +1769,7 @@ async fn generate_image(
         ));
     }
     let sample = bfl_generate(&client, key.trim(), model, &prompt, &references, &cancel).await?;
-    let image = fetch_as_data_url(&client, &sample, None).await?;
+    let image = fetch_as_data_url(&sample, None).await?;
     usage::record_image("bfl", model, 1);
     let label = match references.len() {
         0 => format!("Black Forest Labs · {model}"),
@@ -2731,6 +2846,11 @@ async fn stream_completion(
 /// Like `stream_completion` but with an explicit token budget — the final
 /// research wrap-up needs extra headroom so GLM's reasoning doesn't consume the
 /// whole budget before it writes the answer (which showed up as an empty reply).
+// clippy::too_many_arguments: eight, and each one is a distinct thing the
+// caller must decide — model, messages, ceiling, cancellation, event sink. A
+// struct to carry them would satisfy the lint and move the same eight
+// decisions somewhere the reader has to go and look for them.
+#[allow(clippy::too_many_arguments)]
 async fn stream_completion_max(
     client: &reqwest::Client,
     key: &str,
@@ -2818,6 +2938,36 @@ struct RoundAccum {
     truncated: bool, // finish_reason == "length": hit the token cap mid-answer
 }
 
+/// Pull complete lines out of an SSE buffer, leaving any partial one behind.
+///
+/// `end_of_stream` is what makes this worth its own function. The reader only
+/// took lines terminated by a newline and kept the rest for the next chunk —
+/// but at the end of a stream there is no next chunk, and whatever remained
+/// was dropped. A server is free to flush its last event without a trailing
+/// newline, and when it did, that event was lost.
+///
+/// It showed up as a tool call with truncated arguments: the tail of the JSON
+/// was in the event that went missing, so a `{"query": "…` prefix reached the
+/// parser and was refused. Seen twice in real logs, at 31 and 56 bytes.
+fn drain_sse_lines(buf: &mut String, end_of_stream: bool) -> Vec<String> {
+    let mut lines = Vec::new();
+    while let Some(pos) = buf.find('\n') {
+        let line = buf[..pos].trim().to_string();
+        buf.drain(..=pos);
+        if !line.is_empty() {
+            lines.push(line);
+        }
+    }
+    if end_of_stream {
+        let rest = buf.trim().to_string();
+        buf.clear();
+        if !rest.is_empty() {
+            lines.push(rest);
+        }
+    }
+    lines
+}
+
 impl RoundAccum {
     /// Fold one parsed SSE chunk in. Returns the new content token, if any,
     /// so the caller can forward it to the UI as it arrives.
@@ -2883,15 +3033,26 @@ async fn stream_tool_round(
     let mut buf = String::new();
     let mut thinking_shown = false;
     let mut runaway_checked = 0usize;
-    while let Some(chunk) = stream.next().await {
-        if is_cancelled(cancel) {
-            return Ok(acc); // caller notices the cancel and wraps up
-        }
-        let chunk = chunk.map_err(stream_read_error)?;
-        buf.push_str(&String::from_utf8_lossy(&chunk));
-        while let Some(pos) = buf.find('\n') {
-            let line = buf[..pos].trim().to_string();
-            buf.drain(..=pos);
+    let mut ended = false;
+    while !ended {
+        // One more pass after the stream finishes, to read a final event that
+        // arrived without a trailing newline. Without it that event — and the
+        // tail of any tool-call arguments in it — was dropped.
+        let lines = match stream.next().await {
+            Some(chunk) => {
+                if is_cancelled(cancel) {
+                    return Ok(acc); // caller notices the cancel and wraps up
+                }
+                let chunk = chunk.map_err(stream_read_error)?;
+                buf.push_str(&String::from_utf8_lossy(&chunk));
+                drain_sse_lines(&mut buf, false)
+            }
+            None => {
+                ended = true;
+                drain_sse_lines(&mut buf, true)
+            }
+        };
+        for line in lines {
             let Some(data) = line.strip_prefix("data:") else {
                 continue;
             };
@@ -2999,10 +3160,7 @@ fn parse_leaked_tool_call(content: &str) -> Option<(String, serde_json::Value)> 
 /// `<think>…</think>` blocks and any trailing `<tool_call>` fragment.
 fn strip_reasoning(text: &str) -> String {
     let mut s = text.to_string();
-    loop {
-        let Some(start) = s.find("<think>") else {
-            break;
-        };
+    while let Some(start) = s.find("<think>") {
         match s[start..].find("</think>") {
             Some(end) => s.replace_range(start..start + end + "</think>".len(), ""),
             None => {
@@ -3308,6 +3466,10 @@ async fn compact_payload<R: tauri::Runtime>(
 }
 
 #[tauri::command]
+// clippy::too_many_arguments: this is the app's front door — the whole request
+// arrives here, and ten inputs is what a chat turn actually carries. Grouping
+// them into a parameter struct is a rename, not a simplification.
+#[allow(clippy::too_many_arguments)]
 async fn send_chat(
     app: tauri::AppHandle,
     state: tauri::State<'_, Cancellations>,
@@ -3779,10 +3941,16 @@ async fn run_chat<R: tauri::Runtime>(
                         }
                     },
                     None => {
+                        // The bytes, not just how many. This line was the only
+                        // trace of a dropped final SSE event, and a length on
+                        // its own said nothing about why — the truncation was
+                        // only obvious once the text was visible.
                         eprintln!(
-                            "[search] round {round}: {} call had malformed arguments ({}B)",
+                            "[search] round {round}: {} call had malformed arguments \
+                             ({}B): {:?}",
                             t.name,
-                            t.arguments.len()
+                            t.arguments.len(),
+                            t.arguments.chars().take(200).collect::<String>()
                         );
                         format!(
                             "Your {} call's arguments were not valid JSON and were not \
@@ -5044,6 +5212,86 @@ mod tests {
     }
 
     #[test]
+    fn a_file_with_an_id_and_title_but_no_messages_is_not_ours() {
+        let dir = history_root("plausible");
+        // The shape that slipped through: named for its own id, carrying an id
+        // and a title, and nothing to do with this app.
+        std::fs::write(
+            dir.join("project.json"),
+            r#"{"id":"project","title":"My project"}"#,
+        )
+        .unwrap();
+        assert_eq!(conversation_id_of(&dir.join("project.json")), None);
+
+        // Messages present but not an array is not a conversation either.
+        std::fs::write(
+            dir.join("notes.json"),
+            r#"{"id":"notes","title":"Notes","messages":"none"}"#,
+        )
+        .unwrap();
+        assert_eq!(conversation_id_of(&dir.join("notes.json")), None);
+
+        // The real thing still is.
+        write_conversation(&dir, "conv-one");
+        assert_eq!(
+            conversation_id_of(&dir.join("conv-one.json")).as_deref(),
+            Some("conv-one")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_index_listing_files_that_are_not_ours_is_not_ours() {
+        let dir = history_root("index-claim");
+        // Any array of {id, title} parses as our index, so the entries have to
+        // correspond to conversations actually found in the folder.
+        std::fs::write(
+            dir.join("index.json"),
+            r#"[{"id":"someone-elses","title":"Their record"}]"#,
+        )
+        .unwrap();
+        let (files, _) = owned_history_files(&dir);
+        assert!(
+            !files.iter().any(|f| f.ends_with("index.json")),
+            "claimed an index describing files that are not ours"
+        );
+
+        // With a matching conversation present it is ours.
+        write_conversation(&dir, "conv-one");
+        std::fs::write(
+            dir.join("index.json"),
+            r#"[{"id":"conv-one","title":"a chat"}]"#,
+        )
+        .unwrap();
+        let (files, _) = owned_history_files(&dir);
+        assert!(files.iter().any(|f| f.ends_with("index.json")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn moving_never_writes_over_a_file_already_there() {
+        let from = history_root("collide-from");
+        let to = history_root("collide-to");
+        write_conversation(&from, "conv-one");
+        // Something of the user's already sitting at the destination name.
+        std::fs::write(to.join("conv-one.json"), "THEIRS").unwrap();
+
+        move_our_history(&from, &to);
+
+        assert_eq!(
+            std::fs::read_to_string(to.join("conv-one.json")).unwrap(),
+            "THEIRS",
+            "an existing file at the destination was overwritten"
+        );
+        assert!(
+            to.join("conv-one-moved-1.json").exists(),
+            "ours should have been set down beside it"
+        );
+        let _ = std::fs::remove_dir_all(&from);
+        let _ = std::fs::remove_dir_all(&to);
+    }
+
+    #[test]
     fn moving_history_leaves_other_files_where_they_are() {
         let from = history_root("move-from");
         let to = history_root("move-to");
@@ -5428,6 +5676,102 @@ mod tests {
         assert_eq!(args["query"], "eu ai act");
     }
 
+    // ---- The last SSE event ------------------------------------------------
+    //
+    // The reader took lines terminated by a newline and kept the rest for the
+    // next chunk. At the end of a stream there is no next chunk, so a server
+    // that flushed its final event without a trailing newline had that event
+    // dropped — and with it the tail of any tool-call arguments it carried.
+    //
+    // The symptom was "web_search call had malformed arguments (31B)": a
+    // `{"query": "…` prefix reaching a parser that only accepts whole JSON
+    // objects. The round was wasted and the model had to be asked again. Seen
+    // twice in real logs, at 31 and 56 bytes.
+
+    #[test]
+    fn a_final_line_without_a_newline_is_read_at_end_of_stream() {
+        let mut buf = String::from("data: {\"a\":1}\ndata: {\"b\":2}");
+        // Mid-stream the partial line waits for more bytes.
+        assert_eq!(drain_sse_lines(&mut buf, false), vec!["data: {\"a\":1}"]);
+        assert_eq!(buf, "data: {\"b\":2}");
+        // At the end there is no more, so it is read rather than discarded.
+        assert_eq!(drain_sse_lines(&mut buf, true), vec!["data: {\"b\":2}"]);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn a_tool_calls_arguments_survive_a_newline_less_final_event() {
+        // The failure as it actually happened: arguments split across events,
+        // with the closing fragment in a final event that has no trailing
+        // newline. Built with json! rather than written out, so the escaping
+        // is the serializer's problem rather than a source of its own bugs.
+        let event = |tc: serde_json::Value| {
+            format!(
+                "data: {}",
+                serde_json::json!({ "choices": [{ "delta": { "tool_calls": [tc] } }] })
+            )
+        };
+        let stream = format!(
+            "{}\n{}\n{}",
+            event(serde_json::json!({
+                "index": 0, "id": "call_1",
+                "function": { "name": "web_search", "arguments": "{\"que" }
+            })),
+            event(serde_json::json!({
+                "index": 0, "function": { "arguments": "ry\": \"eu ai act" }
+            })),
+            // No trailing newline: this is the event that used to vanish.
+            event(serde_json::json!({
+                "index": 0, "function": { "arguments": "\"}" }
+            })),
+        );
+
+        let mut acc = RoundAccum::default();
+        let mut buf = String::new();
+        let consume = |acc: &mut RoundAccum, lines: Vec<String>| {
+            for line in lines {
+                if let Some(d) = line.strip_prefix("data:") {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(d.trim()) {
+                        acc.feed(&v);
+                    }
+                }
+            }
+        };
+        // A byte at a time, so a chunk boundary can land anywhere.
+        for ch in stream.chars() {
+            buf.push(ch);
+            let lines = drain_sse_lines(&mut buf, false);
+            consume(&mut acc, lines);
+        }
+        let tail = drain_sse_lines(&mut buf, true);
+        consume(&mut acc, tail);
+
+        assert_eq!(acc.tool_calls.len(), 1, "the tool call went missing");
+        let raw = &acc.tool_calls[0].arguments;
+        assert_eq!(raw, r#"{"query": "eu ai act"}"#, "arguments were truncated");
+        assert!(
+            parse_tool_args(raw).is_some(),
+            "{raw} does not parse — this is the malformed-arguments failure"
+        );
+    }
+
+    #[test]
+    fn blank_lines_between_events_are_not_mistaken_for_content() {
+        // SSE separates events with a blank line.
+        let mut buf = String::from("data: {\"a\":1}\n\n\ndata: {\"b\":2}\n");
+        assert_eq!(
+            drain_sse_lines(&mut buf, false),
+            vec!["data: {\"a\":1}", "data: {\"b\":2}"]
+        );
+    }
+
+    #[test]
+    fn an_empty_tail_adds_nothing() {
+        let mut buf = String::from("data: {\"a\":1}\n   \n");
+        assert_eq!(drain_sse_lines(&mut buf, true), vec!["data: {\"a\":1}"]);
+        assert!(drain_sse_lines(&mut String::new(), true).is_empty());
+    }
+
     #[test]
     fn parse_tool_args_accepts_only_json_objects() {
         // A well-formed call round-trips.
@@ -5669,6 +6013,45 @@ mod tests {
         eprintln!("PASS linkup search ({} chars)", out.len());
     }
 
+    /// Both models this app names must still exist for the account calling
+    /// them. `mistral-small-3.1-24b-instruct-2503` reached end of life and
+    /// vanished from this list while requests kept working — Scaleway was
+    /// rerouting them — so nothing failed and nothing was noticed. A silent
+    /// reroute is a dependency on someone else's goodwill, and this is the
+    /// check that ends it: run with a key, and a retired model id fails here
+    /// rather than one day in a user's chat.
+    #[tokio::test]
+    #[ignore]
+    async fn integ_configured_models_still_exist() {
+        let key = key_or_skip!("SCALEWAY_API_KEY");
+        let body: serde_json::Value = http_client()
+            .get(format!("{}/models", base_url()))
+            .bearer_auth(key.trim())
+            .send()
+            .await
+            .expect("could not reach Scaleway")
+            .json()
+            .await
+            .expect("model list was not JSON");
+        let available: Vec<&str> = body["data"]
+            .as_array()
+            .expect("no data array in the model list")
+            .iter()
+            .filter_map(|m| m["id"].as_str())
+            .collect();
+        assert!(
+            !available.is_empty(),
+            "Scaleway returned an empty model list"
+        );
+        for model in [MODEL, VISION_MODEL] {
+            assert!(
+                available.contains(&model),
+                "{model} is no longer offered to this account. Available: {available:?}"
+            );
+        }
+        eprintln!("PASS both configured models are still offered");
+    }
+
     #[tokio::test]
     #[ignore]
     async fn integ_staan_search_returns_results() {
@@ -5721,7 +6104,7 @@ mod tests {
         // Full app path: BFL returns a short-lived URL that generate_image then
         // fetches and embeds as a data URL — verify that second step too, since
         // the URL expires within ~10 minutes.
-        let data = fetch_as_data_url(&client, &sample, None)
+        let data = fetch_as_data_url(&sample, None)
             .await
             .expect("fetching/embedding the BFL image failed");
         assert!(
@@ -5767,7 +6150,7 @@ mod tests {
             .expect("BFL image generation failed");
             references.push(
                 reference_payload(
-                    &fetch_as_data_url(&client, &url, None)
+                    &fetch_as_data_url(&url, None)
                         .await
                         .expect("fetching the reference image failed"),
                 )
@@ -6416,6 +6799,89 @@ mod tests {
         .await;
         let events = events.lock().unwrap().clone();
         (result, events)
+    }
+
+    /// SECURITY.md tells readers that a self-hosted image endpoint "on `:4000`
+    /// cannot redirect the app to another port on the same host". That was
+    /// written from intent: the shared client followed redirects on its own and
+    /// only the first address was ever checked, so the sentence was false when
+    /// it was published. This is the sentence, as a test.
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn an_image_endpoint_cannot_redirect_to_another_local_port() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // Stands in for whatever else is listening on this machine — a model
+        // server, a database admin page, anything the app can reach and a
+        // stranger cannot.
+        let elsewhere = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/secret"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(b"private".to_vec(), "image/png"))
+            .mount(&elsewhere)
+            .await;
+
+        // The endpoint the user configured, which redirects off its own port.
+        let endpoint = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/image.png"))
+            .respond_with(
+                ResponseTemplate::new(302)
+                    .insert_header("location", format!("{}/secret", elsewhere.uri()).as_str()),
+            )
+            .mount(&endpoint)
+            .await;
+
+        let result = fetch_as_data_url(
+            &format!("{}/image.png", endpoint.uri()),
+            Some(&endpoint.uri()),
+        )
+        .await;
+
+        let err = result.expect_err("the redirect to another port was followed");
+        assert!(
+            !err.contains("private"),
+            "the other port's response came back: {err}"
+        );
+
+        // The same endpoint serving its own image is still fine — the
+        // exemption exists so a local endpoint works at all.
+        Mock::given(method("GET"))
+            .and(path("/own.png"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(b"mine".to_vec(), "image/png"))
+            .mount(&endpoint)
+            .await;
+        let ok = fetch_as_data_url(
+            &format!("{}/own.png", endpoint.uri()),
+            Some(&endpoint.uri()),
+        )
+        .await
+        .expect("a local endpoint serving its own image must still work");
+        assert!(ok.starts_with("data:image/png;base64,"));
+    }
+
+    /// A response that is not an image must not be embedded as one.
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn a_non_image_response_is_refused() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let endpoint = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/nope"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_raw(b"{\"error\":\"nope\"}".to_vec(), "application/json"),
+            )
+            .mount(&endpoint)
+            .await;
+
+        let err = fetch_as_data_url(&format!("{}/nope", endpoint.uri()), Some(&endpoint.uri()))
+            .await
+            .expect_err("a JSON body was embedded as an image");
+        assert!(err.contains("not an image"), "{err}");
     }
 
     #[cfg(not(target_os = "windows"))]

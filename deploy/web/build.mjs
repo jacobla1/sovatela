@@ -168,6 +168,25 @@ const problems = [];
 const rendered = [];
 
 for (const [slug, src, title, opts] of PAGES) {
+  // Some sources are withheld from the public mirror (deploy/publish-source.mjs)
+  // while the page they produce is published — the accessibility statement is
+  // one. So this script ships to a repository where it cannot run, and a bare
+  // ENOENT there is a puzzle for exactly the person SECURITY.md invites to read
+  // the source. Say what happened instead.
+  if (!existsSync(join(repo, src))) {
+    console.error(`\n${src} is missing, so /${slug} cannot be built.`);
+    console.error(
+      "If this is a clone of the public repository, that is expected: a few",
+    );
+    console.error(
+      "maintainer-held documents are not published there, and the pages they",
+    );
+    console.error(
+      "produce are already live on https://sovatela.eu. The site is built from",
+    );
+    console.error("the working repository, not from this one.");
+    process.exit(1);
+  }
   let md = readFileSync(join(repo, src), "utf8");
 
   if (opts.hold) {

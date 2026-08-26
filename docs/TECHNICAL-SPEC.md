@@ -109,7 +109,7 @@ rather than "up to date", because a false "up to date" is worse than no check.
 Application CSP (`tauri.conf.json`):
 
 ```
-default-src 'self'; script-src 'self' 'unsafe-inline';
+default-src 'self'; script-src 'self';
 style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:;
 font-src 'self' data:; media-src 'self' data: blob:;
 connect-src ipc: http://ipc.localhost;

@@ -78,6 +78,17 @@ MARGIN = 40  # breathing room around the tile, where its shadow falls
 RADIUS = 132
 TILE_FILL = (26, 15, 48)  # the dark tile face
 BACKDROP = (33, 15, 78)  # the deep purple behind it, as in the sources
+# The wordless cards used on the app's welcome screen sit on the page rather
+# than carrying their own words, so they are read against the app's background
+# instead of being a dark panel with white type on it. At the fill above they
+# were a black square on a light page — and, less obviously, they merged into
+# the dark one. This mid purple separates from both.
+#
+# It cannot go much lighter: `artwork()` shifts the drawing so its own
+# background matches the fill, so a pale tile takes the icon up with it and
+# washes it out. Tried, looked like a ghost.
+LIGHT_TILE_FILL = (86, 68, 140)
+LIGHT_BACKDROP = (78, 56, 150)
 EDGE = (128, 96, 214)  # top bevel highlight
 TITLE_RGB = (255, 255, 255)
 SUB_RGB = (183, 163, 238)
@@ -210,15 +221,41 @@ def wrap(draw, text, font, max_width):
     return lines
 
 
-def card(name: str, title: str, subtitle: str) -> Image.Image:
+def card(name: str, title: str, subtitle: str, *, with_text: bool = True) -> Image.Image:
+    """One card. With `with_text=False` the wording is left out entirely.
+
+    The app's welcome screen uses the wordless form and sets the title and note
+    as real text beside the picture. Words baked into a picture do not grow with
+    the text-size control, do not follow the light theme, and reach a screen
+    reader only through alt text — so a reader who raises the type sees
+    everything else grow and these four stay put. On the website the composited
+    form is kept: a browser has its own zoom, and the cards are a single
+    responsive strip there.
+    """
+    global TILE_FILL, BACKDROP
+    saved = TILE_FILL, BACKDROP
+    if not with_text:
+        TILE_FILL, BACKDROP = LIGHT_TILE_FILL, LIGHT_BACKDROP
+    try:
+        return _card(name, title, subtitle, with_text=with_text)
+    finally:
+        TILE_FILL, BACKDROP = saved
+
+
+def _card(name: str, title: str, subtitle: str, *, with_text: bool) -> Image.Image:
     im = tile()
     art = artwork(name)
-    fit = SIZE * ART_BOX
+    # Without a caption below it the artwork gets the whole tile: bigger, and
+    # centred rather than pushed up to leave room for words.
+    fit = SIZE * (ART_BOX if with_text else ART_BOX * 1.4)
     scale = min(fit / art.width, fit / art.height)
     w, h = int(art.width * scale), int(art.height * scale)
     art = art.resize((w, h), Image.LANCZOS)
-    im.paste(art, ((SIZE - w) // 2, int(SIZE * ART_CENTER_Y - h / 2)), art)
+    centre_y = ART_CENTER_Y if with_text else 0.5
+    im.paste(art, ((SIZE - w) // 2, int(SIZE * centre_y - h / 2)), art)
     im = lit(im)  # light the tile and the artwork together, so they read as one
+    if not with_text:
+        return im
 
     d = ImageDraw.Draw(im)
     inner = SIZE - MARGIN * 2 - 96
@@ -236,11 +273,12 @@ def card(name: str, title: str, subtitle: str) -> Image.Image:
     return im
 
 
-def build(steps, out_dir: Path) -> list[Image.Image]:
+def build(steps, out_dir: Path, *, with_text: bool = True) -> list[Image.Image]:
     out_dir.mkdir(parents=True, exist_ok=True)
     made = []
     for name, title, subtitle in steps:
-        im = card(name, title, subtitle).resize((OUT_PX, OUT_PX), Image.LANCZOS)
+        im = card(name, title, subtitle, with_text=with_text)
+        im = im.resize((OUT_PX, OUT_PX), Image.LANCZOS)
         path = out_dir / f"{name}.webp"
         im.save(path, "WEBP", quality=88, method=6)
         print(f"  {path.relative_to(REPO)}  {path.stat().st_size // 1024}KB")
@@ -249,8 +287,8 @@ def build(steps, out_dir: Path) -> list[Image.Image]:
 
 
 if __name__ == "__main__":
-    print("App welcome screen:")
-    app = build(APP_STEPS, APP_OUT)
+    print("App welcome screen (artwork only — the wording is HTML in Splash.svelte):")
+    app = build(APP_STEPS, APP_OUT, with_text=False)
     print("Site (sovatela.eu):")
     web = build(WEB_STEPS, WEB_OUT)
 

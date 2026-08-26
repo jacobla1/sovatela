@@ -131,6 +131,16 @@ request.
 
 Chat markdown is rendered through DOMPurify before insertion.
 
+**The window itself allows no inline script.** `script-src` is `'self'`, so a
+string that got past sanitisation still cannot execute — which matters because
+the interface, unlike an artifact, can call privileged commands. It allowed
+inline script until 1.5.3, and the automatic nonce injection that would have
+made that unnecessary was switched off; no inline script was ever needed, as
+the built page is a module tag and a stylesheet link. Inline *style* is still
+allowed, because two components size elements with a style attribute, and an
+injected style is a far smaller problem than injected code. `eval` is refused
+in both the shipped and the development policy.
+
 ### A custom image endpoint you host yourself
 
 The image endpoint is the one address in the app you can point at your own
@@ -157,27 +167,18 @@ typed an http URL for"; both are addresses you chose deliberately, and refusing
 the second would refuse the first. **If your image endpoint is not on your own
 machine, give it an `https://` address.**
 
-Providers you did not self-host — Black Forest Labs, OVHcloud — get no
-exemption at all.
+The exemption is no wider than that origin, and it is re-checked at every
+redirect: an endpoint on `:4000` cannot redirect the app to another port on the
+same host, because the address after a redirect is judged the same way as the
+first one. Providers you did not self-host — Black Forest Labs, OVHcloud — get
+no exemption at all. A response that is not an image is refused rather than
+embedded as one.
 
-**Correction, and an open gap in 1.5.2.** This paragraph previously said that an
-endpoint on `:4000` cannot redirect the app to another port on the same host.
-That is not true of 1.5.2, the version you can download today. Redirects are
-followed automatically and only the first address is checked, so an image
-service can pass the check and then send the app somewhere else — including a
-loopback or private address that only your machine can reach. The sentence was
-written from what the code was meant to do rather than from what it does.
-
-Reaching it requires the image provider itself to be hostile or compromised:
-Black Forest Labs, OVHcloud, or an endpoint you configured. A web page cannot
-trigger it, and neither can anyone who is not already serving your images. If
-you use no image provider, it does not apply to you at all.
-
-The fix — following redirects by hand and judging scheme, origin and resolved
-address at every hop, as the web-page reader already does — is written and
-tested, and ships in the next release. It is recorded here rather than quietly
-corrected later, because this page is the one that invites you to check the
-claims rather than trust them.
+That sentence about `:4000` was published in 1.5.2 before it was true. Redirects
+were followed automatically and only the first address was ever checked, so a
+service could pass the check and then send this app somewhere else. It is a
+test now (`an_image_endpoint_cannot_redirect_to_another_local_port`), which is
+what the claim should have had from the start.
 
 ### Workspace
 

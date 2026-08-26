@@ -68,9 +68,11 @@ We have no relationship with your provider accounts and no visibility into them.
 
 Include:
 
-1. **App version** and **OS with version**. The app doesn't display its version
-   anywhere yet, so: on macOS use <kbd>Sovatela</kbd> → *About Sovatela* in the
-   menu bar, or select the app in Finder and press <kbd>⌘</kbd> + <kbd>I</kbd>;
+1. **App version** and **OS with version**. The version is in
+   *Settings → About → About Sovatela*, read from the installed application, so
+   it cannot be wrong. Failing that: on macOS use <kbd>Sovatela</kbd> →
+   *About Sovatela* in the menu bar, or select the app in Finder and press
+   <kbd>⌘</kbd> + <kbd>I</kbd>;
    on Windows, *Settings → Apps → Installed apps*. Failing that, the version is
    in the filename of the installer you downloaded.
 2. **What you expected** and **what happened.**

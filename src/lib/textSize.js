@@ -14,11 +14,15 @@
 
 const KEY = "textSize";
 
+// 200% is the top step because that is what WCAG 1.4.4 asks for. The spacing
+// scale in styles.css is in rem, so the layout grows with the type rather than
+// packing larger text into the same gaps.
 export const TEXT_SIZES = [
   { id: "default", label: "Default", pct: 100 },
   { id: "large", label: "Large", pct: 112.5 },
   { id: "larger", label: "Larger", pct: 125 },
   { id: "largest", label: "Largest", pct: 150 },
+  { id: "double", label: "Double", pct: 200 },
 ];
 
 export function getTextSize() {

@@ -52,6 +52,45 @@ beforeEach(() => {
   invoke.mockImplementation((cmd) => Promise.resolve(cmd in canned ? canned[cmd] : null));
 });
 
+// The composer links straight to a settings section — "set up web search",
+// "switch image provider". That scroll runs in an effect which reads the
+// section's bound element, and the elements were plain `let`s: the effect ran
+// once before they bound, read undefined, and never ran again. Whether the
+// deep link worked came down to whether the effect happened to run late.
+describe("KeyPage deep links scroll to their section", () => {
+  const scrolled = [];
+  beforeEach(() => {
+    scrolled.length = 0;
+    Element.prototype.scrollIntoView = function () {
+      scrolled.push(this);
+    };
+    // The effect defers to rAF; run callbacks straight away.
+    vi.stubGlobal("requestAnimationFrame", (cb) => {
+      cb();
+      return 0;
+    });
+  });
+
+  for (const target of ["search", "image", "scaleway"]) {
+    it(`scrolls to the ${target} section`, async () => {
+      render(KeyPage, { props: { mode: "settings", scrollTo: target } });
+      // Let the effect re-run once the section elements have bound.
+      await new Promise((r) => setTimeout(r, 0));
+      expect(
+        scrolled.length,
+        `nothing scrolled for scrollTo="${target}" — the section element was ` +
+          `never seen by the effect`,
+      ).toBeGreaterThan(0);
+    });
+  }
+
+  it("scrolls nowhere when no section was asked for", async () => {
+    render(KeyPage, { props: { mode: "settings" } });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(scrolled.length).toBe(0);
+  });
+});
+
 describe("KeyPage (settings mode)", () => {
   it("loads and reflects the connected Scaleway key", async () => {
     render(KeyPage, { props: { mode: "settings" } });

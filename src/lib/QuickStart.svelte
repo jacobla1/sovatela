@@ -15,7 +15,7 @@
   let { onOpenSettings, onOpenGuide, onDone } = $props();
 </script>
 
-<div class="onboarding">
+<main class="onboarding">
   <h1>Quick start</h1>
   <p class="lead">
     One key gets you chatting. The two add-ons below are optional — skip them
@@ -160,4 +160,4 @@
     <button class="ghost" onclick={() => onOpenGuide?.()}>Read the Guide</button>
     <button class="ghost" onclick={() => onOpenSettings?.()}>Open all Settings</button>
   </div>
-</div>
+</main>

@@ -1,4 +1,4 @@
-# Release notes — Sovatela 1.5.2
+# Release notes — Sovatela 1.5.3
 
 Release date: 2026-08-26 · [All releases](https://github.com/jacobla1/sovatela/releases)
 
@@ -9,6 +9,76 @@ Release date: 2026-08-26 · [All releases](https://github.com/jacobla1/sovatela/
 ---
 
 ## New
+
+Security fixes, and the accessibility work this project's own statement had
+been promising.
+
+**A generated image could be fetched from anywhere.** When an image provider
+answers with a link rather than the picture, the app follows it. Only the first
+address was checked: redirects were followed automatically and never looked at,
+so a service could pass the check and then send the app to an address only your
+own machine can reach. Every hop is judged now, and the connection is pinned to
+the address that was checked, so a name cannot be re-pointed between the two. A
+response that is not an image is refused instead of being embedded as one.
+
+The security page's description of this now matches what the code does, and is
+covered by a test.
+
+**The vision model had reached end of life.** GLM-5.2 has no vision encoder, so
+anything with an image in it goes to a Mistral model instead. That model had
+stopped being offered at all; the requests kept working because Scaleway was
+quietly rerouting them, which is someone else's decision to withdraw rather
+than a working configuration. It is now the current model, at the same price,
+confirmed by a real request rather than a guess. A test with a key fails if any
+model this app names stops being offered.
+
+**The last piece of a reply could be dropped.** If the server finished without
+a trailing newline, the final event was discarded. It showed as a web search
+whose arguments arrived cut short, costing a round while the model was asked
+again — nothing looked broken from the outside, which is why it went unnoticed
+across two sessions.
+
+**The window no longer allows inline script.** Nothing could exploit it — text
+from the model is sanitised, and generated code is sandboxed — but the
+interface can call the commands that reach your keychain and your files, so a
+string that got past sanitising was closer to them than it should have been.
+Inline styling is still allowed, because two parts of the interface size
+themselves that way, and it is a far smaller problem.
+
+**Colour contrast is measured, and meets AA in both themes.** This page listed
+it as unmeasured and guessed the outcome. Measured, nine pairs fell short —
+warning text worst, at 2.77:1 against a requirement of 4.5 — and each was
+corrected rather than written down. Two colours had to be split in two to get
+there: the accent, because text on a page and white on a button pull opposite
+ways, and the amber for warnings, which cannot be one value across a light and
+a dark theme. If your operating system is set to increase contrast, it goes
+further again.
+
+**Text scales to 200%**, and the layout scales with it. It stopped at 150%, and
+the spacing did not move at all, so asking for larger text packed it into the
+same gaps.
+
+**Keyboard shortcuts.** Starting a chat, opening the chat list, getting back to
+the message box and opening Settings were all pointer-only. Now
+<kbd>⌘</kbd>/<kbd>Ctrl</kbd> with <kbd>K</kbd>, <kbd>B</kbd>, <kbd>/</kbd> and
+<kbd>,</kbd>, with a reference at <kbd>?</kbd> and a *Shortcuts* button beside
+*Guide* — a shortcut you can only reach with a key you do not know about is not
+much use to anyone.
+
+**The interface can be moved through with a screen reader.** There were no
+landmarks at all: no way to jump between the conversation, the chat list and
+the artifact panel. Each view now has one main region, the chat list is
+navigation holding real lists that say how many chats there are and which one
+is open, and Settings is seven named sections rather than one long page. The
+project dialog keeps focus the way it had been claiming to since it first
+declared itself a dialog. A reply is read once when it is whole, rather than a
+fragment at a time as it streams.
+
+**The welcome screen's wording is text.** Its four cards had their titles
+painted into the artwork, so those words alone did not grow with the text-size
+setting and did not follow the light theme.
+
+Everything below arrived in 1.5.2 and is included here.
 
 This release contains no new features either. It acts on an external security
 and usability review, and on defects that running this project's own tooling
@@ -277,7 +347,7 @@ afterwards from *Settings → Appearance → Welcome screen*.
 
 ## Known limitations
 
-Documented rather than omitted. This is the complete user-facing list for 1.5.2;
+Documented rather than omitted. This is the complete user-facing list for 1.5.3;
 the engineering view is in [Technical specification §
 7](../TECHNICAL-SPEC.md#7-known-technical-debt).
 
@@ -309,14 +379,6 @@ the engineering view is in [Technical specification §
   from 1.5.1 because it was found while testing that release, not because it
   changed.
 
-**The setup-step pictures do not scale**
-
-- The four cards on the welcome screen carry their wording inside the picture,
-  so that text does not grow with *Settings → Appearance → Text size*, and does
-  not follow the light theme. The wording is repeated in each picture's
-  alternative text for screen readers, but a reader who enlarges type will not
-  see these four cards enlarge with the rest.
-
 **Terminal access on Windows is tested, but not against a real Scaleway key**
 
 - The installer and the launcher now run on Windows on every commit that touches
@@ -345,15 +407,16 @@ the engineering view is in [Technical specification §
 
 **Accessibility**
 
-- Text scales to **150%, not 200%**, and spacing does not scale with it — larger
-  settings tighten the layout rather than growing it. The criterion asks for
-  200%, so this is improved rather than resolved.
-- Sparse ARIA structure; no keyboard shortcuts beyond <kbd>Enter</kbd> and
-  <kbd>Esc</kbd>; focus is not explicitly managed when panels open and close;
-  no screen-reader testing has been performed; colour contrast has not been
-  formally measured.
-- Full detail and remediation plan: [Accessibility
-  statement](https://sovatela.eu/accessibility).
+- Screen-reader testing is **partial**. A first pass with VoiceOver on macOS
+  confirmed the project dialog's focus behaviour and that a reply is read once
+  when it finishes. The chat list's announcement was not exercised, and nothing
+  has been tried with NVDA, JAWS or Orca — so Windows and Linux behaviour is
+  reasoned from the markup rather than heard.
+- Focus is managed in the project dialog. Settings, the Guide and the history
+  sidebar are full-screen or inline rather than modal, and still move focus
+  only as the browser would.
+- Smaller labelling gaps remain outside the chat view.
+- Full detail: [Accessibility statement](https://sovatela.eu/accessibility).
 
 **Packaging**
 
@@ -404,9 +467,9 @@ Scaleway API key: [Quick-start](../QUICKSTART.md).
 **Verify your download** before running it:
 
 ```sh
-shasum -a 256 Sovatela_1.5.2_universal.dmg      # macOS
-sha256sum sovatela_1.5.2_amd64.deb              # Linux
-Get-FileHash .\Sovatela_1.5.2_x64-setup.exe -Algorithm SHA256   # Windows
+shasum -a 256 Sovatela_1.5.3_universal.dmg      # macOS
+sha256sum sovatela_1.5.3_amd64.deb              # Linux
+Get-FileHash .\Sovatela_1.5.3_x64-setup.exe -Algorithm SHA256   # Windows
 ```
 
 **Downgrading** — install the older version over the top. The data format is

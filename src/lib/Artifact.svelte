@@ -9,8 +9,13 @@
   const renderable = $derived(lang === "html" || lang === "svg");
   let showCode = $state(false);
   let copied = $state(false);
-  let frameEl;
-  let bodyEl;
+  // $state because the effect below reads them, and the frame genuinely comes
+  // and goes: toggling Code/Preview unmounts the iframe and mounts a new one.
+  // The old plain `let` still worked, because the listener reads the variable
+  // when a message arrives rather than when the effect runs — but it depended
+  // on that detail rather than saying so.
+  let frameEl = $state(null);
+  let bodyEl = $state(null);
   let frameHeight = $state(240); // px; the frame reports its real content height
 
   const CSP =

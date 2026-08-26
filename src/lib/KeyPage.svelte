@@ -1,4 +1,5 @@
 <script>
+  import { untrack } from "svelte";
   import { invoke, Channel } from "@tauri-apps/api/core";
   import { getVersion } from "@tauri-apps/api/app";
   import ScalewayKeySteps from "./ScalewayKeySteps.svelte";
@@ -84,9 +85,17 @@
     setTextSize(id);
   }
 
-  let imageSectionEl;
-  let searchSectionEl;
-  let scalewaySectionEl;
+  // $state because the effect below reads them. As plain `let`s this worked —
+  // the effect runs after the bindings are applied, and these sections are
+  // always rendered, so it never saw an unset value. What it did not do was
+  // *depend* on them: if one of these sections ever became conditional, the
+  // effect would stop re-running and the deep link would quietly land at the
+  // top of the page. The compiler warned about that ambiguity, not about a
+  // defect, and this states the dependency instead of relying on the order
+  // things happen to run in.
+  let imageSectionEl = $state(null);
+  let searchSectionEl = $state(null);
+  let scalewaySectionEl = $state(null);
   $effect(() => {
     const target =
       scrollTo === "image"
@@ -514,7 +523,11 @@
   // Reachable with a key already stored, via Settings → "Show the welcome
   // screen again". Showing an empty paste-your-key form in that state would
   // imply the key had gone, so the screen reports what is actually held.
-  if (!isSettings) {
+  // App.svelte renders the welcome and settings screens as two separate
+  // <KeyPage> elements in different branches, so `mode` never changes on a
+  // live instance — switching view unmounts one and mounts the other. Read
+  // once, deliberately.
+  if (!untrack(() => isSettings)) {
     invoke("get_key_hint")
       .then((h) => {
         hint = h;
@@ -523,7 +536,7 @@
       .catch((e) => console.error("Could not read key hint:", e));
   }
 
-  if (isSettings) {
+  if (untrack(() => isSettings)) {
     invoke("get_key_hint")
       .then((h) => (hint = h))
       .catch((e) => console.error("Could not read key hint:", e));
@@ -767,7 +780,10 @@
         {#each memories as m (m.id)}
           <li>
             <span class="proj-file-name" title={m.text}>{m.text}</span>
-            <button class="proj-file-del" aria-label="Forget this" onclick={() => removeMemory(m.id)}>×</button>
+            <button
+              class="proj-file-del"
+              aria-label={`Forget: ${m.text.length > 60 ? m.text.slice(0, 60) + "…" : m.text}`}
+              onclick={() => removeMemory(m.id)}>×</button>
           </li>
         {/each}
       </ul>
@@ -1884,7 +1900,7 @@
 {/snippet}
 
 {#if isSettings}
-  <div class="onboarding">
+  <main class="onboarding">
     <button class="back" onclick={() => onBack?.()}>← Back to chat</button>
     <h1>Settings</h1>
     <p class="guide-link">
@@ -1892,8 +1908,8 @@
       <button class="link" onclick={() => onOpenGuide?.()}>Open the Guide →</button>
     </p>
 
-    <div class="settings-group">
-      <h2 class="settings-group-label">API keys</h2>
+    <section class="settings-group" aria-labelledby="set-api-keys">
+      <h2 class="settings-group-label" id="set-api-keys">API keys</h2>
       <div class="settings-group-body">
         <details
           class="section"
@@ -1963,12 +1979,12 @@
           <div class="section-body">{@render searchSection()}</div>
         </details>
       </div>
-    </div>
+    </section>
 
     <!-- High in the list on purpose: someone who cannot read the interface
          comfortably should not have to read their way down it first. -->
-    <div class="settings-group">
-      <h2 class="settings-group-label">Appearance</h2>
+    <section class="settings-group" aria-labelledby="set-appearance">
+      <h2 class="settings-group-label" id="set-appearance">Appearance</h2>
       <div class="settings-group-body">
         <details class="section">
           <summary>Text size</summary>
@@ -1980,20 +1996,20 @@
           <div class="section-body">{@render welcomeScreenSection()}</div>
         </details>
       </div>
-    </div>
+    </section>
 
-    <div class="settings-group">
-      <h2 class="settings-group-label">Usage &amp; cost</h2>
+    <section class="settings-group" aria-labelledby="set-usage-and-cost">
+      <h2 class="settings-group-label" id="set-usage-and-cost">Usage &amp; cost</h2>
       <div class="settings-group-body">
         <details class="section">
           <summary>Usage &amp; cost estimate</summary>
           <div class="section-body">{@render usageSection()}</div>
         </details>
       </div>
-    </div>
+    </section>
 
-    <div class="settings-group">
-      <h2 class="settings-group-label">Personalization &amp; files</h2>
+    <section class="settings-group" aria-labelledby="set-personalization-and-files">
+      <h2 class="settings-group-label" id="set-personalization-and-files">Personalization &amp; files</h2>
       <div class="settings-group-body">
         <details class="section">
           <summary>Memory &amp; personalization</summary>
@@ -2005,10 +2021,10 @@
           <div class="section-body">{@render workspaceSection()}</div>
         </details>
       </div>
-    </div>
+    </section>
 
-    <div class="settings-group">
-      <h2 class="settings-group-label">History &amp; privacy</h2>
+    <section class="settings-group" aria-labelledby="set-history-and-privacy">
+      <h2 class="settings-group-label" id="set-history-and-privacy">History &amp; privacy</h2>
       <div class="settings-group-body">
         <details class="section">
           <summary>Chat history</summary>
@@ -2030,32 +2046,32 @@
           <div class="section-body">{@render uninstallSection()}</div>
         </details>
       </div>
-    </div>
+    </section>
 
     {#if SHOW_TERMINAL_ACCESS}
-      <div class="settings-group">
-        <h2 class="settings-group-label">Advanced</h2>
+      <section class="settings-group" aria-labelledby="set-advanced">
+        <h2 class="settings-group-label" id="set-advanced">Advanced</h2>
         <div class="settings-group-body">
           <details class="section">
             <summary>Terminal access (Claude Code + GLM-5.2)</summary>
             <div class="section-body">{@render terminalSection()}</div>
           </details>
         </div>
-      </div>
+      </section>
     {/if}
 
-    <div class="settings-group">
-      <h2 class="settings-group-label">About</h2>
+    <section class="settings-group" aria-labelledby="set-about">
+      <h2 class="settings-group-label" id="set-about">About</h2>
       <div class="settings-group-body">
         <details class="section">
           <summary>About Sovatela</summary>
           <div class="section-body">{@render aboutSection()}</div>
         </details>
       </div>
-    </div>
-  </div>
+    </section>
+  </main>
 {:else}
-  <div class="onboarding">
+  <main class="onboarding">
     <h1>Welcome to Sovatela 👋</h1>
     <!-- Once the key is in, the setup framing is stale: there are no steps left
          to take, nothing to skip, and no "only requirement" still outstanding.
@@ -2104,5 +2120,5 @@
         </button>
       </p>
     {/if}
-  </div>
+  </main>
 {/if}

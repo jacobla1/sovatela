@@ -1,5 +1,60 @@
 # Changelog
 
+## 1.5.3 — 2026-08-26
+
+Security fixes, and the accessibility work the statement had been promising.
+
+- **Generated images could be fetched from anywhere.** Only the first address
+  was checked; redirects were followed automatically and never looked at, so an
+  image service could pass the check and then send the app to a loopback or
+  private address only your machine can reach. Every hop is now judged —
+  scheme, origin and resolved address — and the connection is pinned to the
+  address that was checked. A response that is not an image is refused rather
+  than embedded as one. `SECURITY.md` now describes what the code does, with a
+  test behind it.
+
+- **The vision model had reached end of life.** Images route to a Mistral model
+  because GLM-5.2 has no vision encoder, and that model no longer appeared in
+  Scaleway's list at all — requests kept working only because Scaleway was
+  rerouting them, which is someone else's decision to withdraw. Now
+  `mistral-small-3.2-24b-instruct-2506`, at the same price, confirmed by a real
+  request. A credentialed test now fails if any model this app names stops
+  being offered.
+
+- **The last event of a reply could be dropped.** If the server finished
+  without a trailing newline, the final piece was discarded — which showed up
+  as a web search whose arguments arrived truncated, costing a round while the
+  model was asked again. Nothing looked broken from the outside, which is why
+  it lasted.
+
+- **The window no longer allows inline script.** Nothing could exploit it, but
+  the interface can call privileged commands, so a string that got past
+  sanitising was closer to them than it should have been. Inline style is still
+  allowed — two components size elements with it — and `eval` is refused
+  everywhere.
+
+- **Colour contrast is measured, and meets AA in both themes.** It had been
+  listed as unmeasured. Nine pairs fell short, warning text worst at 2.77:1,
+  and each was corrected rather than written down. With *increase contrast* set
+  in your operating system it goes further — there is no setting to find in the
+  app, because you have already made that choice.
+
+- **Text scales to 200%**, and the layout scales with it rather than packing
+  larger words into the same gaps.
+
+- **Keyboard shortcuts**, with a reference at <kbd>?</kbd> and a button beside
+  *Guide*: new chat, chat list, message box, Settings. Nothing is bound to a
+  bare letter, because a bare letter is a character someone is typing.
+
+- **The interface can be moved through with a screen reader.** Each view has
+  one main region, the chat list is navigation holding real lists that announce
+  their length, Settings is seven named sections, and the project dialog keeps
+  focus the way it always claimed to. A reply is announced once when it is
+  finished instead of a fragment at a time.
+
+- **The welcome screen's wording is text**, not painted into the pictures, so
+  it grows with the text-size setting and follows the theme.
+
 ## 1.5.2 — 2026-08-26
 
 Findings from an external security and usability review, plus what running the

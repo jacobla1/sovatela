@@ -37,6 +37,44 @@
   const liveMessages = new Map(); // cid → messages array (running chats)
   const stoppedRequests = new Set(); // requestIds the user stopped
   const sending = $derived(!!runningIds[conversationId]);
+  // ----- What a screen reader is told -----
+  //
+  // The thread carried role="log", which makes it a live region: every token
+  // of a streaming reply was announced as it arrived, so a paragraph came out
+  // as a stutter of fragments and there was no way to hear the reply as a
+  // sentence. The thread is now an ordinary region, and this one polite
+  // announcer carries the things worth saying — that a reply is coming, what
+  // it is doing while it takes a while, and the answer itself, once, when it
+  // is whole.
+  let announcement = $state("");
+  function announce(text) {
+    const next = (text || "").trim();
+    if (!next) return;
+    // Re-assign even when the text repeats, or a second identical status
+    // ("Searching the web" twice) would be silently dropped by the live
+    // region. The zero-width space makes it a different string.
+    announcement = next === announcement ? `${next}\u200b` : next;
+  }
+
+  /// What to read out when a reply lands. Artifacts are code and read as
+  /// gibberish aloud, so they are described rather than spoken; an image is
+  /// announced as an image. Long answers are read in full deliberately — this
+  /// is the answer the user asked for, and truncating it would decide for them
+  /// how much of their own reply they are allowed to hear.
+  function replyAnnouncement(reply) {
+    if (reply.image) return "Image generated.";
+    const parts = parseParts(reply.text || "");
+    const spoken = parts
+      .map((p) =>
+        p.type === "artifact"
+          ? `[${p.lang || "code"} artifact${p.title ? `: ${p.title}` : ""}, shown in the panel]`
+          : p.content,
+      )
+      .join(" ")
+      .trim();
+    return spoken || "Reply finished.";
+  }
+
   let pending = $state([]); // attachments staged for the next message
   // The 🌐/🎨 toggles are per-conversation, not global: with chats running
   // independently (Tier 2), each remembers its own mode. `chatToggles` holds
@@ -148,6 +186,15 @@
   let conversationId = $state(newConversationId());
   let conversations = $state([]);
   let showHistory = $state(false);
+  /// The sidebar is a disclosure, not a dialog: opening it should not steal
+  /// focus mid-sentence. But it appeared and disappeared in silence — pressing
+  /// the shortcut with focus in the message box said nothing at all, so there
+  /// was no way to tell whether anything had happened, or that a list of chats
+  /// was now there to navigate to.
+  function toggleHistory() {
+    showHistory = !showHistory;
+    announce(showHistory ? "Chat list shown" : "Chat list hidden");
+  }
 
   // ---------- Projects ----------
   // Two distinct notions, deliberately separate:
@@ -747,6 +794,9 @@
         if (onScreen) scrollToBottom();
       } else if (msg.type === "Status") {
         reply.status = msg.data;
+        // A status is a sentence, and there are a handful of them per turn —
+        // worth hearing, unlike the token stream.
+        announce(msg.data);
         // Record each distinct tool step so the reply keeps a visible trail of
         // what the agent did (searched, read a page…), not just the last line.
         if (!reply.steps) reply.steps = [];
@@ -805,6 +855,12 @@
       // says after it (wrap-ups, honest failures) must stay visible.
       reply.text = cleanText(reply.text || "").trim();
       ensureVisibleReply(reply, stoppedRequests.has(requestId));
+      // The answer, read once it is whole rather than as it arrives. Only for
+      // the chat on screen: a reply finishing in a background conversation
+      // should not interrupt the one being read.
+      if (cid === conversationId) {
+        announce(replyAnnouncement(reply));
+      }
       stoppedRequests.delete(requestId);
       endRun(cid, requestId);
       if (cid === conversationId) {
@@ -969,7 +1025,85 @@
       send();
     }
   }
+
+  // ----- Keyboard shortcuts -----
+  //
+  // Until now nothing here could be reached without a pointer: starting a
+  // chat, opening the list, getting back to the message box. All of it was a
+  // click. These are the four things someone does over and over.
+  //
+  // The modifier is Cmd on macOS and Ctrl elsewhere, matching what every other
+  // application on the platform does. Nothing is bound to a bare letter,
+  // because a bare letter is a character someone is typing.
+  let showShortcuts = $state(false);
+  const onMac =
+    typeof navigator !== "undefined" && /mac/i.test(navigator.platform || navigator.userAgent);
+  const mod = onMac ? "⌘" : "Ctrl";
+
+  const SHORTCUTS = [
+    { keys: [`${mod}`, "K"], label: "New chat" },
+    { keys: [`${mod}`, "B"], label: "Show or hide the chat list" },
+    { keys: [`${mod}`, "/"], label: "Go to the message box" },
+    { keys: [`${mod}`, ","], label: "Settings" },
+    { keys: ["Esc"], label: "Close a panel, or stop a reply" },
+    { keys: ["Enter"], label: "Send" },
+    { keys: ["Shift", "Enter"], label: "New line" },
+  ];
+
+  function onGlobalKeydown(e) {
+    if (e.key === "?" && e.shiftKey && !isTyping(e.target)) {
+      e.preventDefault();
+      showShortcuts = !showShortcuts;
+      return;
+    }
+    if (e.key === "Escape") {
+      // Closing the sheet comes first: it is the thing on top.
+      if (showShortcuts) {
+        e.preventDefault();
+        showShortcuts = false;
+      } else if (sending) {
+        e.preventDefault();
+        stop();
+      } else if (activeIndex != null) {
+        e.preventDefault();
+        activeIndex = null;
+      }
+      return;
+    }
+    // Cmd on macOS, Ctrl elsewhere — never both, or Ctrl+K would also fire on
+    // a Mac where it means "delete to end of line" in a text field.
+    const held = onMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+    if (!held || e.altKey) return;
+    switch (e.key.toLowerCase()) {
+      case "k":
+        e.preventDefault();
+        newChatUser();
+        inputEl?.focus();
+        break;
+      case "b":
+        e.preventDefault();
+        toggleHistory();
+        break;
+      case "/":
+        e.preventDefault();
+        inputEl?.focus();
+        break;
+      case ",":
+        e.preventDefault();
+        onOpenSettings();
+        break;
+    }
+  }
+
+  /** True while the target is somewhere text is being entered. */
+  function isTyping(el) {
+    if (!el) return false;
+    const tag = el.tagName;
+    return tag === "INPUT" || tag === "TEXTAREA" || el.isContentEditable;
+  }
 </script>
+
+<svelte:window onkeydown={onGlobalKeydown} />
 
 <div class="workspace">
 {#if showHistory}
@@ -989,7 +1123,9 @@
     {doneIds}
   />
 {/if}
-<div class="chat">
+<!-- The one main landmark in this view. History is navigation beside it,
+     and the artifact panel is complementary to it. -->
+<main class="chat">
   <header>
     <div class="header-left">
       <button
@@ -997,7 +1133,7 @@
         title="Chat history"
         aria-label="Toggle chat history sidebar"
         aria-pressed={showHistory}
-        onclick={() => (showHistory = !showHistory)}
+        onclick={toggleHistory}
       >☰</button>
       <div class="title">
         <span
@@ -1020,13 +1156,28 @@
           onclick={() => (activeIndex = activeIndex == null ? artifacts.length - 1 : null)}
         >Artifacts</button>
       {/if}
+      <button
+        class="ghost"
+        title="Keyboard shortcuts (?)"
+        onclick={() => (showShortcuts = true)}
+      >Shortcuts</button>
       <button class="ghost" onclick={() => onQuickStart?.()}>Quick start</button>
       <button class="ghost" onclick={() => onOpenGuide?.()}>Guide</button>
       <button class="ghost" onclick={() => onOpenSettings()}>Settings</button>
     </div>
   </header>
 
-  <div class="messages" bind:this={listEl} role="log" aria-label="Conversation">
+  <!-- One polite announcer for the whole chat. aria-atomic so a changed value
+       is read as a whole rather than as a diff against the last one, and
+       off-screen rather than hidden — display:none is not announced at all. -->
+  <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">
+    {announcement}
+  </div>
+
+  <!-- Announcements go through the region above, not through the thread. As a
+       live region this announced every streamed token, so a paragraph arrived
+       as a stutter of fragments. -->
+  <div class="messages" bind:this={listEl} role="region" aria-label="Conversation">
     <div class="thread">
     {#if !hasKey}
       <div class="no-key-banner">
@@ -1064,7 +1215,9 @@
           {#if m.steps && m.steps.length > 1}
             <!-- Multi-step research: keep the whole trail, collapsed once done. -->
             {#if sending && mi === messages.length - 1}
-              <div class="agent-steps" aria-live="polite">
+              <!-- Visible only. The announcer above carries these to a screen reader,
+                   so a live region here would say each step twice. -->
+              <div class="agent-steps">
                 {#each m.steps as step}
                   <div class="agent-step">{step}</div>
                 {/each}
@@ -1078,13 +1231,13 @@
               </details>
             {/if}
           {:else if m.status}
-            <div class="msg-status" aria-live="polite">{m.status}</div>
+            <div class="msg-status">{m.status}</div>
           {:else if m.role === "assistant" && sending && mi === messages.length - 1 && !m.image && !hasVisibleText(m.text)}
             <!-- Streaming but nothing renders yet: still reasoning, or between
                  tool steps. Falls back to the most recent step so a single-step
                  turn keeps a label instead of going silent once its status
                  clears — the bubble must never be blank while we're working. -->
-            <div class="msg-status" aria-live="polite">
+            <div class="msg-status">
               {m.steps?.[m.steps.length - 1] ?? "🤔 Working on it…"}
             </div>
           {/if}
@@ -1271,7 +1424,38 @@
       {/if}
     </div>
   </div>
-</div>
+</main>
+
+<!-- The reference. A shortcut nobody can find is barely a shortcut, so this
+     is reachable by ? and from the header, and lists Enter and Escape too —
+     someone looking here wants the whole set, not the new half. -->
+{#if showShortcuts}
+  <div
+    class="modal-backdrop"
+    onclick={(e) => e.target === e.currentTarget && (showShortcuts = false)}
+    role="presentation"
+  >
+    <div class="modal shortcuts" role="dialog" aria-modal="true" aria-labelledby="shortcuts-title">
+      <div class="modal-head">
+        <h2 id="shortcuts-title">Keyboard shortcuts</h2>
+        <button class="modal-close" aria-label="Close" onclick={() => (showShortcuts = false)}>×</button>
+      </div>
+      <div class="modal-body">
+        <dl class="shortcut-list">
+          {#each SHORTCUTS as s}
+            <dt>
+              {#each s.keys as k, i}
+                {#if i > 0}<span class="kbd-plus" aria-hidden="true">+</span>{/if}<kbd>{k}</kbd>
+              {/each}
+            </dt>
+            <dd>{s.label}</dd>
+          {/each}
+        </dl>
+        <p class="hint">Press <kbd>?</kbd> any time to open this.</p>
+      </div>
+    </div>
+  </div>
+{/if}
 
 {#if activeArtifact}
   <aside class="artifact-panel" aria-label="Artifact preview">
