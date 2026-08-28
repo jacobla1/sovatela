@@ -3709,9 +3709,10 @@ dependencies = [
 
 [[package]]
 name = "scale"
-version = "1.5.3"
+version = "1.5.5"
 dependencies = [
  "base64 0.22.1",
+ "flate2",
  "futures-util",
  "html2text",
  "keyring",

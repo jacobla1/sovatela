@@ -151,7 +151,16 @@ An endpoint may answer with the image itself or with a URL to fetch it from,
 and that URL comes out of a response body rather than from you. So it is
 checked: it must be public HTTPS, and private or loopback addresses are refused
 — otherwise a remote endpoint could answer `http://192.168.1.1/admin` and use
-this app, which runs inside your network, to read something from it.
+this app, which runs inside your network, to read something from it. Every
+redirect is checked the same way, and the address that passed the check is the
+address connected to, so a name cannot answer differently between the two. A
+reply that does not say it is an image is refused rather than shown as one.
+
+**That last guarantee did not hold in 1.5.3.** The host was checked and the
+answer thrown away, then looked up a second time for the connection — so the
+protection this paragraph described was not in effect, though a certificate
+still had to match. It is one lookup now, and a test fails if it ever becomes
+two again.
 
 **One exemption, and its cost.** A URL on the exact same origin as the endpoint
 you configured — same scheme, host and port — is fetched as it is. Without
@@ -198,8 +207,15 @@ you don't already have it), installs the LiteLLM proxy from PyPI, and adds a
 launcher directory to your `PATH`. None of that is pinned by a lockfile or
 enumerated above, and both hosts are US-based — so setup reaches outside Europe
 even though chat traffic afterwards does not. Nothing happens until you press
-the button, and [`docs/UNINSTALL.md`](docs/UNINSTALL.md) § 4 lists how to
-remove every piece, including the tools the installer brought with it.
+the button — and the app asks again, natively, naming what is about to happen,
+before anything is fetched. That confirmation is in the backend rather than the
+interface on purpose: a button in a web view is a check the web view could skip,
+and this is the one command that downloads a script and runs it. The script is
+written to a folder made for the occasion, named unpredictably and readable
+only by you, and removed afterwards — it used to go to a fixed path in the
+shared temp directory, where it could be replaced between being written and
+being run. [`docs/UNINSTALL.md`](docs/UNINSTALL.md) § 4 lists how to remove
+every piece, including the tools the installer brought with it.
 
 ## Release integrity
 
@@ -209,9 +225,26 @@ remove every piece, including the tools the installer brought with it.
 | Windows | **Not yet signed.** SmartScreen will warn. Verify the SHA-256 before running the installer. |
 | Linux | **Not signed.** Verify the SHA-256. |
 
-Checksums are published on the download page and as a `SHA256SUMS.txt` attached
-to each release. Windows signing is a known gap and is tracked for a future
-release.
+Checksums are published in two places: on the download page, and as a
+`SHA256SUMS.txt` attached to each release.
+
+**What a checksum here does and does not prove.** It proves the file you have
+is the file that was published — a truncated download, a proxy that mangled
+bytes, a mirror serving something else. It does not prove *who* published it:
+`SHA256SUMS.txt` is not signed, so anyone who could replace an installer on the
+release could replace the list beside it. Comparing against the download page
+instead is a slightly better check, because the page and the release are served
+by different systems and both would have to be changed — but the same account
+controls both, so it is not independent either.
+
+On macOS this does not matter much, because notarization is the real check:
+Apple signs the ticket, and `spctl` verifies it against Apple rather than
+against us. On Windows and Linux there is no equivalent yet, and the honest
+position is that the checksum detects corruption rather than establishing
+authorship. Signing those builds, or signing the checksum list, is the fix;
+both are open.
+
+Windows signing is a known gap and is tracked for a future release.
 
 **Why we tell you to check rather than trust.** The macOS build degrades to
 *unsigned* rather than failing if the signing certificate expires or its secrets

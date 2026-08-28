@@ -249,9 +249,14 @@
       they open normally. <strong>Windows and Linux</strong> builds are not signed
       yet — on Windows, SmartScreen will say the publisher is unknown, and opening
       it takes <em>More info → Run anyway</em>. That warning is accurate: it means
-      nobody has paid a certificate authority to vouch for this installer. Checking
-      the SHA-256 below is the verification that actually matters there, and it does
-      not depend on trusting us.
+      nobody has paid a certificate authority to vouch for this installer.
+    </p>
+
+    <p class="signing">
+      Checking the SHA-256 below tells you the file arrived intact — not that we
+      are who we say we are. The list is not signed, so it proves the download
+      matches what was published, not who published it. On macOS, notarization is
+      the check that does more: it is verified against Apple, not against us.
     </p>
 
     <p class="secondary">

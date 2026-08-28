@@ -1,6 +1,6 @@
 # Technical and security specification
 
-Sovatela v1.5.2 · Companion to Product spec ·
+Sovatela v1.5.5 · Companion to Product spec ·
 UX spec · [Security policy](../SECURITY.md)
 
 Fuller engineering rationale is kept internally in `ENGINEERING_NOTES.md`, which
@@ -117,9 +117,21 @@ frame-src 'self' data: about: blob:;
 object-src 'none'; base-uri 'none'; form-action 'none'
 ```
 
-`connect-src` permits the IPC bridge and nothing else, so even a script injected
-into the main document cannot originate an outbound request. `object-src`,
-`base-uri`, and `form-action` are closed off.
+`connect-src` permits the IPC bridge and nothing else, so a script injected into
+the main document cannot make a network request of its own — no `fetch`, `XHR`,
+`WebSocket` or `EventSource`. `object-src`, `base-uri`, and `form-action` are
+closed off, and `script-src` is `'self'`, so there is no inline execution to
+inject into in the first place.
+
+What that does **not** mean is that nothing can leave. The window holds
+`opener:default`, so anything running in it can ask the backend to open an
+`http(s)` URL in the system browser — and a URL can carry data in its path.
+The call sites are narrow (a click on a link in a reply, with the scheme
+checked, after DOMPurify has already removed `javascript:` hrefs), but the
+capability is broader than the call sites, and a compromised renderer talks to
+the plugin rather than to them. Restricting it to a fixed list of hosts is not
+possible while replies may contain links worth following; the honest statement
+is that outbound *requests* are blocked and outbound *navigation* is not.
 
 Artifacts render in `<iframe sandbox="allow-scripts">` **without**
 `allow-same-origin`, giving them an opaque origin: no access to the parent
@@ -127,12 +139,49 @@ document, no Tauri IPC, no storage, no network. The reasoning and the bypasses
 tested are recorded in an internal design note
 (`CSP-EXPERIMENT-2026-07.md`), available on request.
 
-> `dangerousDisableAssetCspModification` is set for `script-src` and
-> `style-src`. The name is alarming; it disables Tauri's automatic nonce
-> injection for those directives, which the artifact sandbox design requires.
-> The residual risk is that inline script in the *main* document is permitted —
-> mitigated by DOMPurify on all rendered markdown and by `connect-src` denying
+> `dangerousDisableAssetCspModification` is set for `style-src` alone. The
+> name is alarming; it disables Tauri's automatic nonce injection for that
+> directive, which parts of the interface that size themselves inline require.
+> `script-src` was on this list until 1.5.2, which meant inline script in the
+> *main* document was permitted; it is not any more, so Tauri's nonce injection
+> governs scripts and there is no inline execution to inject into. Rendered
+> markdown still passes through DOMPurify, and `connect-src` still denies
 > exfiltration. Re-examine on any Tauri upgrade.
+
+### Document extraction runs in a child process
+
+A PDF stores its pages as compressed streams, and a file may legitimately
+declare very large ones. `pdf-extract` inflates them with no ceiling, so a
+crafted document of a few megabytes can ask for gigabytes. The 20 MB upload
+limit does not help — it bounds the file, not what the file expands to.
+
+In-process there is no way to refuse. `catch_unwind` contains a panic, but an
+allocation failure *aborts* rather than unwinding, and an out-of-memory kill
+from the operating system does not unwind either. Measured on a 3 MB fixture
+before this was addressed: 1.39 GB resident and 34 seconds, inside the
+application.
+
+So the parse happens somewhere expendable. The application re-executes its own
+binary with `--sovatela-extract-pdf-helper`, writes the document to the child's
+stdin and reads the text back from its stdout. The child gets a live-allocation
+ceiling of 768 MB and 45 seconds of wall clock; past either it dies and the
+parent reports an unreadable file. Nothing else in the application notices.
+
+The ceiling is enforced by a counting global allocator rather than an rlimit,
+because there is no rlimit to use: macOS defines `RLIMIT_AS` as an alias of
+`RLIMIT_RSS` and rejects any attempt to set either, and Windows has no rlimits
+at all. The allocator works everywhere, and it is exact here because `flate2`
+is built on `miniz_oxide` — pure Rust, no C zlib — so no allocation on the
+decompression path bypasses it. In the application proper the limit is
+`usize::MAX` and the allocator's fast path is a single relaxed load, so the
+counting costs the interface nothing.
+
+Every reply is framed with a fixed marker. Without it the parent cannot tell
+its helper's output from any other program's, and a child that exits 0 with
+text on stdout is indistinguishable from a successful extraction — which is
+not hypothetical: under `cargo test` the running binary is the test harness,
+which read the helper flag as a test filter, printed its own summary and
+exited 0, and that summary was returned as the contents of the document.
 
 ### Tauri capabilities
 
@@ -297,20 +346,16 @@ repository is `jacobla1/sovatela`, assembled by `deploy/publish-source.mjs`.
 This is the published list. The internal `KNOWN_LIMITATIONS.md` in a working
 checkout is a superset and is not part of the repository.
 
-- Word and OpenDocument uploads read the body only — `word/document.xml`
-  and `content.xml`. Headers, footers, footnotes, endnotes and comments
-  live in sibling parts (`word/header1.xml`, `word/footer1.xml`, and in
-  ODT the master-page styles in `styles.xml`) and are silently absent.
-  PDFs are unaffected: their page furniture is ordinary text on the page
+- Word and OpenDocument uploads still skip **comments and tracked changes**
+  (`word/comments.xml`). Headers, footers, footnotes and endnotes are read
+  from 1.5.5 and appear after the body under a `[Headers, footers and notes]`
+  label
 - Custom image endpoint requests are not cancellable
 - Project reference files are never compacted
-- Dangling project IDs when a project is deleted with chats still in it
 - Orphaned assets if a conversation file is deleted outside the app
-- Token estimation undercounts CJK (~4 chars/token heuristic)
 - `nom v1.2.4` future-incompatibility warning (transitive)
 - 19 `cargo audit` warnings for unmaintained gtk-rs GTK3 bindings, pulled in by
   Tauri's Linux stack and not movable from here
-- No schema version in stored JSON
 - No structured logging, so no post-hoc diagnosis
 - No auto-updater. *Settings → About* now has a manual **Check for updates**,
   so a release is at least discoverable from inside the app, but a security

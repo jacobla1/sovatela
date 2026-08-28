@@ -6,6 +6,7 @@
 //! model — possibly steered by injected web content — can't read or write
 //! outside that folder. There is no shell and no implicit delete.
 
+use std::io::Read as _;
 use std::path::{Component, Path, PathBuf};
 
 /// Cap on a single file's text, matching the document-upload limits, so a huge
@@ -141,9 +142,35 @@ pub fn read_file(root: &Path, rel: &str) -> Result<String, String> {
     if path.is_dir() {
         return Err("that path is a folder, not a file".into());
     }
-    let text =
-        std::fs::read_to_string(&path).map_err(|e| format!("could not read the file: {e}"))?;
-    if text.chars().count() > WORKSPACE_MAX_READ_CHARS {
+    // Read a bounded amount rather than the whole file and then truncating.
+    // The model chooses this path — possibly steered by a page it was told to
+    // read — and the folder is the user's, so it can contain anything. A
+    // multi-gigabyte file was previously loaded in full before its first
+    // 200,000 characters were kept.
+    //
+    // Four bytes per character is UTF-8's maximum, so this cannot cut short a
+    // file that would have fitted, and the boundary is repaired below.
+    let cap = WORKSPACE_MAX_READ_CHARS * 4 + 1;
+    let mut buf = Vec::with_capacity(8192);
+    let file = std::fs::File::open(&path).map_err(|e| format!("could not read the file: {e}"))?;
+    std::io::Read::take(file, cap as u64)
+        .read_to_end(&mut buf)
+        .map_err(|e| format!("could not read the file: {e}"))?;
+    let truncated_bytes = buf.len() >= cap;
+
+    // Reading a fixed number of bytes can stop mid-character, which is not an
+    // error in the file — only in where we stopped.
+    let text = match String::from_utf8(buf) {
+        Ok(t) => t,
+        Err(e) => {
+            let valid = e.utf8_error().valid_up_to();
+            let mut bytes = e.into_bytes();
+            bytes.truncate(valid);
+            String::from_utf8(bytes).map_err(|_| "that file is not text".to_string())?
+        }
+    };
+
+    if truncated_bytes || text.chars().count() > WORKSPACE_MAX_READ_CHARS {
         let cut: String = text.chars().take(WORKSPACE_MAX_READ_CHARS).collect();
         return Ok(format!(
             "{cut}\n\n[File truncated — too long to include in full.]"
@@ -258,6 +285,48 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn a_huge_file_is_bounded_rather_than_read_whole() {
+        // The model chooses this path, possibly steered by a page it was told
+        // to read, and the folder is the user's. A large file was previously
+        // loaded in full and then cut to its first 200,000 characters.
+        let root = temp_root("big-read");
+        let big = "x".repeat(WORKSPACE_MAX_READ_CHARS * 8);
+        std::fs::write(root.join("big.txt"), &big).unwrap();
+
+        let out = read_file(&root, "big.txt").unwrap();
+        assert!(out.contains("[File truncated"));
+        // Bounded by what is kept, not by what is on disk.
+        assert!(
+            out.chars().count() < WORKSPACE_MAX_READ_CHARS + 200,
+            "returned {} chars",
+            out.chars().count()
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_file_that_fits_is_returned_whole_and_unmarked() {
+        let root = temp_root("small-read");
+        let text = "line one\nline two\n";
+        std::fs::write(root.join("small.txt"), text).unwrap();
+        assert_eq!(read_file(&root, "small.txt").unwrap(), text);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stopping_mid_character_does_not_break_the_read() {
+        // The cap counts bytes, and a multi-byte character can straddle it.
+        // Cutting there must trim the partial character, not fail the read.
+        let root = temp_root("utf8-edge");
+        let big = "é".repeat(WORKSPACE_MAX_READ_CHARS * 3);
+        std::fs::write(root.join("accents.txt"), &big).unwrap();
+        let out = read_file(&root, "accents.txt").unwrap();
+        assert!(out.starts_with('é'), "the text came back mangled");
+        assert!(out.contains("[File truncated"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

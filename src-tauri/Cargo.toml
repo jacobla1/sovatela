@@ -1,6 +1,6 @@
 [package]
 name = "scale"
-version = "1.5.3"
+version = "1.5.5"
 description = "BYO-key desktop chat client for GLM-5.2 on Scaleway"
 authors = ["Jacob Bergmann Larsen"]
 license = "MIT"
@@ -46,6 +46,11 @@ meval = "0.2"
 # that won't start the test binary in headless Windows CI (STATUS_ENTRYPOINT_
 # NOT_FOUND). The send_chat scenario tests that need it are OS-independent and
 # run on the macOS/Linux CI legs; they're compiled out on Windows.
+[dev-dependencies]
+# Builds the compressed streams for the PDF decompression-bomb test, so the
+# fixture is generated and readable rather than a binary blob in the repository.
+flate2 = "1"
+
 [target.'cfg(not(target_os = "windows"))'.dev-dependencies]
 # Mock OpenAI-compatible server for the send_chat scenario tests.
 wiremock = "0.6"

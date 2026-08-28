@@ -12,7 +12,8 @@
     extractDocument,
   } from "./files.js";
 
-  import { untrack, tick } from "svelte";
+  import { untrack } from "svelte";
+  import { modalFocus } from "./modalFocus.js";
 
   let { project, onSave, onDelete, onClose } = $props();
 
@@ -31,64 +32,11 @@
 
   // ----- Focus -----
   //
-  // The dialog declared role="dialog" and aria-modal="true" and did none of
-  // what those promise: focus stayed on whatever opened it, Tab walked out
-  // into the page behind, and closing left focus nowhere. A screen reader was
-  // told it had entered a dialog while the keyboard was still outside it.
-  let modalEl = $state(null);
+  // The behaviour lives in modalFocus.js: this dialog had it and the shortcuts
+  // dialog, added later, did not. One implementation means the next dialog
+  // cannot quietly do without it.
   let nameEl = $state(null);
-  // Captured before the dialog takes focus, so it can be handed back.
-  const opener = typeof document !== "undefined" ? document.activeElement : null;
 
-  $effect(() => {
-    if (!modalEl) return;
-    // The name field is the first thing anyone came here to change.
-    tick().then(() => (nameEl ?? modalEl)?.focus());
-    return () => {
-      // Return focus where it came from. `isConnected` because the trigger can
-      // be gone by now — deleting a project removes the row that opened this.
-      if (opener?.isConnected) opener.focus();
-    };
-  });
-
-  /** Everything inside the dialog that can hold focus, in document order. */
-  function focusables() {
-    if (!modalEl) return [];
-    return [
-      ...modalEl.querySelectorAll(
-        'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
-      ),
-      // Not `offsetParent !== null`, the usual shorthand for "is visible": it
-      // is also null for anything position:fixed, which would silently drop a
-      // real control out of the trap. Ask about the properties that actually
-      // mean hidden.
-    ].filter((el) => {
-      if (el.hidden) return false;
-      const style = getComputedStyle(el);
-      return style.display !== "none" && style.visibility !== "hidden";
-    });
-  }
-
-  function onKeydown(e) {
-    if (e.key === "Escape") {
-      onClose?.();
-      return;
-    }
-    if (e.key !== "Tab") return;
-    const items = focusables();
-    if (items.length === 0) return;
-    const first = items[0];
-    const last = items[items.length - 1];
-    // Wrap at both ends, and catch the case where focus has somehow left the
-    // dialog already — otherwise Tab escapes into the page behind the modal.
-    if (e.shiftKey && (document.activeElement === first || !modalEl.contains(document.activeElement))) {
-      e.preventDefault();
-      last.focus();
-    } else if (!e.shiftKey && document.activeElement === last) {
-      e.preventDefault();
-      first.focus();
-    }
-  }
 
   async function onFiles(list) {
     error = "";
@@ -165,15 +113,20 @@
        without adding it to the tab order, which is what role="dialog" needs.
        Escape and the Tab trap are handled here rather than on the window, so
        they belong to the dialog and stop existing when it does. -->
-  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div
     class="modal"
     role="dialog"
     aria-modal="true"
     tabindex="-1"
     aria-labelledby="project-modal-title"
-    bind:this={modalEl}
-    onkeydown={onKeydown}
+    use:modalFocus={{
+      onClose,
+      initial: () => nameEl,
+      // Deleting a project removes the row this was opened from, so there is
+      // nothing to hand focus back to. The sidebar's own first control is the
+      // nearest thing to where the row was.
+      fallback: () => document.querySelector(".history .new-chat"),
+    }}
   >
     <div class="modal-head">
       <h2 id="project-modal-title">Project</h2>

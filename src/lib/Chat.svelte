@@ -1,4 +1,5 @@
 <script>
+  import { untrack } from "svelte";
   import { invoke, Channel } from "@tauri-apps/api/core";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { save } from "@tauri-apps/plugin-dialog";
@@ -7,6 +8,7 @@
   import Icon from "./Icon.svelte";
   import History from "./History.svelte";
   import ProjectPanel from "./ProjectPanel.svelte";
+  import { modalFocus } from "./modalFocus.js";
   import MemoryReview from "./MemoryReview.svelte";
   import {
     MAX_IMAGE_BYTES,
@@ -207,14 +209,36 @@
   let chatProjectId = $state(null);
   let editingProject = $state(null); // full project being edited in the modal, or null
 
+  // Until this is true, an empty `projects` means "not loaded yet" rather than
+  // "no projects exist", and the reconciliation below must not act on it.
+  let projectsLoaded = $state(false);
+
   async function refreshProjects() {
     try {
       projects = await invoke("list_projects");
+      projectsLoaded = true;
     } catch (e) {
       console.error("Could not list projects:", e);
     }
   }
   refreshProjects();
+
+  // Deleting a project detaches its chats in the backend, so the usual case is
+  // handled where it happens. This covers the rest: a project deleted in
+  // another window, a project file removed by hand, or a detach that failed
+  // part-way. Without it, a chat carrying a project that no longer exists puts
+  // the sidebar into a project with no name and no instructions, and every new
+  // chat started from there silently joins it.
+  $effect(() => {
+    if (!projectsLoaded) return;
+    const known = new Set(projects.map((p) => p.id));
+    // Untracked: this writes the same state a naive read would subscribe to,
+    // which would re-run the effect on its own change.
+    untrack(() => {
+      if (activeProjectId && !known.has(activeProjectId)) activeProjectId = null;
+      if (chatProjectId && !known.has(chatProjectId)) chatProjectId = null;
+    });
+  });
 
   function newProject() {
     // Held in memory only; persisted when the user hits Save in the editor, so
@@ -1051,17 +1075,21 @@
   ];
 
   function onGlobalKeydown(e) {
+    // Nothing global acts while a dialog is open. `?` was handled before this
+    // check and could open the shortcuts sheet on top of the project editor —
+    // two modals at once, the lower one still holding the focus trap.
+    if (showShortcuts || editingProject) {
+      return;
+    }
     if (e.key === "?" && e.shiftKey && !isTyping(e.target)) {
       e.preventDefault();
       showShortcuts = !showShortcuts;
       return;
     }
     if (e.key === "Escape") {
-      // Closing the sheet comes first: it is the thing on top.
-      if (showShortcuts) {
-        e.preventDefault();
-        showShortcuts = false;
-      } else if (sending) {
+      // No dialog is open here — the guard above returned if one were, and each
+      // dialog stops Escape itself.
+      if (sending) {
         e.preventDefault();
         stop();
       } else if (activeIndex != null) {
@@ -1435,7 +1463,18 @@
     onclick={(e) => e.target === e.currentTarget && (showShortcuts = false)}
     role="presentation"
   >
-    <div class="modal shortcuts" role="dialog" aria-modal="true" aria-labelledby="shortcuts-title">
+    <!-- Behaves like the dialog it declares itself to be: focus moves in, Tab
+         stays in, Escape closes it without also reaching the handler behind,
+         and focus goes back where it came from. It declared aria-modal and did
+         none of that when it was added in 1.5.3. -->
+    <div
+      class="modal shortcuts"
+      role="dialog"
+      aria-modal="true"
+      tabindex="-1"
+      aria-labelledby="shortcuts-title"
+      use:modalFocus={{ onClose: () => (showShortcuts = false) }}
+    >
       <div class="modal-head">
         <h2 id="shortcuts-title">Keyboard shortcuts</h2>
         <button class="modal-close" aria-label="Close" onclick={() => (showShortcuts = false)}>×</button>

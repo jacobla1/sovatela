@@ -6,6 +6,10 @@ use tauri::ipc::Channel;
 use tauri::Manager;
 
 pub mod glm;
+pub mod pdf_sandbox;
+
+#[global_allocator]
+static ALLOCATOR: pdf_sandbox::CappedAllocator = pdf_sandbox::CappedAllocator;
 pub mod pricing;
 pub mod update;
 pub mod usage;
@@ -768,6 +772,18 @@ fn set_history_settings(app: tauri::AppHandle, settings: HistorySettings) -> Res
     s.save_history = settings.save_history;
     s.history_dir = settings.dir.trim().to_string();
     let new_dir = history_dir_for(&app, &s)?;
+    // Claiming happens here, where the user has just chosen the folder, rather
+    // than as a side effect of working out a path. If the folder cannot be
+    // claimed — a `Sovatela` directory already there with someone else's files
+    // in it — say so instead of writing into it.
+    if !claim_history_dir(&s.history_dir, &new_dir) {
+        return Err(format!(
+            "There is already a Sovatela folder in there with other files in it, so \
+             this app won't use it. Pick a different folder, or move those files out \
+             of {}.",
+            new_dir.display()
+        ));
+    }
     // Moving the location shouldn't make existing chats vanish — carry them over.
     if old_dir != new_dir {
         move_our_history(&old_dir, &new_dir);
@@ -1122,6 +1138,12 @@ fn conversation_id_of(path: &std::path::Path) -> Option<String> {
     if !convo.messages.is_array() {
         return None;
     }
+    // Written by something else that happens to use these field names. Only
+    // checked when the field is present: files written before 1.5.4 leave it
+    // empty and are still ours.
+    if !convo.app.is_empty() && convo.app != APP_FORMAT_TAG {
+        return None;
+    }
     (stem == sanitize_id(&convo.id).ok()?).then_some(convo.id)
 }
 
@@ -1216,6 +1238,28 @@ fn move_our_history(from: &std::path::Path, to: &std::path::Path) {
 /// other address this app did not pick.
 const MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024;
 
+/// The address to connect to for one hop of an image fetch — vetted and
+/// returned in one step, so the caller cannot check one address and connect to
+/// another.
+///
+/// `same_origin` means this hop is still on the endpoint the user configured.
+/// That host is allowed to be private — someone running an image server on
+/// their own machine typed that address deliberately — so it is resolved
+/// without the public-address requirement. Every other hop must be public
+/// HTTPS, and is refused otherwise.
+async fn resolve_image_hop(
+    url: &reqwest::Url,
+    same_origin: bool,
+) -> Result<std::net::IpAddr, String> {
+    if same_origin {
+        return vetted_ip_or_literal(url).await;
+    }
+    if url.scheme() != "https" {
+        return Err("the generated image must be served over HTTPS".into());
+    }
+    vetted_ip(url).await
+}
+
 /// `trusted_origin` is the endpoint the user configured, when there is one.
 /// An address on that origin is followed as-is: someone running an image
 /// server on their own machine chose that address deliberately, and refusing
@@ -1236,13 +1280,12 @@ async fn fetch_as_data_url(url: &str, trusted_origin: Option<&str>) -> Result<St
         let same_origin = trusted
             .as_deref()
             .is_some_and(|t| origin_of(current.as_str()).as_deref() == Some(t));
-        if !same_origin {
-            if current.scheme() != "https" {
-                return Err("the generated image must be served over HTTPS".into());
-            }
-            vetted_ip(&current).await?;
-        }
-        let pinned = vetted_ip_or_literal(&current).await?;
+        // One resolution, and the address it produced is the one connected to.
+        // This used to vet the host and then throw the answer away, resolving a
+        // second time for the pin — so the name could answer differently
+        // between the check and the connection, which is the rebinding this is
+        // supposed to prevent. The comment below claimed otherwise.
+        let pinned = resolve_image_hop(&current, same_origin).await?;
         let host = current
             .host_str()
             .ok_or_else(|| "invalid image URL".to_string())?
@@ -1251,8 +1294,8 @@ async fn fetch_as_data_url(url: &str, trusted_origin: Option<&str>) -> Result<St
             .connect_timeout(std::time::Duration::from_secs(15))
             .read_timeout(std::time::Duration::from_secs(60))
             .redirect(reqwest::redirect::Policy::none())
-            // Connect to the address that was checked, not to whatever the
-            // name resolves to a second time.
+            // Connect to the address `resolve_image_hop` checked, not to
+            // whatever the name answers with next time it is asked.
             .resolve(&host, std::net::SocketAddr::new(pinned, 0))
             .build()
             .map_err(|e| e.to_string())?;
@@ -1280,19 +1323,25 @@ async fn fetch_as_data_url(url: &str, trusted_origin: Option<&str>) -> Result<St
             ));
         }
 
+        // No default. This used to fall back to image/png when the header was
+        // absent, which meant a response with no Content-Type passed the check
+        // below untouched — so "anything that is not an image is refused" was
+        // not true of the one case where the server said nothing at all.
         let content_type = resp
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
-            .unwrap_or("image/png")
+            .unwrap_or("")
             .to_string();
         // An image endpoint that answers with HTML or JSON here is answering
         // with something other than the image, and embedding it as one would
         // put whatever it is into the conversation.
         if !content_type.starts_with("image/") {
-            return Err(format!(
-                "the generated image came back as {content_type}, not an image"
-            ));
+            return Err(if content_type.is_empty() {
+                "the generated image came back with no content type".to_string()
+            } else {
+                format!("the generated image came back as {content_type}, not an image")
+            });
         }
 
         // Read in chunks against a cap rather than `bytes()`, which would
@@ -2048,6 +2097,10 @@ async fn searxng_search(
 
 /// Cap on extracted text folded into context, matching the 400 KB plain-text
 /// upload limit.
+/// Matches the limit the interface applies to a document upload. Repeated
+/// here because a limit enforced only in the webview is not a limit.
+const MAX_UPLOAD_BYTES: usize = 20 * 1024 * 1024;
+
 const MAX_EXTRACT_CHARS: usize = 400_000;
 
 /// Pull the readable text out of an XML stream, inserting newlines when the
@@ -2124,22 +2177,133 @@ fn xml_to_text(xml: &str, para_tags: &[&str]) -> String {
 }
 
 /// Read one entry of a zip archive (.docx/.odt are zips) as a UTF-8 string.
+/// A .docx or .odt is a zip, and a zip says how large its contents are before
+/// it hands any of them over. That claim is not trustworthy — a few kilobytes
+/// can declare, and deliver, gigabytes — so this both refuses an entry that
+/// says it is too big and stops reading if one turns out to be.
+///
+/// The cap is far above any document whose extracted text would survive
+/// MAX_EXTRACT_CHARS: Word's markup runs to tens of times the words it wraps,
+/// and this is tens of megabytes of it.
+const MAX_ZIP_ENTRY_BYTES: u64 = 32 * 1024 * 1024;
+
 fn zip_entry_string(bytes: &[u8], entry: &str) -> Result<String, String> {
     let mut archive =
         zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| e.to_string())?;
-    let mut file = archive.by_name(entry).map_err(|e| e.to_string())?;
+    let file = archive.by_name(entry).map_err(|e| e.to_string())?;
+    if file.size() > MAX_ZIP_ENTRY_BYTES {
+        return Err("that document's contents are too large to read".into());
+    }
+    // The declared size again, but enforced: a header can say one thing and
+    // the stream deliver another, and `read_to_string` on its own would keep
+    // going until there was no memory left.
+    use std::io::Read as _;
     let mut s = String::new();
-    std::io::Read::read_to_string(&mut file, &mut s).map_err(|e| e.to_string())?;
+    file.take(MAX_ZIP_ENTRY_BYTES + 1)
+        .read_to_string(&mut s)
+        .map_err(|e| e.to_string())?;
+    if s.len() as u64 > MAX_ZIP_ENTRY_BYTES {
+        return Err("that document's contents are too large to read".into());
+    }
     Ok(s)
 }
 
+/// Entry names in a zip, in archive order.
+fn zip_entry_names(bytes: &[u8]) -> Vec<String> {
+    let Ok(mut archive) = zip::ZipArchive::new(std::io::Cursor::new(bytes)) else {
+        return Vec::new();
+    };
+    (0..archive.len())
+        .filter_map(|i| archive.by_index(i).ok().map(|f| f.name().to_string()))
+        .collect()
+}
+
+/// The parts of a `.docx` that carry text outside the body, in the order a
+/// reader meets them: headers, then the body's own notes, then footers.
+///
+/// A Word file keeps a header in `word/header1.xml`, a footer in
+/// `word/footer1.xml`, and notes in `word/footnotes.xml` and
+/// `word/endnotes.xml` — none of them in `word/document.xml`. Only the body
+/// was ever read, so a title, a date, a page number or a confidentiality
+/// marking was silently absent from what the model saw, with nothing to say
+/// so. A PDF of the same document included all of it, because there that
+/// material is ordinary text on the page.
+fn docx_side_parts(names: &[String]) -> Vec<String> {
+    let mut headers: Vec<&String> = names
+        .iter()
+        .filter(|n| n.starts_with("word/header") && n.ends_with(".xml"))
+        .collect();
+    let mut footers: Vec<&String> = names
+        .iter()
+        .filter(|n| n.starts_with("word/footer") && n.ends_with(".xml"))
+        .collect();
+    // header10.xml sorts before header2.xml as text; these are small numbers
+    // and stable ordering matters more than perfection, so sort by the digits.
+    let key = |n: &str| -> u32 {
+        n.chars()
+            .filter(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse()
+            .unwrap_or(0)
+    };
+    headers.sort_by_key(|n| key(n));
+    footers.sort_by_key(|n| key(n));
+
+    let mut out: Vec<String> = headers.into_iter().cloned().collect();
+    for notes in ["word/footnotes.xml", "word/endnotes.xml"] {
+        if names.iter().any(|n| n == notes) {
+            out.push(notes.to_string());
+        }
+    }
+    out.extend(footers.into_iter().cloned());
+    out
+}
+
+/// Read the side parts and join whatever they yield, each on its own line.
+/// A part that is missing, oversized or malformed is skipped: the body is the
+/// document, and failing the whole upload because a footer would not parse
+/// would be a worse answer than the text without it.
+fn extract_side_parts(bytes: &[u8], parts: &[String], tags: &[&str]) -> Vec<String> {
+    let mut out = Vec::new();
+    for part in parts {
+        let Ok(xml) = zip_entry_string(bytes, part) else {
+            continue;
+        };
+        let text = xml_to_text(&xml, tags);
+        let text = text.trim();
+        if !text.is_empty() {
+            out.push(text.to_string());
+        }
+    }
+    out
+}
+
 fn pdf_to_text(bytes: &[u8]) -> Result<String, String> {
-    // pdf-extract can panic on malformed PDFs — contain that to this request
-    // instead of taking the whole backend down.
-    let owned = bytes.to_vec();
-    std::panic::catch_unwind(move || pdf_extract::extract_text_from_mem(&owned))
-        .map_err(|_| "could not parse this PDF".to_string())?
-        .map_err(|e| format!("could not parse this PDF: {e}"))
+    // Not `catch_unwind` in this process. A malformed PDF can panic, which
+    // unwinding does contain — but a PDF whose compressed streams inflate
+    // without bound makes the *allocator* fail, and Rust aborts on that rather
+    // than unwinding. The upload cap does not help either: the limit is on the
+    // file, and the blow-up is in what the file expands to.
+    //
+    // So the parse happens in a child process with a real ceiling on both
+    // memory and time. See `pdf_sandbox`.
+    pdf_sandbox::extract_text(bytes)
+}
+
+/// Put the body first and the surrounding material after it, labelled.
+///
+/// Labelled rather than merged, because a header repeated on every page reads
+/// as noise dropped into the middle of the prose if it is simply concatenated,
+/// and a model given it unlabelled cannot tell a running header from a
+/// sentence. Empty side parts add nothing at all.
+fn join_document_parts(body: String, sides: Vec<String>) -> String {
+    if sides.is_empty() {
+        return body;
+    }
+    let mut out = body;
+    out.push_str("\n\n[Headers, footers and notes]\n");
+    out.push_str(&sides.join("\n"));
+    out
 }
 
 /// Squeeze runs of blank lines and trailing whitespace out of extracted text.
@@ -2172,16 +2336,39 @@ fn is_extractable_document(name: &str) -> bool {
 /// and length-capped. Shared by the upload command and the workspace reader.
 fn document_text(name: &str, bytes: &[u8]) -> Result<String, String> {
     let lower = name.to_lowercase();
+    // A size refusal is passed through rather than flattened into "not
+    // readable": a file that is too large is a different problem from a file
+    // that is the wrong shape, and telling someone the wrong one sends them
+    // looking in the wrong place.
+    let readable = |e: String, what: &str| {
+        if e.contains("too large") {
+            e
+        } else {
+            what.to_string()
+        }
+    };
     let text = if lower.ends_with(".pdf") {
         pdf_to_text(bytes)?
     } else if lower.ends_with(".docx") {
         let xml = zip_entry_string(bytes, "word/document.xml")
-            .map_err(|_| "not a readable Word document".to_string())?;
-        xml_to_text(&xml, &["w:p"])
+            .map_err(|e| readable(e, "not a readable Word document"))?;
+        let body = xml_to_text(&xml, &["w:p"]);
+        let names = zip_entry_names(bytes);
+        let sides = extract_side_parts(bytes, &docx_side_parts(&names), &["w:p"]);
+        join_document_parts(body, sides)
     } else if lower.ends_with(".odt") {
         let xml = zip_entry_string(bytes, "content.xml")
-            .map_err(|_| "not a readable OpenDocument file".to_string())?;
-        xml_to_text(&xml, &["text:p", "text:h"])
+            .map_err(|e| readable(e, "not a readable OpenDocument file"))?;
+        let body = xml_to_text(&xml, &["text:p", "text:h"]);
+        // ODT keeps headers and footers in the master page styles, not in
+        // content.xml. Footnotes do live in content.xml, inside the paragraph
+        // that carries them, so they are already picked up above.
+        let sides = extract_side_parts(
+            bytes,
+            &["styles.xml".to_string()],
+            &["text:p", "text:h"],
+        );
+        join_document_parts(body, sides)
     } else {
         return Err("unsupported document type".into());
     };
@@ -2203,10 +2390,31 @@ fn document_text(name: &str, bytes: &[u8]) -> Result<String, String> {
 /// `async` keeps parsing (seconds, for large PDFs) off the UI thread.
 #[tauri::command]
 async fn extract_document(name: String, data_base64: String) -> Result<String, String> {
+    // The interface caps uploads at 20 MB, but that is a check in the webview
+    // and this command is the boundary. Base64 is four bytes for every three,
+    // so the encoded form is bounded before it is decoded — otherwise a large
+    // string is already in memory by the time anything looks at its size.
+    if data_base64.len() > MAX_UPLOAD_BYTES / 3 * 4 + 16 {
+        return Err(format!(
+            "that file is too large (max {} MB).",
+            MAX_UPLOAD_BYTES / (1024 * 1024)
+        ));
+    }
     let bytes = BASE64_STANDARD
         .decode(data_base64.as_bytes())
         .map_err(|_| "could not read the file data".to_string())?;
-    document_text(&name, &bytes)
+    if bytes.len() > MAX_UPLOAD_BYTES {
+        return Err(format!(
+            "that file is too large (max {} MB).",
+            MAX_UPLOAD_BYTES / (1024 * 1024)
+        ));
+    }
+    // Off the async runtime's workers. This now waits on a child process for
+    // up to the helper's deadline, and holding a runtime thread for 45 seconds
+    // would starve every other command that wants one.
+    tokio::task::spawn_blocking(move || document_text(&name, &bytes))
+        .await
+        .map_err(|_| "reading the document failed unexpectedly".to_string())?
 }
 
 /// Run one real query against the *saved* search settings so users get
@@ -3269,17 +3477,66 @@ fn message_text(m: &serde_json::Value) -> String {
     }
 }
 
-/// Very rough token estimate (~4 chars/token) plus a flat cost per inline image.
+/// Roughly how many tokens a character of this script costs.
+///
+/// The old estimate divided the *byte* length by four. For English that is the
+/// familiar ~4 characters per token and it is fine. For Chinese, Japanese and
+/// Korean it is not: those characters are three bytes each in UTF-8, so the
+/// arithmetic charged them about 0.75 tokens where a tokenizer charges around
+/// one, and the estimate read low on exactly the conversations most likely to
+/// run long. Compaction is driven by this number, so reading low means
+/// compacting late — the friendly context-limit error was doing the work the
+/// estimate should have done.
+///
+/// Still an estimate. It is used to decide when to compact, not to bill
+/// anyone, and it is deliberately a little pessimistic rather than a little
+/// optimistic: compacting slightly early costs a summary, compacting slightly
+/// late costs the request.
+fn estimate_text_tokens(text: &str) -> usize {
+    let mut ascii = 0usize;
+    let mut wide = 0usize;
+    let mut other = 0usize;
+    for c in text.chars() {
+        if c.is_ascii() {
+            ascii += 1;
+        } else if is_wide_script(c) {
+            wide += 1;
+        } else {
+            other += 1;
+        }
+    }
+    // ~4 ASCII characters per token; about one token per CJK character; and
+    // roughly two per character for the scripts in between — accented Latin,
+    // Greek, Cyrillic — which tokenize worse than ASCII and better than CJK.
+    ascii / 4 + wide + other / 2
+}
+
+/// Characters that carry about a token each: CJK ideographs, the Japanese
+/// syllabaries, Hangul, and the fullwidth forms that travel with them.
+fn is_wide_script(c: char) -> bool {
+    matches!(c as u32,
+        0x3000..=0x303F   // CJK symbols and punctuation
+        | 0x3040..=0x30FF // Hiragana, Katakana
+        | 0x3400..=0x4DBF // CJK Extension A
+        | 0x4E00..=0x9FFF // CJK Unified Ideographs
+        | 0xAC00..=0xD7AF // Hangul syllables
+        | 0xF900..=0xFAFF // CJK compatibility ideographs
+        | 0xFF00..=0xFFEF // Halfwidth and fullwidth forms
+        | 0x20000..=0x3FFFF // CJK Extension B and beyond
+    )
+}
+
+/// Very rough token estimate plus a flat cost per inline image.
 fn estimate_tokens(messages: &[serde_json::Value]) -> usize {
-    let mut chars = 0usize;
+    let mut tokens = 0usize;
     let mut images = 0usize;
     for m in messages {
         match &m["content"] {
-            serde_json::Value::String(s) => chars += s.len(),
+            serde_json::Value::String(s) => tokens += estimate_text_tokens(s),
             serde_json::Value::Array(parts) => {
                 for p in parts {
                     if let Some(t) = p["text"].as_str() {
-                        chars += t.len();
+                        tokens += estimate_text_tokens(t);
                     }
                     if p.get("image_url").is_some() || p["type"] == "image_url" {
                         images += 1;
@@ -3289,7 +3546,7 @@ fn estimate_tokens(messages: &[serde_json::Value]) -> usize {
             _ => {}
         }
     }
-    chars / 4 + images * 1200
+    tokens + images * 1200
 }
 
 /// Cached compaction state for one conversation: a recap of the first `up_to`
@@ -4167,18 +4424,27 @@ fn delete_assets_of(dir: &std::path::Path, safe_id: &str) {
 /// directly into the chosen folder: someone can pick their documents, a
 /// project, or the root of a synced drive, and this app should not be one of
 /// several things writing there.
+/// Stamped into every conversation written from 1.5.4 on. Older files do not
+/// carry it, so it cannot be required — but where it is present, it settles
+/// the question that shape alone cannot.
+const APP_FORMAT_TAG: &str = "sovatela";
+
 const HISTORY_SUBDIR: &str = "Sovatela";
 
-/// Written into a folder once this app owns it. Its presence means the
-/// adoption below has already run; `delete_all_data` also refuses a folder
-/// that does not carry it.
+/// Written into a folder once this app owns it, by `claim_history_dir` — not
+/// by anything that merely works out where the folder is. Its presence means
+/// the adoption has already run, and `delete_all_data` refuses a folder
+/// without it.
 const HISTORY_MARKER: &str = ".sovatela-history";
 
 const HISTORY_MARKER_TEXT: &str = "\
 This folder holds Sovatela's chat history. The app treats it as its own:
 changing the history folder moves these files, and Settings -> Privacy & data
--> Delete all data removes them. Deleting this marker does not delete your
-chats, but the app will stop recognising the folder as its own.
+-> Delete all data removes them.
+
+Deleting this file does not delete your chats. It stops the app treating this
+folder as its own, so Delete all data will refuse to remove anything from here
+until the folder is chosen again in Settings.
 ";
 
 /// Move history written by 1.5.1 and earlier — which wrote directly into the
@@ -4210,13 +4476,48 @@ fn history_dir_for(app: &tauri::AppHandle, s: &AppSettings) -> Result<std::path:
     // 1.4.0; a folder inside the user's own is equally ours and equally
     // private, and on a synced drive the permission travels with it.
     restrict_dir(&dir);
-    if !dir.join(HISTORY_MARKER).exists() {
-        if !chosen.is_empty() {
-            adopt_legacy_history(std::path::Path::new(chosen), &dir);
-        }
-        let _ = std::fs::write(dir.join(HISTORY_MARKER), HISTORY_MARKER_TEXT);
-    }
     Ok(dir)
+}
+
+/// Does this folder carry the marker saying this app owns it?
+fn history_is_claimed(dir: &std::path::Path) -> bool {
+    dir.join(HISTORY_MARKER).exists()
+}
+
+/// Take ownership of the history folder, adopting anything an older version
+/// left in the folder above it, and record that this has happened.
+///
+/// Kept apart from `history_dir_for` because that function only works out
+/// where the folder is, and is called by everything that reads history —
+/// including `delete_all_data`. Writing the marker there meant the check
+/// "refuse a folder that does not carry the marker" was defeated by the very
+/// call that was supposed to perform it: resolving the path created the marker
+/// first.
+///
+/// Returns whether the folder is ours afterwards.
+fn claim_history_dir(chosen: &str, dir: &std::path::Path) -> bool {
+    if history_is_claimed(dir) {
+        return true;
+    }
+    // A `Sovatela` folder that already exists with somebody else's files in it
+    // is not ours to take over. Empty, or holding only files we recognise, is
+    // fine — that is an upgrade or a folder we made before the marker existed.
+    let (ours, _) = owned_history_files(dir);
+    let occupied = std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| e.file_name() != HISTORY_MARKER)
+                .count()
+        })
+        .unwrap_or(0);
+    if occupied > ours.len() {
+        return false;
+    }
+    if !chosen.is_empty() {
+        adopt_legacy_history(std::path::Path::new(chosen), dir);
+    }
+    std::fs::write(dir.join(HISTORY_MARKER), HISTORY_MARKER_TEXT).is_ok()
 }
 
 fn conversations_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
@@ -4237,7 +4538,29 @@ struct Conversation {
     messages: serde_json::Value,
     #[serde(default)]
     project_id: Option<String>, // the project this chat belongs to, if any
+    /// Says who wrote the file. Ownership is otherwise inferred from shape —
+    /// an id, a title and a messages array — and another tool's chat export
+    /// can have all three. Files written before 1.5.4 do not carry it, so its
+    /// absence proves nothing and it cannot be required; its presence is
+    /// conclusive, and will be for anything written from here on.
+    #[serde(default)]
+    app: String,
+    /// Which version of this file format it is, so a future breaking change
+    /// has something to migrate *from*.
+    ///
+    /// This is not the application's version and does not track it: it changes
+    /// only when the shape of a stored conversation changes in a way that
+    /// reading code has to know about. Absent means "written before the format
+    /// was numbered" — which is version 1 in all but name, since the shape has
+    /// not changed yet. `app` says who wrote a file; this says what is in it,
+    /// and the two answer different questions.
+    #[serde(default)]
+    schema: u32,
 }
+
+/// Current stored-conversation format. Increment only on a breaking change to
+/// the shape, and add the migration in the same commit.
+const CONV_SCHEMA_VERSION: u32 = 1;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct ConversationMeta {
@@ -4343,13 +4666,25 @@ async fn save_conversation(
     mut conversation: Conversation,
 ) -> Result<bool, String> {
     // Respect the recording toggle — never write history when it's off.
-    if !load_settings(&app)?.save_history {
+    let settings = load_settings(&app)?;
+    if !settings.save_history {
         return Ok(false);
+    }
+    // Claim on the first write as well as on choosing the folder: someone
+    // upgrading from a version that wrote into the folder directly never picks
+    // it again, and their chats still have to be adopted.
+    let dir = history_dir_for(&app, &settings)?;
+    if !claim_history_dir(&settings.history_dir, &dir) {
+        return Err("the history folder holds files this app did not write".into());
     }
     let dir = conversations_dir(&app)?;
     let safe = sanitize_id(&conversation.id)?;
     // Keep the JSON small: large images move to the assets folder.
     externalize_assets(&mut conversation.messages, &dir, &safe)?;
+    // Stamp who wrote it, so a file this app made says so rather than being
+    // recognised by its shape.
+    conversation.app = APP_FORMAT_TAG.to_string();
+    conversation.schema = CONV_SCHEMA_VERSION;
     let json = serde_json::to_string(&conversation).map_err(|e| e.to_string())?;
     write_atomic(&dir.join(format!("{safe}.json")), &json)?;
     // Keep the sidebar index in step so listing never has to reopen this file.
@@ -4408,6 +4743,18 @@ async fn list_conversations(app: tauri::AppHandle) -> Result<Vec<ConversationMet
 async fn load_conversation(app: tauri::AppHandle, id: String) -> Result<Conversation, String> {
     let s = std::fs::read_to_string(conversation_path(&app, &id)?).map_err(|e| e.to_string())?;
     let mut c: Conversation = serde_json::from_str(&s).map_err(|e| e.to_string())?;
+    // Refuse a file a later version wrote rather than reading it as though it
+    // were this format. Opening it would be survivable; *saving* it afterwards
+    // would write this version's shape over the newer one and lose whatever
+    // this version does not know to keep. That is the failure a version number
+    // exists to prevent, and a version nothing checks would not prevent it.
+    if c.schema > CONV_SCHEMA_VERSION {
+        return Err(format!(
+            "this chat was saved by a newer version of Sovatela (format {}, this version reads {}). \
+             Update the app to open it — opening it here would save over it and lose what was added.",
+            c.schema, CONV_SCHEMA_VERSION
+        ));
+    }
     inline_assets(&mut c.messages, &conversations_dir(&app)?);
     Ok(c)
 }
@@ -4448,6 +4795,22 @@ async fn reveal_history_dir(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 async fn delete_all_data(app: tauri::AppHandle) -> Result<(), String> {
     let dir = conversations_dir(&app)?;
+    // Refuse a folder this app has not claimed. The marker is written when the
+    // folder is chosen or first written to; if it is absent, either the user
+    // removed it — which the marker text says stops the app treating the folder
+    // as its own — or this is not our folder. Either way, do not delete from it.
+    //
+    // Through 1.5.3 this comment existed on the marker and the check did not,
+    // and could not have worked: resolving the path created the marker, so it
+    // was always present by the time anything looked.
+    if !history_is_claimed(&dir) {
+        return Err(format!(
+            "Nothing was deleted: {} does not carry this app's marker file, so it is \
+             not treated as ours. Set the history folder again in Settings if you \
+             want the app to own it.",
+            dir.display()
+        ));
+    }
     // Delete only what this app wrote. Through 1.5.1 this removed every
     // `*.json` in the folder and then `remove_dir_all` on `assets/` — in a
     // folder the user chose, which could be their documents or a synced drive
@@ -4605,13 +4968,80 @@ async fn get_project(app: tauri::AppHandle, id: String) -> Result<Project, Strin
     load_project(&app, &id)
 }
 
+/// Clear `project_id` on every conversation that belonged to `project_id`.
+///
+/// Deleting a project used to remove only the project's own file, leaving
+/// every conversation in it pointing at something that no longer existed.
+/// Opening one of those chats then set the sidebar to a project with no name
+/// and no instructions, and every new chat started from there silently joined
+/// it. The membership is what the deletion invalidated, so the membership is
+/// what has to go.
+///
+/// Only files this app wrote are touched — `owned_history_files` reads each
+/// one to decide — because the history folder may be a folder the user also
+/// keeps their own work in.
+fn detach_conversations_from_project(dir: &std::path::Path, project_id: &str) -> usize {
+    let (files, _) = owned_history_files(dir);
+    let mut detached = 0usize;
+    for path in files {
+        if path.file_name().and_then(|n| n.to_str()) == Some(CONV_INDEX_FILE) {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        if value.get("project_id").and_then(|p| p.as_str()) != Some(project_id) {
+            continue;
+        }
+        // Edited as a Value rather than through `Conversation`, so a field a
+        // future version adds is not silently dropped by a round trip through
+        // this version's struct.
+        value["project_id"] = serde_json::Value::Null;
+        let Ok(json) = serde_json::to_string(&value) else {
+            continue;
+        };
+        if write_atomic(&path, &json).is_ok() {
+            detached += 1;
+        }
+    }
+
+    // The sidebar reads the index, not the files, so leaving it alone would
+    // keep showing the membership that was just removed.
+    let mut index = read_conv_index(dir);
+    let mut index_changed = false;
+    for meta in index.iter_mut() {
+        if meta.project_id.as_deref() == Some(project_id) {
+            meta.project_id = None;
+            index_changed = true;
+        }
+    }
+    if index_changed {
+        write_conv_index(dir, &index);
+    }
+    detached
+}
+
 #[tauri::command]
 async fn delete_project(app: tauri::AppHandle, id: String) -> Result<(), String> {
-    match std::fs::remove_file(project_path(&app, &id)?) {
+    // Remove the project first: that is what was asked for, and it must not be
+    // held up by the tidying. If the detach below then fails part-way, the
+    // result is the dangling membership this is fixing — which the interface
+    // also guards against — rather than chats detached from a project that is
+    // still there, which nobody asked for and which cannot be undone.
+    let removed = match std::fs::remove_file(project_path(&app, &id)?) {
         Ok(_) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e.to_string()),
+    };
+    if removed.is_ok() {
+        if let Ok(dir) = conversations_dir(&app) {
+            detach_conversations_from_project(&dir, &id);
+        }
     }
+    removed
 }
 
 #[cfg(test)]
@@ -4627,6 +5057,466 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    // ---- Headers, footers and notes ----------------------------------------
+
+    fn zip_with_entries(entries: &[(&str, &str)]) -> Vec<u8> {
+        use std::io::Write;
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (name, contents) in entries {
+            w.start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            w.write_all(contents.as_bytes()).unwrap();
+        }
+        w.finish().unwrap().into_inner()
+    }
+
+    fn wp(text: &str) -> String {
+        format!("<w:document><w:body><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:body></w:document>")
+    }
+
+    #[test]
+    fn a_word_document_no_longer_drops_its_header_and_footer() {
+        // The gap this closes: a title, a date or a confidentiality marking
+        // lives in word/header1.xml, never in word/document.xml, and only the
+        // body was read. Nothing said so, so a model answering from the file
+        // could not see it and neither could the person asking.
+        let docx = zip_with_entries(&[
+            ("word/document.xml", &wp("The body of the report.")),
+            ("word/header1.xml", &wp("CONFIDENTIAL — Q3 board pack")),
+            ("word/footer1.xml", &wp("Page 1 of 4")),
+        ]);
+        let text = document_text("report.docx", &docx).unwrap();
+        assert!(text.contains("The body of the report."), "got: {text:?}");
+        assert!(
+            text.contains("CONFIDENTIAL — Q3 board pack"),
+            "the header is missing: {text:?}"
+        );
+        assert!(text.contains("Page 1 of 4"), "the footer is missing: {text:?}");
+    }
+
+    #[test]
+    fn footnotes_and_endnotes_come_through() {
+        let docx = zip_with_entries(&[
+            ("word/document.xml", &wp("See the note.")),
+            ("word/footnotes.xml", &wp("1. The figure excludes VAT.")),
+            ("word/endnotes.xml", &wp("i. Sources on request.")),
+        ]);
+        let text = document_text("notes.docx", &docx).unwrap();
+        assert!(text.contains("The figure excludes VAT"), "got: {text:?}");
+        assert!(text.contains("Sources on request"), "got: {text:?}");
+    }
+
+    #[test]
+    fn the_body_stays_first_and_the_extras_are_labelled() {
+        // A running header concatenated into the prose reads as a sentence
+        // that is not one. The body has to come first and the rest has to be
+        // announced, or the text is worse than it was without them.
+        let docx = zip_with_entries(&[
+            ("word/document.xml", &wp("Body text.")),
+            ("word/header1.xml", &wp("Running header")),
+        ]);
+        let text = document_text("x.docx", &docx).unwrap();
+        let body_at = text.find("Body text.").unwrap();
+        let label_at = text.find("[Headers, footers and notes]").unwrap();
+        let header_at = text.find("Running header").unwrap();
+        assert!(body_at < label_at, "the body must come first: {text:?}");
+        assert!(label_at < header_at, "the extras must be announced: {text:?}");
+    }
+
+    #[test]
+    fn a_document_with_no_extras_gains_no_label() {
+        let docx = zip_with_entries(&[("word/document.xml", &wp("Just a body."))]);
+        let text = document_text("plain.docx", &docx).unwrap();
+        assert_eq!(text, "Just a body.");
+        assert!(
+            !text.contains("[Headers"),
+            "an empty section was announced anyway: {text:?}"
+        );
+    }
+
+    #[test]
+    fn a_header_that_is_empty_is_not_announced() {
+        // Word writes header parts for sections that have none.
+        let docx = zip_with_entries(&[
+            ("word/document.xml", &wp("Body.")),
+            ("word/header1.xml", "<w:document><w:body><w:p/></w:body></w:document>"),
+        ]);
+        let text = document_text("x.docx", &docx).unwrap();
+        assert_eq!(text, "Body.");
+    }
+
+    #[test]
+    fn multiple_headers_are_ordered_by_number_not_by_text() {
+        // header10.xml sorts before header2.xml as a string.
+        let names: Vec<String> = [
+            "word/document.xml",
+            "word/header10.xml",
+            "word/header2.xml",
+            "word/header1.xml",
+            "word/footer1.xml",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let parts = docx_side_parts(&names);
+        assert_eq!(
+            parts,
+            vec![
+                "word/header1.xml",
+                "word/header2.xml",
+                "word/header10.xml",
+                "word/footer1.xml",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_malformed_side_part_does_not_fail_the_whole_upload() {
+        // The body is the document. Refusing the file because a footer would
+        // not parse would be a worse answer than the text without the footer.
+        let docx = zip_with_entries(&[
+            ("word/document.xml", &wp("The body survived.")),
+            ("word/header1.xml", "<w:document><w:body><w:p><w:t>unclosed"),
+        ]);
+        let text = document_text("x.docx", &docx).unwrap();
+        assert!(text.contains("The body survived."), "got: {text:?}");
+    }
+
+    #[test]
+    fn an_opendocument_file_picks_up_its_master_page_headers() {
+        // ODT keeps headers and footers in styles.xml, not content.xml.
+        let odt = zip_with_entries(&[
+            (
+                "content.xml",
+                "<office><text:p>The body of the note.</text:p></office>",
+            ),
+            (
+                "styles.xml",
+                "<office><text:p>Internal use only</text:p></office>",
+            ),
+        ]);
+        let text = document_text("note.odt", &odt).unwrap();
+        assert!(text.contains("The body of the note."), "got: {text:?}");
+        assert!(text.contains("Internal use only"), "got: {text:?}");
+    }
+
+    #[test]
+    fn header_parts_use_their_own_root_element_and_keep_their_entities() {
+        // Word roots a header at <w:hdr> and a footer at <w:ftr>, not
+        // <w:document>. Extraction keys off the paragraph tag, so the root
+        // must not matter — and the ampersand handling that took three
+        // attempts to get right in 1.5.1 has to hold here too, in parts that
+        // were never being read when that was fixed.
+        let ns = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
+        let docx = zip_with_entries(&[
+            (
+                "word/document.xml",
+                &format!(
+                    r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document {ns}><w:body><w:p><w:r><w:t>Quarterly figures.</w:t></w:r></w:p></w:body></w:document>"#
+                ),
+            ),
+            (
+                "word/header1.xml",
+                &format!(
+                    r#"<w:hdr {ns}><w:p><w:r><w:t>CONFIDENTIAL &amp; not for circulation</w:t></w:r></w:p></w:hdr>"#
+                ),
+            ),
+            (
+                "word/footer1.xml",
+                &format!(
+                    r#"<w:ftr {ns}><w:p><w:r><w:t>Smith &amp; Sons &#8212; page 1</w:t></w:r></w:p></w:ftr>"#
+                ),
+            ),
+        ]);
+        let text = document_text("real.docx", &docx).unwrap();
+        assert!(text.contains("Quarterly figures."), "got: {text:?}");
+        assert!(
+            text.contains("CONFIDENTIAL & not for circulation"),
+            "the header's ampersand did not survive: {text:?}"
+        );
+        assert!(
+            text.contains("Smith & Sons — page 1"),
+            "the footer's entities did not survive: {text:?}"
+        );
+    }
+
+    // ---- Stored format version ---------------------------------------------
+
+    #[test]
+    fn a_saved_conversation_records_the_format_it_was_written_in() {
+        let c = Conversation {
+            id: "x".into(),
+            title: "t".into(),
+            updated_at: "2026-08-28T00:00:00Z".into(),
+            messages: serde_json::json!([]),
+            project_id: None,
+            app: APP_FORMAT_TAG.into(),
+            schema: CONV_SCHEMA_VERSION,
+        };
+        let json = serde_json::to_string(&c).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["schema"], CONV_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn a_file_written_before_the_format_was_numbered_still_reads() {
+        // Every conversation saved before 1.5.5 has no `schema` field. Absent
+        // must mean version 1, not "reject", or this change would orphan every
+        // existing chat.
+        let json = serde_json::json!({
+            "id": "old",
+            "title": "an old chat",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "messages": [{ "role": "user", "text": "hi" }],
+        })
+        .to_string();
+        let c: Conversation = serde_json::from_str(&json).unwrap();
+        assert_eq!(c.schema, 0, "absent deserializes as 0");
+        assert!(
+            c.schema <= CONV_SCHEMA_VERSION,
+            "an unnumbered file must not be treated as being from the future"
+        );
+    }
+
+    #[test]
+    fn a_file_from_a_newer_version_is_recognised_as_such() {
+        // The check `load_conversation` makes. Held here as well because the
+        // command needs an AppHandle, and the comparison is the part with the
+        // consequence: getting it backwards would silently overwrite a newer
+        // file with this version's shape.
+        let json = serde_json::json!({
+            "id": "future",
+            "title": "from later",
+            "updated_at": "2027-01-01T00:00:00Z",
+            "messages": [],
+            "schema": CONV_SCHEMA_VERSION + 1,
+        })
+        .to_string();
+        let c: Conversation = serde_json::from_str(&json).unwrap();
+        assert!(c.schema > CONV_SCHEMA_VERSION);
+    }
+
+    // ---- Token estimation across scripts -----------------------------------
+
+    #[test]
+    fn english_still_estimates_at_about_four_characters_per_token() {
+        // The familiar heuristic, unchanged: this is the case the old
+        // arithmetic got right and the new one must not disturb.
+        let text = "The quick brown fox jumps over the lazy dog.";
+        assert_eq!(estimate_text_tokens(text), text.len() / 4);
+    }
+
+    #[test]
+    fn cjk_is_no_longer_charged_at_three_quarters_of_a_token() {
+        // Twelve Chinese characters. The old estimate divided byte length by
+        // four: 36 bytes / 4 = 9 tokens, against a tokenizer's ~12.
+        let text = "今天天气很好我们去公园吧";
+        assert_eq!(text.chars().count(), 12);
+        assert_eq!(text.len(), 36, "three bytes each in UTF-8");
+
+        let old_estimate = text.len() / 4;
+        let now = estimate_text_tokens(text);
+        assert_eq!(now, 12, "about one token per CJK character");
+        assert!(
+            now > old_estimate,
+            "the point of the change is that it no longer reads low: {now} vs {old_estimate}"
+        );
+    }
+
+    #[test]
+    fn japanese_and_korean_count_like_chinese() {
+        assert_eq!(estimate_text_tokens("こんにちは"), 5); // hiragana
+        assert_eq!(estimate_text_tokens("カタカナ"), 4); // katakana
+        assert_eq!(estimate_text_tokens("안녕하세요"), 5); // hangul
+    }
+
+    #[test]
+    fn scripts_between_ascii_and_cjk_sit_between_them() {
+        // Accented Latin and Cyrillic tokenize worse than ASCII and better
+        // than CJK, and are charged accordingly.
+        assert_eq!(estimate_text_tokens("éèêë"), 2);
+        assert_eq!(estimate_text_tokens("привет"), 3);
+    }
+
+    #[test]
+    fn a_mixed_message_adds_its_parts_up() {
+        let text = "Send 今天 to the team";
+        // 17 ASCII characters, 2 wide.
+        let ascii = text.chars().filter(|c| c.is_ascii()).count();
+        let wide = text.chars().filter(|c| is_wide_script(*c)).count();
+        assert_eq!((ascii, wide), (17, 2));
+        assert_eq!(estimate_text_tokens(text), ascii / 4 + wide);
+    }
+
+    #[test]
+    fn the_estimate_never_reads_lower_than_the_old_one_for_cjk() {
+        // The failure being fixed was undercounting, so the guarantee worth
+        // holding is directional across a range of inputs.
+        for text in [
+            "短",
+            "中文测试",
+            "これは日本語のテキストです",
+            "한국어 텍스트입니다",
+            "混合 English and 中文 text",
+        ] {
+            let old = text.len() / 4;
+            let now = estimate_text_tokens(text);
+            assert!(
+                now >= old,
+                "{text:?} estimates {now}, lower than the old {old}"
+            );
+        }
+    }
+
+    #[test]
+    fn estimate_tokens_reads_both_message_shapes() {
+        let messages = vec![
+            serde_json::json!({ "content": "aaaabbbbccccdddd" }),
+            serde_json::json!({ "content": [
+                { "type": "text", "text": "eeeeffffgggghhhh" },
+                { "type": "image_url", "image_url": { "url": "data:..." } },
+            ]}),
+        ];
+        // 16 ASCII characters each → 4 tokens each, plus one image.
+        assert_eq!(estimate_tokens(&messages), 4 + 4 + 1200);
+    }
+
+    // ---- Deleting a project detaches its conversations ---------------------
+
+    /// Write a conversation file the way `save_conversation` does, carrying a
+    /// project membership, so `owned_history_files` recognises it as ours.
+    fn write_conversation_in_project(
+        dir: &std::path::Path,
+        id: &str,
+        project_id: Option<&str>,
+    ) {
+        let value = serde_json::json!({
+            "id": id,
+            "title": format!("chat {id}"),
+            "updated_at": "2026-08-28T00:00:00Z",
+            "project_id": project_id,
+            "app": APP_FORMAT_TAG,
+            "messages": [{ "role": "user", "text": "hello" }],
+        });
+        std::fs::write(
+            dir.join(format!("{id}.json")),
+            serde_json::to_string(&value).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn project_id_of(dir: &std::path::Path, id: &str) -> Option<String> {
+        let text = std::fs::read_to_string(dir.join(format!("{id}.json"))).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        v.get("project_id")
+            .and_then(|p| p.as_str())
+            .map(str::to_string)
+    }
+
+    #[test]
+    fn deleting_a_project_detaches_the_chats_that_were_in_it() {
+        let dir = temp_dir("detach");
+        write_conversation_in_project(&dir, "a", Some("proj-1"));
+        write_conversation_in_project(&dir, "b", Some("proj-1"));
+        write_conversation_in_project(&dir, "c", Some("proj-2"));
+        write_conversation_in_project(&dir, "d", None);
+        write_conv_index(
+            &dir,
+            &[
+                ConversationMeta {
+                    id: "a".into(),
+                    title: "chat a".into(),
+                    updated_at: "2026-08-28T00:00:00Z".into(),
+                    project_id: Some("proj-1".into()),
+                },
+                ConversationMeta {
+                    id: "c".into(),
+                    title: "chat c".into(),
+                    updated_at: "2026-08-28T00:00:00Z".into(),
+                    project_id: Some("proj-2".into()),
+                },
+            ],
+        );
+
+        let detached = detach_conversations_from_project(&dir, "proj-1");
+        assert_eq!(detached, 2, "both chats in the project should be detached");
+
+        assert_eq!(project_id_of(&dir, "a"), None);
+        assert_eq!(project_id_of(&dir, "b"), None);
+        // A different project is untouched — this is the assertion that fails
+        // if the sweep ever matches too broadly.
+        assert_eq!(project_id_of(&dir, "c"), Some("proj-2".into()));
+        assert_eq!(project_id_of(&dir, "d"), None);
+
+        // The sidebar reads the index, so a fix that only rewrote the files
+        // would still show the deleted project against these chats.
+        let index = read_conv_index(&dir);
+        let a = index.iter().find(|m| m.id == "a").expect("a is in the index");
+        assert_eq!(a.project_id, None, "the index still names the deleted project");
+        let c = index.iter().find(|m| m.id == "c").expect("c is in the index");
+        assert_eq!(c.project_id, Some("proj-2".into()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_sweep_leaves_files_this_app_did_not_write_alone() {
+        // The history folder can be a folder the user keeps their own work in.
+        // A stranger's JSON that happens to carry a matching project_id must
+        // not be rewritten.
+        let dir = temp_dir("detach-foreign");
+        write_conversation_in_project(&dir, "ours", Some("proj-1"));
+        let theirs = serde_json::json!({
+            "id": "theirs",
+            "project_id": "proj-1",
+            "notes": "someone else's file",
+        });
+        let theirs_path = dir.join("theirs.json");
+        std::fs::write(&theirs_path, serde_json::to_string(&theirs).unwrap()).unwrap();
+        let before = std::fs::read_to_string(&theirs_path).unwrap();
+
+        let detached = detach_conversations_from_project(&dir, "proj-1");
+        assert_eq!(detached, 1, "only our own conversation should be rewritten");
+        assert_eq!(
+            std::fs::read_to_string(&theirs_path).unwrap(),
+            before,
+            "a file this app did not write was modified"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn detaching_preserves_fields_this_version_does_not_know_about() {
+        // Editing the file as a Value rather than round-tripping it through
+        // `Conversation` means a field added by a later version survives a
+        // deletion performed by an older one.
+        let dir = temp_dir("detach-unknown");
+        let value = serde_json::json!({
+            "id": "x",
+            "title": "chat x",
+            "updated_at": "2026-08-28T00:00:00Z",
+            "project_id": "proj-1",
+            "app": APP_FORMAT_TAG,
+            "messages": [{ "role": "user", "text": "hello" }],
+            "something_from_the_future": { "kept": true },
+        });
+        std::fs::write(dir.join("x.json"), serde_json::to_string(&value).unwrap()).unwrap();
+
+        detach_conversations_from_project(&dir, "proj-1");
+
+        let text = std::fs::read_to_string(dir.join("x.json")).unwrap();
+        let after: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(after["project_id"], serde_json::Value::Null);
+        assert_eq!(
+            after["something_from_the_future"]["kept"],
+            serde_json::Value::Bool(true),
+            "an unrecognised field was dropped"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -5211,6 +6101,200 @@ mod tests {
         }
     }
 
+    // ---- The terminal-access installer ------------------------------------
+
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    #[test]
+    fn a_private_temp_dir_is_unguessable_and_ours_alone() {
+        // The script used to go to a fixed path in the shared temp directory,
+        // where anyone on the machine could plant something at that name first
+        // — File::create follows a symlink — or swap the contents between the
+        // write and the run.
+        let a = private_temp_dir("sovatela-test").unwrap();
+        let b = private_temp_dir("sovatela-test").unwrap();
+        assert_ne!(
+            a, b,
+            "two runs got the same folder; the name is predictable"
+        );
+        assert!(a.is_dir() && b.is_dir());
+        assert!(!a.to_string_lossy().contains("glmchat-install"));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for d in [&a, &b] {
+                let mode = std::fs::metadata(d).unwrap().permissions().mode() & 0o777;
+                assert_eq!(mode, 0o700, "{d:?} is reachable by other users ({mode:o})");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&a);
+        let _ = std::fs::remove_dir_all(&b);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    #[test]
+    fn the_installer_asks_in_rust_and_writes_where_only_we_can() {
+        // The interface has a button, but the command is the boundary: a
+        // compromised webview can call it directly, and this is the one command
+        // that fetches a script from the internet and runs it.
+        let src = include_str!("lib.rs");
+
+        // The leading newline matters: without it this finds the string literal
+        // on this very line, and slices from inside the test instead of from
+        // the function. That is how it first passed while checking nothing.
+        let at = src.find("\nasync fn install_claude_glm").unwrap();
+        let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
+        let asked = body
+            .find("confirm_terminal_install")
+            .expect("the installer runs without asking in Rust");
+        let ran = body
+            .find("run_claude_glm_installer")
+            .expect("the installer no longer runs anything");
+        assert!(asked < ran, "it asks after it has already started");
+        assert!(body.contains("return Err(\"Setup cancelled.\".into());"));
+
+        let at = src.find("\nfn run_claude_glm_installer").unwrap();
+        let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
+        assert!(
+            body.contains("private_temp_dir("),
+            "the script goes somewhere shared again"
+        );
+        assert!(
+            !body.contains("std::env::temp_dir().join("),
+            "the script is written straight into the shared temp directory"
+        );
+        assert!(
+            body.contains(".create_new(true)"),
+            "the script is written with create(), which follows a symlink planted \
+             at that path"
+        );
+        assert!(
+            body.contains("remove_dir_all(&dir)"),
+            "the script it ran is left behind"
+        );
+    }
+
+    // ---- Claiming a folder, and what that permits --------------------------
+    //
+    // The marker said `delete_all_data` refuses a folder without it. It did
+    // not, and could not have: resolving the path wrote the marker, so it was
+    // always there by the time anything looked. Claiming is now its own step.
+
+    #[test]
+    fn an_empty_folder_can_be_claimed() {
+        let dir = history_root("claim-empty");
+        assert!(!history_is_claimed(&dir));
+        assert!(claim_history_dir("", &dir));
+        assert!(history_is_claimed(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_folder_holding_only_our_own_files_can_be_claimed() {
+        // An upgrade: files this app wrote before the marker existed.
+        let dir = history_root("claim-ours");
+        write_conversation(&dir, "conv-one");
+        write_conversation(&dir, "conv-two");
+        assert!(claim_history_dir("", &dir));
+        assert!(history_is_claimed(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_folder_holding_someone_elses_files_is_not_claimed() {
+        // A `Sovatela` directory that already exists and is not ours. Taking
+        // it over would put this app's deletions in charge of those files.
+        let dir = history_root("claim-theirs");
+        plant_bystanders(&dir);
+        assert!(
+            !claim_history_dir("", &dir),
+            "claimed a folder full of other files"
+        );
+        assert!(
+            !history_is_claimed(&dir),
+            "wrote a marker into a folder it refused"
+        );
+        bystanders_intact(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolving_a_path_does_not_claim_the_folder_and_deleting_checks() {
+        // The original defect had two halves and needed both to be harmless:
+        // `history_dir_for` wrote the marker, and `delete_all_data` never
+        // looked for it. Either one alone would have been caught.
+        //
+        // Both functions need a tauri::AppHandle, so this reads the source
+        // rather than calling them — which is weaker than exercising the
+        // behaviour, and is the honest way to check a property about which
+        // function is allowed to write a file.
+        let src = include_str!("lib.rs");
+
+        let at = src
+            .find("fn history_dir_for")
+            .expect("history_dir_for is gone");
+        let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
+        assert!(
+            !body.contains("HISTORY_MARKER"),
+            "history_dir_for touches the marker; working out where a folder is \
+             must not claim it, or the deletion guard is defeated by the call \
+             that was supposed to perform it"
+        );
+
+        let at = src
+            .find("async fn delete_all_data")
+            .expect("delete_all_data is gone");
+        let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
+        assert!(
+            body.contains("if !history_is_claimed(&dir)"),
+            "delete_all_data does not refuse an unclaimed folder"
+        );
+        // And the refusal must come before anything is removed.
+        assert!(
+            body.find("history_is_claimed").unwrap() < body.find("remove_file").unwrap(),
+            "the check happens after files are already being deleted"
+        );
+    }
+
+    #[test]
+    fn a_conversation_written_by_something_else_is_not_ours() {
+        let dir = history_root("format-tag");
+        // Same shape, different writer.
+        std::fs::write(
+            dir.join("theirs.json"),
+            serde_json::json!({
+                "id": "theirs", "title": "Their chat", "updated_at": "2026-08-27T00:00:00Z",
+                "messages": [], "app": "some-other-tool"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(conversation_id_of(&dir.join("theirs.json")), None);
+
+        // Ours, stamped.
+        std::fs::write(
+            dir.join("mine.json"),
+            serde_json::json!({
+                "id": "mine", "title": "A chat", "updated_at": "2026-08-27T00:00:00Z",
+                "messages": [], "app": APP_FORMAT_TAG
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            conversation_id_of(&dir.join("mine.json")).as_deref(),
+            Some("mine")
+        );
+
+        // Written before 1.5.4: no tag, still ours.
+        write_conversation(&dir, "older");
+        assert_eq!(
+            conversation_id_of(&dir.join("older.json")).as_deref(),
+            Some("older")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_file_with_an_id_and_title_but_no_messages_is_not_ours() {
         let dir = history_root("plausible");
@@ -5397,6 +6481,17 @@ mod tests {
     // nothing about whether the text still comes out in the right order.
 
     /// Assemble a .docx/.odt-shaped zip holding one entry.
+    /// A zip holding one entry of raw bytes — used to build something that
+    /// compresses to almost nothing and expands to far too much.
+    fn zip_with_bytes(entry: &str, contents: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        w.start_file(entry, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        w.write_all(contents).unwrap();
+        w.finish().unwrap().into_inner()
+    }
+
     fn zip_with(entry: &str, contents: &str) -> Vec<u8> {
         use std::io::Write;
         let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
@@ -5404,55 +6499,6 @@ mod tests {
             .unwrap();
         w.write_all(contents.as_bytes()).unwrap();
         w.finish().unwrap().into_inner()
-    }
-
-    /// Build a structurally valid PDF: catalog, page tree, a content stream
-    /// drawing `text`, and an xref table with real byte offsets.
-    ///
-    /// `page_extra` is spliced into the *page dictionary*, not added as a
-    /// loose object. That placement is the whole point for the nesting test
-    /// below: lopdf does not parse objects nothing references — verified by
-    /// putting a syntactically broken object in the file and watching it pass
-    /// — so a pathological object parked at the end of the file proves
-    /// nothing. Inside the page dictionary it has to be read to find the
-    /// content stream.
-    fn build_pdf(text: &str, page_extra: &str) -> Vec<u8> {
-        let stream = format!("BT /F1 24 Tf 72 700 Td ({text}) Tj ET\n");
-        let objects = [
-            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
-            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
-            format!(
-                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
-                  /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >>{page_extra} >>"
-            ),
-            format!(
-                "<< /Length {} >>\nstream\n{}endstream",
-                stream.len(),
-                stream
-            ),
-            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
-        ];
-        let mut out = Vec::from(&b"%PDF-1.4\n"[..]);
-        let mut offsets = Vec::new();
-        for (i, body) in objects.iter().enumerate() {
-            offsets.push(out.len());
-            out.extend_from_slice(format!("{} 0 obj\n{}\nendobj\n", i + 1, body).as_bytes());
-        }
-        let xref_at = out.len();
-        out.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
-        out.extend_from_slice(b"0000000000 65535 f \n");
-        for off in &offsets {
-            out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
-        }
-        out.extend_from_slice(
-            format!(
-                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
-                objects.len() + 1,
-                xref_at
-            )
-            .as_bytes(),
-        );
-        out
     }
 
     #[test]
@@ -5490,26 +6536,85 @@ mod tests {
     }
 
     #[test]
-    fn document_text_reads_a_real_pdf() {
-        let pdf = build_pdf("Invoice total 42 EUR", "");
-        let text = document_text("invoice.pdf", &pdf).unwrap();
-        assert!(
-            text.contains("Invoice total 42 EUR"),
-            "pdf-extract returned {text:?}"
-        );
-    }
-
-    #[test]
     fn a_zip_without_the_expected_entry_is_refused_not_panicked() {
         let bad = zip_with("something/else.xml", "<a/>");
         assert!(document_text("x.docx", &bad).is_err());
         assert!(document_text("x.odt", &bad).is_err());
         // Not a zip at all.
         assert!(document_text("x.docx", b"not a zip").is_err());
-        // Not a PDF at all.
-        assert!(document_text("x.pdf", b"not a pdf").is_err());
     }
 
+    #[test]
+    fn a_zip_bomb_is_refused() {
+        // A few kilobytes on disk, far too much in memory.
+        let payload = vec![b'a'; 64 * 1024 * 1024];
+        let bomb = zip_with_bytes("word/document.xml", &payload);
+        assert!(
+            bomb.len() < 200 * 1024,
+            "the fixture is not compressed enough to be the case under test ({} bytes)",
+            bomb.len()
+        );
+        let err = document_text("bomb.docx", &bomb).expect_err("the bomb was accepted");
+        assert!(err.contains("too large"), "{err}");
+    }
+
+    /// What the test above does *not* establish, said plainly: that the
+    /// contents were never held in memory. It passes with the bound removed,
+    /// because a trailing length check still rejects the string after it has
+    /// been built — the refusal is the same, the harm is not.
+    ///
+    /// Proving non-allocation would need memory instrumentation. What is
+    /// checked instead is the shape that prevents it: the declared size is
+    /// refused before any read, and the read itself is capped, so a header
+    /// that lies cannot get past either.
+    #[test]
+    fn the_zip_reader_refuses_before_reading_and_caps_what_it_reads() {
+        let src = include_str!("lib.rs");
+        let at = src
+            .find("fn zip_entry_string")
+            .expect("zip_entry_string is gone");
+        let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
+
+        let declared = body
+            .find("file.size() > MAX_ZIP_ENTRY_BYTES")
+            .expect("the declared size is not checked, so a bomb is read before it is judged");
+        let read = body
+            .find("read_to_string")
+            .expect("nothing reads the entry — this test is looking at the wrong function");
+        assert!(
+            declared < read,
+            "the size is checked after the read, which is after the memory is gone"
+        );
+        assert!(
+            body.contains("take(MAX_ZIP_ENTRY_BYTES + 1)"),
+            "the read is not capped, so an entry whose header understates its size is \
+             still read in full"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_document_is_not_caught_by_the_bound() {
+        // The cap has to be well clear of anything real. A document whose text
+        // fills the extraction limit, wrapped in Word's markup.
+        let body: String = (0..8_000)
+            .map(|i| {
+                format!(
+                    "<w:p><w:r><w:t>Paragraph number {i} of an ordinary report.</w:t></w:r></w:p>"
+                )
+            })
+            .collect();
+        let xml = format!("<w:document><w:body>{body}</w:body></w:document>");
+        assert!(xml.len() > 500_000, "fixture too small to be meaningful");
+        let doc = zip_with("word/document.xml", &xml);
+        let text = document_text("report.docx", &doc).expect("a real document was refused");
+        assert!(text.contains("Paragraph number 0 "));
+    }
+
+    // PDF extraction is exercised in `tests/pdf_extraction.rs`, against the
+    // real binary. It cannot be reached from here: the parse runs in a child
+    // process that re-executes the application, and under `cargo test` the
+    // running binary is the test harness rather than the application.
+    //
     // ---- Hostile documents ------------------------------------------------
     //
     // Each of these is the shape of an advisory that was open until the
@@ -5522,37 +6627,6 @@ mod tests {
     // stack overflow aborts the process rather than unwinding, so pdf_to_text's
     // catch_unwind would not contain one — if the fix regresses, this test
     // takes the whole suite down with it, which is the correct alarm.
-
-    #[test]
-    fn deeply_nested_pdf_objects_do_not_overflow_the_stack() {
-        // Control: the same document without the nesting must extract, so a
-        // pass below cannot come from a fixture that was never readable.
-        assert!(document_text("plain.pdf", &build_pdf("ok", ""))
-            .unwrap()
-            .contains("ok"));
-
-        let depth = 20_000;
-        let nested = format!(" /Nested {}{}", "[".repeat(depth), "]".repeat(depth));
-        let pdf = build_pdf("ok", &nested);
-
-        let started = std::time::Instant::now();
-        let result = document_text("bomb.pdf", &pdf);
-        let elapsed = started.elapsed();
-
-        // Either answer is a safe one: parsing the nesting and still finding
-        // the text, or refusing the file. What this actually guards against is
-        // the third outcome — a stack overflow, which aborts the process
-        // rather than unwinding, so pdf_to_text's catch_unwind cannot contain
-        // it. If that regresses, this test does not fail; it takes the whole
-        // test binary down, which is the alarm.
-        if let Ok(text) = &result {
-            assert!(text.contains("ok"), "parsed but lost the text: {text:?}")
-        }
-        assert!(
-            elapsed < std::time::Duration::from_secs(20),
-            "parsing a {depth}-deep PDF took {elapsed:?}"
-        );
-    }
 
     #[test]
     fn a_start_tag_with_many_attributes_does_not_take_quadratic_time() {
@@ -6861,6 +7935,82 @@ mod tests {
         assert!(ok.starts_with("data:image/png;base64,"));
     }
 
+    // ---- One resolution per hop -------------------------------------------
+    //
+    // The address that is vetted must be the address that is connected to. It
+    // was not: the host was vetted, the answer discarded, and a second lookup
+    // supplied the pin — so the name could answer differently in between, which
+    // is exactly the rebinding the pinning is for.
+    //
+    // The redirect test below could not catch this. It passes whether there is
+    // one lookup or two, because a mock server's address does not change. What
+    // catches it is that the vetting and the pinning are now one call whose
+    // result is used, which these check from both ends.
+
+    #[tokio::test]
+    async fn a_public_hop_is_vetted_and_that_address_is_the_one_returned() {
+        let url = reqwest::Url::parse("https://example.com/img.png").unwrap();
+        let a = resolve_image_hop(&url, false).await;
+        // Either it resolves — and then the address is public — or the lookup
+        // failed, which is a network condition rather than a wrong answer.
+        if let Ok(ip) = a {
+            assert!(
+                !ip.is_loopback(),
+                "a loopback address passed the public check"
+            );
+            assert_eq!(
+                vet_resolved(&[std::net::SocketAddr::new(ip, 443)]).map(|_| ()),
+                Ok(()),
+                "the returned address does not pass the check it was meant to"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_public_hop_refuses_a_private_address_and_plain_http() {
+        // A literal private address, so no DNS is involved and the result is
+        // the same on every machine.
+        let private = reqwest::Url::parse("https://127.0.0.1/img.png").unwrap();
+        assert!(resolve_image_hop(&private, false).await.is_err());
+        let lan = reqwest::Url::parse("https://192.168.1.1/img.png").unwrap();
+        assert!(resolve_image_hop(&lan, false).await.is_err());
+        // http is refused before any address is considered.
+        let insecure = reqwest::Url::parse("http://example.com/img.png").unwrap();
+        let err = resolve_image_hop(&insecure, false).await.unwrap_err();
+        assert!(err.contains("HTTPS"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_same_origin_hop_may_be_private_and_still_returns_that_address() {
+        // The exemption: the user typed this address, so it is allowed to be
+        // local — and the address returned is the one they named, not a second
+        // opinion about it.
+        let local = reqwest::Url::parse("http://127.0.0.1:7860/file=out.png").unwrap();
+        let ip = resolve_image_hop(&local, true)
+            .await
+            .expect("a local endpoint must work");
+        assert_eq!(ip, "127.0.0.1".parse::<std::net::IpAddr>().unwrap());
+    }
+
+    #[test]
+    fn the_fetch_resolves_each_hop_exactly_once() {
+        // A structural guard on the shape of the bug rather than the branch:
+        // two lookups where there should be one, with only the second pinned.
+        let src = include_str!("lib.rs");
+        let at = src.find("async fn fetch_as_data_url").unwrap();
+        let body = &src[at..src[at..].find("\n}\n").unwrap() + at];
+        let lookups = body.matches("vetted_ip(").count()
+            + body.matches("vetted_ip_or_literal(").count()
+            + body.matches("resolve_image_hop(").count();
+        assert_eq!(
+            lookups, 1,
+            "fetch_as_data_url resolves {lookups} times per hop; the address that \
+             is vetted must be the address that is connected to"
+        );
+        assert!(body.contains("let pinned = resolve_image_hop("));
+        assert!(body.contains(".resolve(&host, std::net::SocketAddr::new(pinned, 0))"));
+    }
+
     /// A response that is not an image must not be embedded as one.
     #[cfg(not(target_os = "windows"))]
     #[tokio::test]
@@ -7606,41 +8756,140 @@ async fn claude_glm_status() -> Result<ClaudeGlmStatus, String> {
 
 /// Run the embedded installer, streaming its output to the UI line by line.
 #[tauri::command]
-async fn install_claude_glm(on_line: Channel<String>) -> Result<i32, String> {
+async fn install_claude_glm(
+    app: tauri::AppHandle,
+    on_line: Channel<String>,
+) -> Result<i32, String> {
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     {
+        // Asked here, not only in the interface. This is the one command that
+        // fetches a script from the internet and runs it, and a button in the
+        // webview is a check the webview could skip — the same reason a
+        // workspace write is confirmed in Rust rather than in Svelte.
+        let approved = tokio::task::spawn_blocking({
+            let app = app.clone();
+            move || confirm_terminal_install(&app)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        if !approved {
+            return Err("Setup cancelled.".into());
+        }
         tokio::task::spawn_blocking(move || run_claude_glm_installer(on_line))
             .await
             .map_err(|e| e.to_string())?
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
-        let _ = on_line;
+        let _ = (app, on_line);
         Err("The claude-glm installer is available on macOS, Linux, and Windows only.".into())
     }
+}
+
+/// Native confirmation before anything is fetched or run. Names what this
+/// actually does, because "install terminal access" does not convey that a
+/// script is downloaded from a third party and executed.
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+fn confirm_terminal_install<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    app.dialog()
+        .message(
+            "This downloads and runs an installer from astral.sh to get `uv`, then \
+             installs the LiteLLM proxy from PyPI and adds a launcher to your PATH.\n\n\
+             Both are outside the EU, unlike everything else this app talks to, and \
+             neither is pinned by a lockfile. Nothing is removed if you change your \
+             mind — see UNINSTALL.md § 4.",
+        )
+        .title("Set up terminal access?")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Install".into(),
+            "Cancel".into(),
+        ))
+        .blocking_show()
+}
+
+/// A directory in the system temp area that only this user can enter, with a
+/// name that cannot be guessed ahead of time.
+///
+/// `std::env::temp_dir()` is shared and world-writable. Anything written there
+/// under a predictable name can be waited for, replaced, or symlinked away
+/// before it is used.
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+fn private_temp_dir(prefix: &str) -> Result<std::path::PathBuf, String> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let base = std::env::temp_dir();
+    for _ in 0..8 {
+        // Not a cryptographic source, and it does not need to be: the guarantee
+        // comes from create_dir failing if the name is taken, so an attacker
+        // must win a race against a name they cannot see rather than simply
+        // predict one.
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.subsec_nanos() as u64 ^ d.as_secs())
+            .unwrap_or(0)
+            ^ (std::process::id() as u64) << 32
+            ^ (&base as *const _ as u64);
+        let dir = base.join(format!("{prefix}-{nonce:016x}"));
+        // create_dir, not create_dir_all: it must fail if the path exists, so
+        // a directory planted in advance cannot be adopted.
+        match std::fs::create_dir(&dir) {
+            Ok(()) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+                        .map_err(|e| e.to_string())?;
+                }
+                return Ok(dir);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Err("could not create a private temporary folder".into())
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 fn run_claude_glm_installer(on_line: Channel<String>) -> Result<i32, String> {
     use std::io::{BufRead, BufReader, Write};
 
-    // Materialize the embedded script to a temp file (executable on Unix).
+    // Materialize the embedded script somewhere only this user can reach.
+    //
+    // It used to be written to a fixed path in the shared temp directory —
+    // `/tmp/glmchat-install-claude-glm.sh` — which anyone on the machine could
+    // predict. `File::create` follows a symlink, so a name planted there in
+    // advance would have been written through; and between writing the script
+    // and running it, another process could replace what it contained. The
+    // thing then executed is not necessarily the thing that was written.
+    //
+    // So: a fresh directory per run, named unpredictably, created with
+    // permissions that exclude everyone else, and removed afterwards.
     let name = if cfg!(target_os = "windows") {
-        "glmchat-install-claude-glm.ps1"
+        "install-claude-glm.ps1"
     } else if cfg!(target_os = "linux") {
-        "glmchat-install-claude-glm.sh"
+        "install-claude-glm.sh"
     } else {
-        "glmchat-install-claude-glm.command"
+        "install-claude-glm.command"
     };
-    let script = std::env::temp_dir().join(name);
-    let mut f = std::fs::File::create(&script).map_err(|e| e.to_string())?;
+    let dir = private_temp_dir("sovatela-install")?;
+    let script = dir.join(name);
+    // create_new fails rather than following or truncating anything already
+    // at that path — belt and braces inside a directory only we can write to.
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&script)
+        .map_err(|e| e.to_string())?;
     f.write_all(CLAUDE_GLM_INSTALLER.as_bytes())
         .map_err(|e| e.to_string())?;
     f.flush().map_err(|e| e.to_string())?;
+    drop(f);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+        // Owner only: nobody else can read what is about to run, or alter it.
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))
             .map_err(|e| e.to_string())?;
     }
 
@@ -7693,6 +8942,10 @@ fn run_claude_glm_installer(on_line: Channel<String>) -> Result<i32, String> {
         let _ = h.join();
     }
     let status = child.wait().map_err(|e| e.to_string())?;
+    // The script has run; nothing needs it afterwards, and leaving a copy of
+    // something that was executed lying in the temp directory is the sort of
+    // thing that gets found later and wondered about.
+    let _ = std::fs::remove_dir_all(&dir);
     Ok(status.code().unwrap_or(-1))
 }
 

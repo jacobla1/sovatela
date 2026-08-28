@@ -1,5 +1,127 @@
 # Changelog
 
+## 1.5.5 — 2026-08-28
+
+### Security
+- PDF text extraction now runs in a separate, memory-capped, killable process.
+  A PDF's compressed streams were inflated with no ceiling, so a crafted file
+  well inside the 20 MB upload limit could exhaust memory and have the
+  application killed: measured at 1.39 GB resident and 34 seconds from a 3 MB
+  fixture. `catch_unwind` never covered this — Rust aborts on allocation
+  failure rather than unwinding, and an OOM kill does not unwind at all. The
+  parse now happens in a child with a 768 MB live-allocation ceiling and a
+  45-second deadline; past either, the child dies and the file is reported
+  unreadable. The ceiling is a counting global allocator rather than an rlimit,
+  because macOS rejects `RLIMIT_AS` and `RLIMIT_DATA` and Windows has neither.
+  In the application the allocator is inert — one relaxed load per allocation.
+- Helper replies are framed with a fixed marker, so a child that is not the
+  helper cannot have its output returned as the contents of a document.
+
+### Fixed — known debt
+- Deleting a project left every conversation in it carrying a `project_id`
+  that no longer resolved. Opening one set the sidebar to a project with no
+  name or instructions, and new chats started from there joined it.
+  `delete_project` now clears the membership from the conversation files and
+  the sidebar index, touching only files this app wrote; the interface
+  additionally reconciles its selection against the loaded projects, which
+  covers a project deleted in another window or removed by hand.
+- Word and OpenDocument uploads read only the body. Headers, footers,
+  footnotes and endnotes live in sibling zip parts and were silently absent —
+  a document marked confidential in its header arrived unmarked. They are now
+  read and appended under a `[Headers, footers and notes]` label rather than
+  merged into the prose, since a running header concatenated into the text
+  reads as a sentence that is not one. A side part that is empty, oversized or
+  malformed is skipped rather than failing the upload. Comments and tracked
+  changes remain unread.
+- The token estimate divided byte length by four. For CJK, where a character
+  is three bytes and roughly one token, that read about 25% low — on exactly
+  the conversations most likely to run long, so compaction triggered late and
+  the context-limit error did the work instead. `estimate_text_tokens` now
+  counts by script: ~4 ASCII characters per token, ~1 token per CJK character,
+  ~2 characters per token in between.
+- Stored conversations carry a format version. `app` said who wrote a file but
+  not what shape it was in, so a future breaking change had nothing to migrate
+  from. Absent means version 1, so existing chats are unaffected; a file from
+  a newer version is now refused on load, because opening and then saving it
+  would write this version's shape over the newer one.
+
+### Supply chain
+- Every GitHub Action is pinned to a full commit SHA instead of a tag. A tag can
+  be moved to point at different code; the release workflow holds the Apple
+  signing secrets and a token that can write releases, so what runs there should
+  not be able to change without a diff. Dependabot now proposes those bumps
+  monthly so the pins don't go stale, and a test fails the build if an action
+  reappears on a movable reference.
+
+### Fixed
+- The keyboard-shortcuts sheet could be opened with `?` while the project dialog
+  was already open, stacking two dialogs and stranding focus between them.
+- Focus after closing a dialog now falls back to the sidebar when the control
+  that opened it is gone — deleting a project no longer drops focus to the
+  document body.
+- `package-lock.json` still declared 1.5.0 after four releases. Nothing consumed
+  the stale number, but it is published and it disagreed with every other file
+  stating a version; a test now checks all eight agree.
+
+### Documentation
+- The accessibility statement claimed focus returns "even when the control that
+  opened the dialog is gone", which the code did not do. The behaviour is now
+  implemented, and the statement describes both dialogs accurately.
+- The technical specification separated two things it had run together: outbound
+  *requests* from the web view are blocked, while outbound *navigation* is
+  permitted through `opener:default` so external links open in the real browser.
+- Two tech-debt entries described the state before their own fixes shipped: CI
+  dependency scanning (added in 1.5.2) and the `script-src` CSP exception
+  (removed in 1.5.2).
+- Recorded the deferred PDF decompression bound as known debt for 1.6.
+
+## 1.5.4 — 2026-08-27
+
+Everything here came out of an outside review of 1.5.3, and most of it is
+something 1.5.3 either introduced or claimed without doing.
+
+- **The accessibility statement was published with a broken table.** Removing
+  rows from it left the blank lines behind, and a blank line ends a Markdown
+  table — so the page went out as an empty table followed by its rows as raw
+  text, on the page that was the release's headline feature. The tests passed;
+  nobody looked at the page. It is corrected, and a test now checks every
+  document that becomes a public page.
+
+- **An address was checked and then a different one connected to.** Each image
+  hop was vetted, the answer discarded, and the host looked up a second time to
+  pin the connection — so a name could answer differently in between, which is
+  the rebinding the pinning exists to stop and which the security page said was
+  prevented. One lookup now, and a test fails if it ever becomes two.
+
+- **The keyboard-shortcuts dialog was not a dialog.** Added in 1.5.3, it
+  declared itself modal and did none of what that means: focus stayed outside,
+  Tab walked into the page behind, and the shortcuts still drove the interface
+  underneath. It shares the project dialog's behaviour now, from one place, and
+  a test fails if any future dialog does without. Escape also stops at the
+  dialog it closes rather than carrying on to stop a running reply.
+
+- **The history marker guarded nothing.** It said *Delete all data* refuses a
+  folder without it. Resolving the folder's path created the marker, so it was
+  always there by the time anything looked — a check defeated by the call meant
+  to perform it. Claiming a folder is now a separate step, deletion refuses an
+  unclaimed one, and a `Sovatela` folder that already holds someone else's
+  files is not taken over at all.
+
+- **An uploaded document could cost unbounded memory.** A few kilobytes
+  declaring gigabytes would have been decompressed in full; the 20 MB upload
+  limit lived only in the interface; and the workspace reader loaded a whole
+  file before keeping its first page. All three are bounded.
+
+- **The terminal-access installer** now asks in the backend rather than only in
+  the interface, and writes its script to a folder made for the occasion —
+  unpredictably named, owner-only, removed afterwards — instead of a fixed path
+  in the shared temp directory where it could be replaced between being written
+  and being run.
+
+- **A checksum tells you the file arrived intact, not who published it.** The
+  download page said checking it did not depend on trusting us. It does: the
+  list is unsigned and sits in the same release as the installers.
+
 ## 1.5.3 — 2026-08-26
 
 Security fixes, and the accessibility work the statement had been promising.

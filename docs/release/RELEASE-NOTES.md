@@ -1,6 +1,6 @@
-# Release notes — Sovatela 1.5.3
+# Release notes — Sovatela 1.5.5
 
-Release date: 2026-08-26 · [All releases](https://github.com/jacobla1/sovatela/releases)
+Release date: 2026-08-28 · [All releases](https://github.com/jacobla1/sovatela/releases)
 
 > This is the user-facing shape of a release. The engineering history lives in
 > [`CHANGELOG.md`](../../CHANGELOG.md); this document adds the five sections a
@@ -9,6 +9,156 @@ Release date: 2026-08-26 · [All releases](https://github.com/jacobla1/sovatela/
 ---
 
 ## New
+
+Nothing in this release is a feature. It is the third consecutive release made
+entirely of corrections found by an outside review.
+
+**A PDF could take the application down, and now cannot.** A PDF holds its
+pages as compressed data, and a file is allowed to say that a small amount of
+it unpacks into a very large amount. Nothing checked. A document of a few
+megabytes — well under the 20 MB an attachment is allowed to be — could be
+built to unpack into gigabytes, and the application would try, until the
+operating system stopped it by killing the whole thing. Measured on a 3 MB
+example: 1.39 GB of memory and 34 seconds of work, ending with the application
+gone and anything unsent gone with it.
+
+Reading a PDF now happens in a separate process that is allowed to die. It gets
+a fixed amount of memory and 45 seconds; if a file needs more than that, that
+process ends and you are told the file could not be read. The same 3 MB example
+now stops after three seconds, and the chat it was dropped into carries on.
+
+Nothing was ever written, sent or exposed by this — it cost you the app and
+whatever you had not sent yet, which is quite enough. It needed someone to send
+you a PDF made for the purpose and you to attach it, which is why it was ranked
+as debt rather than an emergency, and it is fixed here rather than left for the
+next release because "the application closes" is not a footnote.
+
+**Deleting a project left its chats pointing at it.** Only the project's own
+file was removed, so every chat that had been in it still carried its name.
+Opening one of those chats put the sidebar into a project with no name and no
+instructions, and every new chat started from there quietly joined the thing
+that had been deleted. Deleting a project now releases the chats that were in
+it — the chats themselves are untouched — and the interface no longer trusts a
+project it cannot find, which covers a project deleted in another window.
+
+**Word and OpenDocument files gave up only their middles.** A title, a date, a
+page number, a confidentiality marking, a footnote: none of it is in the part
+of the file that was being read, so none of it reached the model, and nothing
+said so. Someone attaching a document marked *confidential* in its header was
+sending a document with no marking on it. Headers, footers, footnotes and
+endnotes are now read and set out after the body under a heading of their own,
+so a header repeated on forty pages does not read as a sentence in the middle
+of the text. Comments and tracked changes are still not included, and the
+known-limitations list below now says so instead of describing the older gap.
+
+**Chats in Chinese, Japanese and Korean ran closer to the limit than they
+looked.** The estimate that decides when a long conversation gets summarised
+counted bytes and divided by four — right for English, and about a quarter low
+for scripts where a character is three bytes and roughly one token. The effect
+was that the conversations most likely to run long were the ones the estimate
+read low on, so summarising happened later than it should and the context
+limit arrived first. The estimate now counts by script.
+
+**Saved chats say which format they are in.** They carried who wrote them but
+not what shape they were, so the first change to that shape would have had
+nothing to compare against. They are now numbered, and a chat written by a
+newer version of the app is refused rather than opened — because opening it
+and then saving would write this version's shape over the newer one and lose
+whatever it had added.
+
+**What builds and signs this app could have changed without a diff.** Every
+GitHub Action the release pipeline used was referenced by tag, and a tag is a
+name that can be moved to point at different code. That pipeline holds the Apple
+signing certificate and a token that can publish releases, so the code allowed
+to see those secrets was defined by a pointer somebody else controls. Each
+action is now pinned to a specific commit, which cannot be repointed. Dependabot
+proposes the updates monthly so the pins do not simply rot in place, and a test
+fails the build if an action ever comes back on a movable reference.
+
+This is not a response to anything having gone wrong. It is the difference
+between trusting five projects to never have a bad day and not needing to.
+
+**Two dialogs could be opened on top of each other.** Pressing <kbd>?</kbd>
+while the project editor was open put the shortcuts sheet over it, with two
+dialogs each believing they held focus and no way to <kbd>Tab</kbd> sensibly
+through either. The guard that was meant to prevent this ran after the branch it
+was meant to guard.
+
+**Focus could be dropped when a dialog closed.** Closing a dialog returns focus
+to whatever opened it — unless the thing that opened it no longer exists, which
+is exactly what happens when you delete a project from within its own editor.
+Focus went to nowhere, and a keyboard user's next <kbd>Tab</kbd> started again
+from the top of the document. It now falls back to the sidebar. The
+accessibility statement had claimed this already worked; it did not, and the
+statement has been corrected as well as the code.
+
+**Three documents described the state before their own fixes.** The
+accessibility statement, and two tech-debt entries about CI dependency scanning
+and a content-security exception, all still described how things were before
+work that shipped in 1.5.2. Stale documentation about security properties is
+worse than none, because it is read as a claim.
+
+**The published lockfile said 1.5.0** through four releases. Nothing used the
+number and no build was affected, but it disagreed with the seven other files
+that state a version, and it was public. All eight now have to agree or the
+tests fail.
+
+Everything below arrived in 1.5.4 and is included here.
+
+Everything in that release came out of an outside review of 1.5.3, and most of
+it is something 1.5.3 either introduced or claimed without doing. It is a short
+list of corrections rather than a set of features.
+
+**The accessibility statement was published broken.** Its known-gaps table went
+out as an empty table followed by its own rows as raw text — rows had been
+removed from the source without removing the blank lines they left, and a blank
+line ends a table. That page was the headline of the release it shipped with.
+The tests passed and nobody looked at the page; a check now covers every
+document that becomes a public page. The live page was corrected before this
+release.
+
+**An address was checked and a different one connected to.** Each hop of an
+image fetch was vetted, its answer thrown away, and the host looked up a second
+time to pin the connection — so a name could answer differently between the
+check and the connect. That is the rebinding the pinning exists to stop, and
+the security page said it was stopped. One lookup now, and a test fails if it
+becomes two again.
+
+**The keyboard-shortcuts dialog was not a dialog.** It arrived in 1.5.3
+declaring itself modal and doing none of what that means: focus stayed outside
+it, <kbd>Tab</kbd> walked into the page behind, and the shortcuts still drove
+the interface underneath. It now shares the project dialog's behaviour, from
+one place, and a test fails if a future dialog does without it. <kbd>Esc</kbd>
+also stops at the dialog it closes instead of carrying on to stop a reply
+nobody asked to stop.
+
+**The history marker guarded nothing.** It said *Delete all data* refuses a
+folder that does not carry it. Working out where the folder was created the
+marker, so it was always present by the time anything checked — a guard
+defeated by the call meant to perform it. Claiming a folder is a separate step
+now, deletion refuses an unclaimed one and says so, and a `Sovatela` folder
+that already holds files this app did not write is not taken over at all.
+
+**An uploaded document could cost unbounded memory.** A `.docx` is a zip, and a
+few kilobytes can declare gigabytes; that would have been decompressed in full.
+The 20 MB limit on uploads lived only in the interface, which is not where a
+limit belongs. And reading a file from a workspace folder loaded the whole
+thing before keeping its first page. All three are bounded.
+
+**Terminal access asks in the backend.** It is the one feature that downloads a
+script and runs it, and it asked only through a button in the interface — a
+check the interface could skip. It now confirms natively, naming what will
+happen, and writes its script to a folder made for the occasion: unpredictably
+named, readable only by you, removed afterwards. It used to go to a fixed path
+in the shared temporary directory, where it could be replaced between being
+written and being run.
+
+**A checksum shows a file arrived intact, not who published it.** The download
+page said checking it did not depend on trusting us. It does — the list is not
+signed and sits in the same release as the installers. On macOS, notarization
+is the check that does more, because it is verified against Apple.
+
+Everything below arrived in 1.5.3 and is included here.
 
 Security fixes, and the accessibility work this project's own statement had
 been promising.
@@ -347,7 +497,7 @@ afterwards from *Settings → Appearance → Welcome screen*.
 
 ## Known limitations
 
-Documented rather than omitted. This is the complete user-facing list for 1.5.3;
+Documented rather than omitted. This is the complete user-facing list for 1.5.5;
 the engineering view is in [Technical specification §
 7](../TECHNICAL-SPEC.md#7-known-technical-debt).
 
@@ -365,19 +515,17 @@ the engineering view is in [Technical specification §
 - Reference images have been exercised on FLUX.2; the Kontext editing path is
   built to the same API but has not been run against a paid key.
 
-**Word and OpenDocument uploads skip headers and footers**
+**Word and OpenDocument uploads skip comments and tracked changes**
 
-- Attaching a `.docx` or `.odt` sends the body of the document. Anything in a
-  header or footer — a title, a date, a page number, a confidentiality marking
-  — is not included, and nothing says so, so a model answering from the file
-  cannot see it. Footnotes, endnotes and comments are missed the same way.
-- A **PDF of the same document does include them**, because in a PDF that
-  material is ordinary text on the page rather than a separate part of the
-  file. Saving as PDF is the workaround where the header carries something that
-  matters.
-- This has been the behaviour since document upload shipped. It is listed here
-  from 1.5.1 because it was found while testing that release, not because it
-  changed.
+- Headers, footers, footnotes and endnotes are read from 1.5.5 and appear
+  after the body of the document, under a label, so a running header is not
+  dropped into the prose as though it were a sentence.
+- **Comments and tracked changes are still not included.** A document whose
+  substance is in its margin — a review, a redline — sends only the text as it
+  currently reads.
+- A **PDF of the same document includes the comments** if they were printed
+  into it, because there they are ordinary text on the page rather than a
+  separate part of the file.
 
 **Terminal access on Windows is tested, but not against a real Scaleway key**
 
@@ -412,17 +560,21 @@ the engineering view is in [Technical specification §
   when it finishes. The chat list's announcement was not exercised, and nothing
   has been tried with NVDA, JAWS or Orca — so Windows and Linux behaviour is
   reasoned from the markup rather than heard.
-- Focus is managed in the project dialog. Settings, the Guide and the history
-  sidebar are full-screen or inline rather than modal, and still move focus
-  only as the browser would.
+- Focus is managed in both dialogs — the project editor and the keyboard
+  shortcuts — including when the control that opened one is deleted while it is
+  open. Settings, the Guide and the history sidebar are full-screen or inline
+  rather than modal, and still move focus only as the browser would.
 - Smaller labelling gaps remain outside the chat view.
 - Full detail: [Accessibility statement](https://sovatela.eu/accessibility).
 
 **Packaging**
 
 - Windows and Linux builds are **not code-signed**. SmartScreen will warn on
-  Windows; verify the published SHA-256 before running the installer. macOS
-  builds are signed and notarized.
+  Windows; verify the published SHA-256 before running the installer. That
+  checksum shows the file arrived intact, not who published it — the list is
+  not signed, so it is not a substitute for a signature. macOS builds are
+  signed and notarized, and that check is made against Apple rather than
+  against us.
 
 **Model and providers**
 
@@ -467,9 +619,9 @@ Scaleway API key: [Quick-start](../QUICKSTART.md).
 **Verify your download** before running it:
 
 ```sh
-shasum -a 256 Sovatela_1.5.3_universal.dmg      # macOS
-sha256sum sovatela_1.5.3_amd64.deb              # Linux
-Get-FileHash .\Sovatela_1.5.3_x64-setup.exe -Algorithm SHA256   # Windows
+shasum -a 256 Sovatela_1.5.5_universal.dmg      # macOS
+sha256sum sovatela_1.5.5_amd64.deb              # Linux
+Get-FileHash .\Sovatela_1.5.5_x64-setup.exe -Algorithm SHA256   # Windows
 ```
 
 **Downgrading** — install the older version over the top. The data format is

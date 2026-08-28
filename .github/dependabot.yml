@@ -1,0 +1,15 @@
+# Actions are pinned to commit SHAs, which is the only immutable reference —
+# a tag can be moved to point at different code, and the release workflow runs
+# with the Apple signing secrets and a token that can write releases.
+#
+# A pin that is never updated is its own problem, so Dependabot proposes the
+# bumps and each one arrives as a diff with a SHA to look at.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"

@@ -93,3 +93,36 @@ describe("the update check fetches a file the site actually publishes", () => {
     ).toBe(true);
   });
 });
+
+// The download page told readers that checking the SHA-256 "does not depend on
+// trusting us". It does: SHA256SUMS.txt is unsigned and sits in the same
+// release as the installers, so whoever could swap one could swap the other. A
+// checksum here shows the file arrived intact; it does not establish who
+// published it. On macOS notarization does more, because it is checked against
+// Apple.
+describe("the download page does not oversell a checksum", () => {
+  const page = readFileSync(
+    join(resolve(import.meta.dirname, ".."), "deploy/web/index.html"),
+    "utf8",
+  );
+
+  it("makes no claim that verification is independent of the publisher", () => {
+    for (const phrase of [
+      "does not depend on trusting us",
+      "independent of us",
+      "without trusting us",
+    ]) {
+      expect(page.toLowerCase(), `the page claims: "${phrase}"`).not.toContain(phrase);
+    }
+  });
+
+  it("says what a checksum actually shows", () => {
+    expect(page).toMatch(/arrived intact/);
+    expect(page).toMatch(/not signed/);
+  });
+
+  it("still tells Windows users the build is unsigned", () => {
+    expect(page).toContain("SmartScreen");
+    expect(page).toContain("unsigned");
+  });
+});
