@@ -1,5 +1,60 @@
 # Changelog
 
+## 1.5.6 — 2026-08-28
+
+A corrective release. Everything here came out of an external review of 1.5.5,
+and most of it is something 1.5.5 introduced or claimed without doing.
+
+### Security and privacy
+- **Text deleted with Track Changes was extracted and sent.** Word does not
+  remove deleted text; it marks it in `w:del`/`w:delText` so the change can be
+  rejected later, and records where moved text came from in `w:moveFrom`.
+  Extraction took every text node regardless of what enclosed it, so a redlined
+  document reached the model carrying the reviewer's deletions — welded to the
+  insertions that replaced them, since the two sit adjacent: *"The deal is worth
+  5M CONFIDENTIAL8M"*. Those subtrees are now skipped, tracked by depth because
+  they nest, leaving a separator so removing a deletion does not join the words
+  either side of it. `w:ins` is kept: an insertion is part of the text as it
+  reads. 1.5.5's release notes claimed this already worked; that sentence was
+  wrong and is corrected in place rather than removed.
+- **A `.docx` could exhaust memory.** 1.5.5 began reading headers, footers and
+  notes, which made the per-entry cap the wrong bound: any number of
+  individually-legal parts could be summed, all held until the truncation at the
+  end. An 823 KB fixture with 40 headers reached 1.95 GB resident and 4.5
+  seconds, in the main process. Now a total text budget across all parts, a cap
+  on how many are read, and one archive opened once rather than reopened per
+  part — `zip_entry_string` reparsed the central directory on every call, which
+  made many parts superlinear as well as unbounded. The same fixture takes
+  115 ms.
+- **Every document format now parses in the killable child process**, not just
+  PDF. Bounds remain and are unit-tested, but a bound is a number somebody
+  chose and the next format gets to choose again; a process that cannot exceed
+  its allowance whatever the parser does is the property that does not need
+  revisiting. The helper takes a format token rather than the user's filename.
+
+### Fixed
+- Opening a chat whose project had been deleted put the sidebar into a project
+  with no name and no instructions, and new chats started from there joined it.
+  1.5.5 added a guard that watched the project *list*, which is the wrong
+  moment — a stale id arrives when a conversation is opened. The check now runs
+  where the id is assigned, and its tests exercise behaviour rather than source
+  text; three of them fail against the 1.5.5 code.
+
+### Documentation
+- The technical specification said there is no automated dependency scanning.
+  `npm audit` and `cargo audit` have run on every proposed change and weekly
+  since 1.5.1, and Dependabot has proposed Actions updates since 1.5.5.
+- Its debt list described all 19 `cargo audit` warnings as unmaintained GTK
+  bindings. They are 17 unmaintained crates, one unsoundness advisory (`glib`),
+  and one yanked version (`chacha20`) — and `unic-*`, `ttf-parser` and
+  `proc-macro-error` are not GTK.
+
+### Build
+- The release workflow runs `cargo fmt --check` and Clippy. Both live in
+  `audit.yml`, which does not run on a tag, so 1.5.5 was built, signed and
+  published from source that failed the format check with nothing in the log to
+  say so.
+
 ## 1.5.5 — 2026-08-28
 
 ### Security

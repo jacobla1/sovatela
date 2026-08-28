@@ -1,5 +1,6 @@
 <script>
   import { untrack } from "svelte";
+  import { knownProjectId } from "./projects.js";
   import { invoke, Channel } from "@tauri-apps/api/core";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { save } from "@tauri-apps/plugin-dialog";
@@ -223,12 +224,11 @@
   }
   refreshProjects();
 
-  // Deleting a project detaches its chats in the backend, so the usual case is
-  // handled where it happens. This covers the rest: a project deleted in
-  // another window, a project file removed by hand, or a detach that failed
-  // part-way. Without it, a chat carrying a project that no longer exists puts
-  // the sidebar into a project with no name and no instructions, and every new
-  // chat started from there silently joins it.
+  // The check above runs when a conversation is opened, which is when a stale
+  // id actually arrives. This handles the other moment: the list itself
+  // changing under a selection that was valid when it was made — a project
+  // deleted in another window, or a file removed by hand while a chat in it is
+  // already open.
   $effect(() => {
     if (!projectsLoaded) return;
     const known = new Set(projects.map((p) => p.id));
@@ -434,9 +434,13 @@
     conversationId = id;
     restoreToggles(id); // this chat's own 🌐/🎨 state
     const meta = conversations.find((c) => c.id === id);
-    // Follow the chat into its project — both the membership and the sidebar view.
-    chatProjectId = meta?.project_id || null;
-    activeProjectId = meta?.project_id || null;
+    // Follow the chat into its project — both the membership and the sidebar
+    // view — but only if that project still exists. A conversation saved
+    // before its project was deleted still names it, and this is the moment
+    // that stale name would otherwise become the sidebar's state.
+    const joined = knownProjectId(meta?.project_id, projects, projectsLoaded);
+    chatProjectId = joined;
+    activeProjectId = joined;
     activeIndex = null;
     pending = [];
     scrollToBottom(true);

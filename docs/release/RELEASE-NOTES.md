@@ -1,4 +1,4 @@
-# Release notes — Sovatela 1.5.5
+# Release notes — Sovatela 1.5.6
 
 Release date: 2026-08-28 · [All releases](https://github.com/jacobla1/sovatela/releases)
 
@@ -10,8 +10,55 @@ Release date: 2026-08-28 · [All releases](https://github.com/jacobla1/sovatela/
 
 ## New
 
-Nothing in this release is a feature. It is the third consecutive release made
-entirely of corrections found by an outside review.
+Nothing here is a feature. An outside review of 1.5.5 found two problems in the
+part of the app that reads attached documents, and both were real. One of them
+is a confidentiality problem, and 1.5.5's own release notes said it had already
+been dealt with.
+
+**A document you had edited could send back what you deleted.** Word does not
+remove text you delete with Track Changes — it keeps it, marked, so the change
+can be undone later. Reading a document took everything, marked or not. So
+attaching a reviewed contract sent the wording you thought you had taken out,
+run together with the wording that replaced it: a paragraph reading *"the deal
+is worth 5M"* arrived as *"the deal is worth 5M CONFIDENTIAL8M"*. Deleted text
+is now left behind, and text you move is not sent twice. Comments are still not
+included.
+
+**1.5.5 said this already worked.** Its notes said tracked changes were not
+included and that a document sends "only the text as it currently reads".
+Neither was true when it was written. Those sentences are corrected on this
+page rather than quietly deleted, because a page that edits its own history is
+worth less than one that says it got something wrong.
+
+**A Word file could close the app.** The same release that started reading
+headers and footers made it possible for a small file to declare a great many
+of them, each legal on its own, and for the app to try to hold all of them at
+once. An 823 KB file could take 1.95 GB of memory and four and a half seconds
+before this; it now takes a tenth of a second. Reading *any* document now also
+happens in a separate process that is allowed to die — 1.5.5 did that for PDFs
+only, in the same release that gave Word files more to read.
+
+**Opening a chat could put you in a project that no longer exists.** If a
+project was deleted while one of its chats was still around, opening that chat
+put the sidebar into a project with no name and no instructions, and anything
+you started from there quietly joined it. 1.5.5 tried to fix this and watched
+for the wrong thing — the check ran when the project list changed, rather than
+when the chat was opened, which is when it actually mattered.
+
+**Two things the specification claimed that were not so:** that dependency
+scanning is not automated — it has run on every change and weekly since 1.5.1 —
+and that all nineteen dependency warnings are unmaintained Linux interface
+libraries. They are seventeen unmaintained packages, one unsoundness notice and
+one withdrawn version, and several are not Linux interface libraries at all.
+
+**The release build now checks formatting and lint.** Those checks existed but
+did not run when a version was tagged, so 1.5.5 was built, signed and published
+from source that failed one of them, with nothing in the log to say so.
+
+Everything below arrived in 1.5.5 and is included here.
+
+Nothing in that release was a feature either. It was made entirely of
+corrections found by an outside review.
 
 **A PDF could take the application down, and now cannot.** A PDF holds its
 pages as compressed data, and a file is allowed to say that a small amount of
@@ -497,7 +544,7 @@ afterwards from *Settings → Appearance → Welcome screen*.
 
 ## Known limitations
 
-Documented rather than omitted. This is the complete user-facing list for 1.5.5;
+Documented rather than omitted. This is the complete user-facing list for 1.5.6;
 the engineering view is in [Technical specification §
 7](../TECHNICAL-SPEC.md#7-known-technical-debt).
 
@@ -515,14 +562,17 @@ the engineering view is in [Technical specification §
 - Reference images have been exercised on FLUX.2; the Kontext editing path is
   built to the same API but has not been run against a paid key.
 
-**Word and OpenDocument uploads skip comments and tracked changes**
+**Word and OpenDocument uploads skip comments**
 
 - Headers, footers, footnotes and endnotes are read from 1.5.5 and appear
   after the body of the document, under a label, so a running header is not
   dropped into the prose as though it were a sentence.
-- **Comments and tracked changes are still not included.** A document whose
-  substance is in its margin — a review, a redline — sends only the text as it
-  currently reads.
+- **Text deleted with Track Changes is excluded from 1.5.6.** It is not
+  excluded in 1.5.5, and that release's notes said it was. See *What changed*
+  above; the sentence was wrong when it was published and is corrected here
+  rather than quietly removed.
+- **Comments are still not included.** A document whose substance is in its
+  margin — a review thread — sends only the body.
 - A **PDF of the same document includes the comments** if they were printed
   into it, because there they are ordinary text on the page rather than a
   separate part of the file.
@@ -619,9 +669,9 @@ Scaleway API key: [Quick-start](../QUICKSTART.md).
 **Verify your download** before running it:
 
 ```sh
-shasum -a 256 Sovatela_1.5.5_universal.dmg      # macOS
-sha256sum sovatela_1.5.5_amd64.deb              # Linux
-Get-FileHash .\Sovatela_1.5.5_x64-setup.exe -Algorithm SHA256   # Windows
+shasum -a 256 Sovatela_1.5.6_universal.dmg      # macOS
+sha256sum sovatela_1.5.6_amd64.deb              # Linux
+Get-FileHash .\Sovatela_1.5.6_x64-setup.exe -Algorithm SHA256   # Windows
 ```
 
 **Downgrading** — install the older version over the top. The data format is

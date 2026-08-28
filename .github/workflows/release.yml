@@ -27,7 +27,7 @@ jobs:
     if: github.repository == 'jacobla1/Scale'
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Linux build dependencies
         run: |
@@ -40,7 +40,7 @@ jobs:
             libssl-dev
 
       - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 20
 
@@ -68,6 +68,17 @@ jobs:
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
+      # These run on proposed changes in `audit.yml`, which does not run on a
+      # tag — so 1.5.5 was built, signed and published from source that failed
+      # the format check, and nothing in the release log said so. A release is
+      # exactly when a repository is held up as evidence, so the checks that
+      # keep it readable belong here too.
+      - name: Formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+
+      - name: Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
   build:
     needs: [windows-terminal-access, tests]
     # The public repository is a mirror, and `gh release create --repo
@@ -94,7 +105,7 @@ jobs:
 
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Linux build dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -108,7 +119,7 @@ jobs:
             libssl-dev
 
       - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 20
 
@@ -127,7 +138,7 @@ jobs:
         run: npm ci
 
       - name: Build app and publish release
-        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # macOS code signing + notarization. Only consumed on the macOS
@@ -208,9 +219,14 @@ jobs:
       # nobody can use and that invites the question of what it is for. It has
       # been deleted by hand on every release since the .dmg started shipping,
       # which is exactly the kind of recurring manual step that produced the
-      # stray-installer bug. The guard below does not catch it: the tarball
-      # carries no version in its name, and files without one are exempt so
-      # that SHA256SUMS.txt passes.
+      # stray-installer bug.
+      #
+      # The guard below does not catch it either way. Before tauri-action
+      # 1.0.0 the tarball carried no version in its name, and files without
+      # one are exempt so that SHA256SUMS.txt passes; from 1.0.0 it carries
+      # the version, which matches the tag and so is not a stray. The removal
+      # here matches on the extension rather than the filename, which is why
+      # that rename did not break it.
       - name: Drop the updater bundle nobody can use
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

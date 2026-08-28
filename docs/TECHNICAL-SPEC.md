@@ -1,6 +1,6 @@
 # Technical and security specification
 
-Sovatela v1.5.5 · Companion to Product spec ·
+Sovatela v1.5.6 · Companion to Product spec ·
 UX spec · [Security policy](../SECURITY.md)
 
 Fuller engineering rationale is kept internally in `ENGINEERING_NOTES.md`, which
@@ -200,8 +200,13 @@ never offered.
 Pinned via `package-lock.json` and `Cargo.lock`; enumerated with licences in
 [`THIRD-PARTY-LICENSES.md`](../THIRD-PARTY-LICENSES.md).
 
-**Gap.** No automated dependency scanning. `npm audit` and `cargo audit` should
-run in CI, and Dependabot (or equivalent) should be enabled.
+`npm audit` and `cargo audit` run on every proposed change and weekly
+(`audit.yml`) — weekly being the point, since an advisory can be filed against
+code that has not changed in months. Dependabot proposes GitHub Actions updates
+monthly.
+
+**Gap.** Dependabot does not cover npm or cargo, so those updates are still
+raised by hand off the audit run.
 
 ### Update signing
 
@@ -354,8 +359,11 @@ checkout is a superset and is not part of the repository.
 - Project reference files are never compacted
 - Orphaned assets if a conversation file is deleted outside the app
 - `nom v1.2.4` future-incompatibility warning (transitive)
-- 19 `cargo audit` warnings for unmaintained gtk-rs GTK3 bindings, pulled in by
-  Tauri's Linux stack and not movable from here
+- 19 `cargo audit` warnings, none of them a vulnerability: 17 unmaintained
+  crates, one unsoundness advisory (`glib`'s `VariantStrIter` iterator impls),
+  and one yanked version (`chacha20`). Most arrive through Tauri's Linux stack
+  and are not movable from here, but not all are GTK — `unic-*`, `ttf-parser`
+  and `proc-macro-error` are not
 - No structured logging, so no post-hoc diagnosis
 - No auto-updater. *Settings → About* now has a manual **Check for updates**,
   so a release is at least discoverable from inside the app, but a security

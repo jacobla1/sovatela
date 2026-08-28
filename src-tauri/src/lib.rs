@@ -5,11 +5,11 @@ use std::sync::Arc;
 use tauri::ipc::Channel;
 use tauri::Manager;
 
+pub mod doc_sandbox;
 pub mod glm;
-pub mod pdf_sandbox;
 
 #[global_allocator]
-static ALLOCATOR: pdf_sandbox::CappedAllocator = pdf_sandbox::CappedAllocator;
+static ALLOCATOR: doc_sandbox::CappedAllocator = doc_sandbox::CappedAllocator;
 pub mod pricing;
 pub mod update;
 pub mod usage;
@@ -2103,14 +2103,62 @@ const MAX_UPLOAD_BYTES: usize = 20 * 1024 * 1024;
 
 const MAX_EXTRACT_CHARS: usize = 400_000;
 
+/// Elements whose contents are text the document no longer says.
+///
+/// Track Changes does not remove text, it marks it. Word keeps a deletion in
+/// `w:del`/`w:delText` so the change can still be rejected later, and records
+/// where moved text came from in `w:moveFrom`. OpenDocument parks the same
+/// material in a `text:tracked-changes` block near the top of the body rather
+/// than inline. All of it is in the file; none of it is in the document as it
+/// currently reads.
+///
+/// Extraction used to take every text node regardless of what enclosed it, so
+/// a reviewed document reached the model with the reviewer's deletions intact
+/// — and welded to the insertions that replaced them, since the two sit
+/// adjacent. Someone attaching a redlined contract was sending the wording
+/// they believed they had removed.
+///
+/// `w:ins` and `text:insertion` are deliberately absent: an insertion is part
+/// of the text as it currently reads.
+const DOCX_DROPPED: &[&str] = &["w:del", "w:delText", "w:moveFrom"];
+const ODT_DROPPED: &[&str] = &["text:tracked-changes"];
+
 /// Pull the readable text out of an XML stream, inserting newlines when the
 /// given paragraph elements close (`w:p` for .docx, `text:p`/`text:h` for .odt).
-fn xml_to_text(xml: &str, para_tags: &[&str]) -> String {
+///
+/// `dropped` names elements whose entire subtree is skipped — see
+/// [`DOCX_DROPPED`].
+fn xml_to_text(xml: &str, para_tags: &[&str], dropped: &[&str]) -> String {
     use quick_xml::events::Event;
     let mut reader = quick_xml::Reader::from_str(xml);
     let mut out = String::new();
+    // A depth, not a flag: these elements nest — a `w:del` can sit inside a
+    // `w:moveFrom` — and a flag cleared by the first closing tag would let the
+    // rest of the outer subtree back in.
+    let mut skipping = 0usize;
     loop {
         match reader.read_event() {
+            Ok(Event::Start(ref e)) => {
+                let name = e.name();
+                let name = String::from_utf8_lossy(name.as_ref());
+                if skipping > 0 {
+                    skipping += 1;
+                } else if dropped.iter().any(|d| *d == name) {
+                    skipping = 1;
+                }
+            }
+            // Inside a dropped subtree nothing is emitted, and the closing tag
+            // that ends it leaves a separator behind. Without one, removing a
+            // deletion joins the words that sat either side of it — which is
+            // the same corruption as the bug being fixed, arriving from the
+            // other direction: "before" + "after" must not become "beforeafter".
+            Ok(Event::End(_)) if skipping > 0 => {
+                skipping -= 1;
+                if skipping == 0 && !out.is_empty() && !out.ends_with(char::is_whitespace) {
+                    out.push(' ');
+                }
+            }
+            Ok(Event::Text(_)) | Ok(Event::GeneralRef(_)) if skipping > 0 => {}
             Ok(Event::Text(t)) => {
                 // quick-xml 0.38 replaced `unescape()` with version-explicit
                 // accessors. .docx and .odt are XML 1.0, so this is the direct
@@ -2175,6 +2223,23 @@ fn xml_to_text(xml: &str, para_tags: &[&str]) -> String {
     }
     out
 }
+
+/// Ceiling on the *total* text pulled out of one document, across every part.
+///
+/// The per-entry cap bounds a single entry. It stopped being the bound that
+/// mattered when 1.5.5 began reading headers, footers and notes: any number of
+/// individually-legal parts could be summed. An 823 KB fixture with 40 headers
+/// reached 1.95 GB before this existed.
+///
+/// Comfortably above any real document — `MAX_EXTRACT_CHARS` truncates the
+/// result to 400,000 characters anyway, so this only has to stop the arithmetic
+/// running away before that truncation is reached.
+const DOC_TOTAL_TEXT_BUDGET: u64 = 24 * 1024 * 1024;
+
+/// Ceiling on how many headers, footers and note parts are read. Word writes
+/// at most three headers and three footers per section; a file with hundreds
+/// is not a document anyone typed.
+const MAX_SIDE_PARTS: usize = 24;
 
 /// Read one entry of a zip archive (.docx/.odt are zips) as a UTF-8 string.
 /// A .docx or .odt is a zip, and a zip says how large its contents are before
@@ -2256,6 +2321,9 @@ fn docx_side_parts(names: &[String]) -> Vec<String> {
         }
     }
     out.extend(footers.into_iter().cloned());
+    // Lowest-numbered first, so truncating keeps the parts a real document
+    // actually uses — header1 is the one that appears on every page.
+    out.truncate(MAX_SIDE_PARTS);
     out
 }
 
@@ -2263,13 +2331,33 @@ fn docx_side_parts(names: &[String]) -> Vec<String> {
 /// A part that is missing, oversized or malformed is skipped: the body is the
 /// document, and failing the whole upload because a footer would not parse
 /// would be a worse answer than the text without it.
-fn extract_side_parts(bytes: &[u8], parts: &[String], tags: &[&str]) -> Vec<String> {
+fn extract_side_parts(
+    bytes: &[u8],
+    parts: &[String],
+    tags: &[&str],
+    dropped: &[&str],
+    budget: &mut u64,
+) -> Vec<String> {
+    // One archive for all of the parts. `zip_entry_string` opens its own and
+    // reparses the central directory every time it is called, which made a
+    // file with many parts superlinear in the number of them as well as
+    // unbounded in memory.
+    let Ok(mut archive) = zip::ZipArchive::new(std::io::Cursor::new(bytes)) else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
     for part in parts {
-        let Ok(xml) = zip_entry_string(bytes, part) else {
+        if *budget == 0 {
+            break;
+        }
+        let Ok(xml) = read_entry_within(&mut archive, part, budget) else {
+            // A part that is missing, oversized or unreadable is skipped: the
+            // body is the document, and refusing the whole upload because a
+            // footer would not parse is a worse answer than the text without
+            // the footer.
             continue;
         };
-        let text = xml_to_text(&xml, tags);
+        let text = xml_to_text(&xml, tags, dropped);
         let text = text.trim();
         if !text.is_empty() {
             out.push(text.to_string());
@@ -2278,16 +2366,46 @@ fn extract_side_parts(bytes: &[u8], parts: &[String], tags: &[&str]) -> Vec<Stri
     out
 }
 
+/// Read one entry from an already-open archive, charged against a shared
+/// budget. Returns an error, rather than a truncated string, when the entry
+/// does not fit — a half-read part is a corrupted one.
+fn read_entry_within<R: std::io::Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    entry: &str,
+    budget: &mut u64,
+) -> Result<String, String> {
+    use std::io::Read as _;
+    let file = archive
+        .by_name(entry)
+        .map_err(|e| format!("could not read {entry}: {e}"))?;
+    let allowance = (*budget).min(MAX_ZIP_ENTRY_BYTES);
+    if file.size() > allowance {
+        return Err("that document's contents are too large to read".into());
+    }
+    let mut s = String::new();
+    // The declared size again, enforced: a header can claim one thing and the
+    // stream deliver another.
+    file.take(allowance + 1)
+        .read_to_string(&mut s)
+        .map_err(|e| e.to_string())?;
+    if s.len() as u64 > allowance {
+        return Err("that document's contents are too large to read".into());
+    }
+    *budget = budget.saturating_sub(s.len() as u64);
+    Ok(s)
+}
+
 fn pdf_to_text(bytes: &[u8]) -> Result<String, String> {
-    // Not `catch_unwind` in this process. A malformed PDF can panic, which
-    // unwinding does contain — but a PDF whose compressed streams inflate
-    // without bound makes the *allocator* fail, and Rust aborts on that rather
-    // than unwinding. The upload cap does not help either: the limit is on the
-    // file, and the blow-up is in what the file expands to.
-    //
-    // So the parse happens in a child process with a real ceiling on both
-    // memory and time. See `pdf_sandbox`.
-    pdf_sandbox::extract_text(bytes)
+    // In-process here, deliberately. `document_text` as a whole now runs inside
+    // the sandboxed child (see `doc_sandbox`), so this is already behind the
+    // memory cap and the deadline; spawning again would nest a child in a
+    // child. `catch_unwind` still earns its place for a malformed PDF that
+    // panics — an allocation failure aborts instead, which is exactly what the
+    // surrounding process is expendable for.
+    let owned = bytes.to_vec();
+    std::panic::catch_unwind(move || pdf_extract::extract_text_from_mem(&owned))
+        .map_err(|_| "could not parse this PDF".to_string())?
+        .map_err(|e| format!("could not parse this PDF: {e}"))
 }
 
 /// Put the body first and the surrounding material after it, labelled.
@@ -2352,21 +2470,31 @@ fn document_text(name: &str, bytes: &[u8]) -> Result<String, String> {
     } else if lower.ends_with(".docx") {
         let xml = zip_entry_string(bytes, "word/document.xml")
             .map_err(|e| readable(e, "not a readable Word document"))?;
-        let body = xml_to_text(&xml, &["w:p"]);
+        let body = xml_to_text(&xml, &["w:p"], DOCX_DROPPED);
+        let mut budget = DOC_TOTAL_TEXT_BUDGET.saturating_sub(xml.len() as u64);
         let names = zip_entry_names(bytes);
-        let sides = extract_side_parts(bytes, &docx_side_parts(&names), &["w:p"]);
+        let sides = extract_side_parts(
+            bytes,
+            &docx_side_parts(&names),
+            &["w:p"],
+            DOCX_DROPPED,
+            &mut budget,
+        );
         join_document_parts(body, sides)
     } else if lower.ends_with(".odt") {
         let xml = zip_entry_string(bytes, "content.xml")
             .map_err(|e| readable(e, "not a readable OpenDocument file"))?;
-        let body = xml_to_text(&xml, &["text:p", "text:h"]);
+        let body = xml_to_text(&xml, &["text:p", "text:h"], ODT_DROPPED);
         // ODT keeps headers and footers in the master page styles, not in
         // content.xml. Footnotes do live in content.xml, inside the paragraph
         // that carries them, so they are already picked up above.
+        let mut budget = DOC_TOTAL_TEXT_BUDGET.saturating_sub(xml.len() as u64);
         let sides = extract_side_parts(
             bytes,
             &["styles.xml".to_string()],
             &["text:p", "text:h"],
+            ODT_DROPPED,
+            &mut budget,
         );
         join_document_parts(body, sides)
     } else {
@@ -2412,7 +2540,10 @@ async fn extract_document(name: String, data_base64: String) -> Result<String, S
     // Off the async runtime's workers. This now waits on a child process for
     // up to the helper's deadline, and holding a runtime thread for 45 seconds
     // would starve every other command that wants one.
-    tokio::task::spawn_blocking(move || document_text(&name, &bytes))
+    let Some(kind) = doc_sandbox::Kind::from_filename(&name) else {
+        return Err("unsupported document type".into());
+    };
+    tokio::task::spawn_blocking(move || doc_sandbox::extract_text(kind, &bytes))
         .await
         .map_err(|_| "reading the document failed unexpectedly".to_string())?
 }
@@ -2920,8 +3051,14 @@ async fn execute_tool<R: tauri::Runtime>(
             // uploads); everything else is read as text.
             if is_extractable_document(path) {
                 match workspace::read_bytes(root, path) {
-                    Ok(bytes) => document_text(path, &bytes)
-                        .unwrap_or_else(|e| format!("Could not read {path}: {e}")),
+                    // Same sandbox as an upload. A workspace file is no more
+                    // trusted than an attachment — the model chose this path,
+                    // and web content can steer what it chooses.
+                    Ok(bytes) => match doc_sandbox::Kind::from_filename(path) {
+                        Some(kind) => doc_sandbox::extract_text(kind, &bytes)
+                            .unwrap_or_else(|e| format!("Could not read {path}: {e}")),
+                        None => format!("Could not read {path}: unsupported document type"),
+                    },
                     Err(e) => format!("Could not read {path}: {e}"),
                 }
             } else {
@@ -5048,6 +5185,24 @@ async fn delete_project(app: tauri::AppHandle, id: String) -> Result<(), String>
 mod tests {
     use super::*;
 
+    /// This file's own source, with line endings normalised.
+    ///
+    /// Several tests below assert on the *shape* of the code — that a function
+    /// resolves an address once rather than twice, that a guard sits before
+    /// the branch it guards. They read the source with `include_str!`, which
+    /// embeds the file exactly as it was checked out, and Git on Windows
+    /// checks out CRLF unless told otherwise. A pattern containing `\n}\n`
+    /// then matches nothing, and four of these tests failed on every Windows
+    /// run — never on a developer machine, so it went unnoticed until
+    /// Dependabot opened a pull request and CI ran there.
+    ///
+    /// `.gitattributes` now pins the checkout to LF, which is the real fix.
+    /// This is the belt to that pair of braces: a test that breaks on a
+    /// checkout setting is testing the checkout, not the code.
+    fn lib_source() -> String {
+        include_str!("lib.rs").replace("\r\n", "\n")
+    }
+
     fn temp_dir(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "scale-test-{tag}-{}-{:?}",
@@ -5057,6 +5212,237 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    // ---- Tracked changes ---------------------------------------------------
+
+    const W_NS: &str = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
+
+    #[test]
+    fn deleted_text_does_not_reach_the_model() {
+        let xml = format!(
+            r#"<w:document {W_NS}><w:body><w:p>
+              <w:r><w:t xml:space="preserve">The deal is worth </w:t></w:r>
+              <w:del w:id="1" w:author="Reviewer"><w:r><w:delText>5M CONFIDENTIAL</w:delText></w:r></w:del>
+              <w:ins w:id="2" w:author="Reviewer"><w:r><w:t>8M</w:t></w:r></w:ins>
+            </w:p></w:body></w:document>"#
+        );
+        let text = document_text("redline.docx", &zip_with("word/document.xml", &xml)).unwrap();
+        assert!(
+            !text.contains("5M CONFIDENTIAL"),
+            "deleted text was sent to the model: {text:?}"
+        );
+        assert!(text.contains("The deal is worth"), "got: {text:?}");
+        assert!(text.contains('8'), "the insertion should survive: {text:?}");
+    }
+
+    #[test]
+    fn removing_a_deletion_does_not_run_the_neighbours_together() {
+        // The defect had a second half: the deleted run and the inserted one
+        // were concatenated, so the model received "5M CONFIDENTIAL8M" — text
+        // nobody wrote. Dropping the deletion must not reintroduce that from
+        // the other direction by welding what sat either side of it.
+        let xml = format!(
+            r#"<w:document {W_NS}><w:body><w:p>
+              <w:r><w:t>before</w:t></w:r>
+              <w:del w:id="1"><w:r><w:delText>GONE</w:delText></w:r></w:del>
+              <w:r><w:t>after</w:t></w:r>
+            </w:p></w:body></w:document>"#
+        );
+        let text = document_text("x.docx", &zip_with("word/document.xml", &xml)).unwrap();
+        assert!(!text.contains("GONE"), "got: {text:?}");
+        assert!(
+            !text.contains("beforeafter"),
+            "the words either side of the deletion were welded together: {text:?}"
+        );
+    }
+
+    #[test]
+    fn moved_from_text_is_treated_as_deleted() {
+        // `w:moveFrom` is where text used to be; `w:moveTo` is where it is now.
+        // Keeping both would duplicate every moved paragraph.
+        let xml = format!(
+            r#"<w:document {W_NS}><w:body>
+              <w:p><w:moveFrom w:id="1"><w:r><w:t>paragraph in its old place</w:t></w:r></w:moveFrom></w:p>
+              <w:p><w:moveTo w:id="2"><w:r><w:t>paragraph in its new place</w:t></w:r></w:moveTo></w:p>
+            </w:body></w:document>"#
+        );
+        let text = document_text("moved.docx", &zip_with("word/document.xml", &xml)).unwrap();
+        assert!(!text.contains("old place"), "got: {text:?}");
+        assert!(text.contains("new place"), "got: {text:?}");
+    }
+
+    #[test]
+    fn an_insertion_is_ordinary_text() {
+        // An insertion is part of the document as it currently reads, so it
+        // stays. This is the assertion that fails if the filter is widened to
+        // "anything Track Changes touched".
+        let xml = format!(
+            r#"<w:document {W_NS}><w:body><w:p>
+              <w:ins w:id="1"><w:r><w:t>newly added sentence</w:t></w:r></w:ins>
+            </w:p></w:body></w:document>"#
+        );
+        let text = document_text("ins.docx", &zip_with("word/document.xml", &xml)).unwrap();
+        assert!(text.contains("newly added sentence"), "got: {text:?}");
+    }
+
+    #[test]
+    fn a_deletion_in_a_header_is_dropped_too() {
+        // Side parts go through the same extractor, so the filter has to hold
+        // there — a header is exactly where "DRAFT" markings live.
+        let body = format!(
+            r#"<w:document {W_NS}><w:body><w:p><w:r><w:t>body</w:t></w:r></w:p></w:body></w:document>"#
+        );
+        let hdr = format!(
+            r#"<w:hdr {W_NS}><w:p><w:del w:id="1"><w:r><w:delText>DRAFT — DO NOT CIRCULATE</w:delText></w:r></w:del><w:r><w:t>Final</w:t></w:r></w:p></w:hdr>"#
+        );
+        let docx = zip_with_entries(&[("word/document.xml", &body), ("word/header1.xml", &hdr)]);
+        let text = document_text("h.docx", &docx).unwrap();
+        assert!(!text.contains("DO NOT CIRCULATE"), "got: {text:?}");
+        assert!(text.contains("Final"), "got: {text:?}");
+    }
+
+    #[test]
+    fn opendocument_tracked_deletions_are_dropped() {
+        // ODT parks deleted content in <text:tracked-changes> near the top of
+        // the body, not inline where it was removed from.
+        let xml = r#"<office:document xmlns:office="urn:o" xmlns:text="urn:t">
+          <office:body><office:text>
+            <text:tracked-changes>
+              <text:changed-region><text:deletion>
+                <text:p>removed paragraph SECRET</text:p>
+              </text:deletion></text:changed-region>
+            </text:tracked-changes>
+            <text:p>the surviving paragraph</text:p>
+          </office:text></office:body></office:document>"#;
+        let text = document_text("notes.odt", &zip_with("content.xml", xml)).unwrap();
+        assert!(!text.contains("SECRET"), "got: {text:?}");
+        assert!(text.contains("the surviving paragraph"), "got: {text:?}");
+    }
+
+    #[test]
+    fn nested_dropped_elements_do_not_reopen_early() {
+        // A `w:del` inside a `w:moveFrom`: a boolean flag cleared by the first
+        // closing tag would let the rest of the outer subtree back in.
+        let xml = format!(
+            r#"<w:document {W_NS}><w:body><w:p>
+              <w:moveFrom w:id="1">
+                <w:del w:id="2"><w:r><w:delText>INNER</w:delText></w:r></w:del>
+                <w:r><w:t>OUTER</w:t></w:r>
+              </w:moveFrom>
+              <w:r><w:t>kept</w:t></w:r>
+            </w:p></w:body></w:document>"#
+        );
+        let text = document_text("nested.docx", &zip_with("word/document.xml", &xml)).unwrap();
+        assert!(!text.contains("INNER"), "got: {text:?}");
+        assert!(
+            !text.contains("OUTER"),
+            "the outer subtree reopened early: {text:?}"
+        );
+        assert!(text.contains("kept"), "got: {text:?}");
+    }
+
+    // ---- Cumulative bounds on a document's parts --------------------------
+    //
+    // 1.5.5 added header/footer extraction and, with it, an unbounded loop:
+    // any number of side parts, each capped at 32 MB on its own, all held
+    // until the truncation at the very end. Measured on an 823 KB fixture with
+    // 40 headers: 1.95 GB resident, 4.5 seconds, in the main process. The
+    // per-entry cap was never the bound that mattered once there could be more
+    // than one entry.
+
+    #[test]
+    fn many_side_parts_cannot_add_up_to_an_unbounded_read() {
+        // Each part is individually legal and well under the per-entry cap.
+        // Only the total is hostile — which is the shape the old code could
+        // not see.
+        let ns = W_NS;
+        let body = format!(
+            r#"<w:document {ns}><w:body><w:p><w:r><w:t>the body</w:t></w:r></w:p></w:body></w:document>"#
+        );
+        let filler = "A".repeat(2 * 1024 * 1024);
+        let big = format!(r#"<w:hdr {ns}><w:p><w:r><w:t>{filler}</w:t></w:r></w:p></w:hdr>"#);
+
+        let mut owned: Vec<(String, String)> = vec![("word/document.xml".into(), body)];
+        for i in 1..=60 {
+            owned.push((format!("word/header{i}.xml"), big.clone()));
+        }
+        let entries: Vec<(&str, &str)> = owned
+            .iter()
+            .map(|(a, b)| (a.as_str(), b.as_str()))
+            .collect();
+        let docx = zip_with_entries(&entries);
+
+        let started = std::time::Instant::now();
+        let text = document_text("many.docx", &docx).unwrap();
+        let elapsed = started.elapsed();
+
+        // The body is the document and must survive the bound.
+        assert!(
+            text.contains("the body"),
+            "the body was lost: {:?}",
+            &text[..80.min(text.len())]
+        );
+
+        // 60 parts x 2 MB is 120 MB of text. The budget stops it long before.
+        assert!(
+            text.len() as u64 <= DOC_TOTAL_TEXT_BUDGET + 4096,
+            "extracted {} bytes, over the {DOC_TOTAL_TEXT_BUDGET}-byte budget",
+            text.len()
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "reparsing the archive per part made this superlinear: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn the_side_part_count_is_capped() {
+        let names: Vec<String> = (1..=500)
+            .map(|i| format!("word/header{i}.xml"))
+            .chain(std::iter::once("word/document.xml".to_string()))
+            .collect();
+        let parts = docx_side_parts(&names);
+        assert!(
+            parts.len() <= MAX_SIDE_PARTS,
+            "{} side parts accepted, cap is {MAX_SIDE_PARTS}",
+            parts.len()
+        );
+        // The cap keeps the lowest-numbered parts, which are the ones a real
+        // document uses: header1 is the one on every page.
+        assert_eq!(parts.first().map(String::as_str), Some("word/header1.xml"));
+    }
+
+    #[test]
+    fn a_document_with_ordinary_parts_is_unaffected_by_the_bound() {
+        // The bound must be invisible to real documents, or it is a defect of
+        // its own. A title, a footer and a footnote is an ordinary file.
+        let ns = W_NS;
+        let wp = |t: &str| format!(r#"<w:hdr {ns}><w:p><w:r><w:t>{t}</w:t></w:r></w:p></w:hdr>"#);
+        let body = format!(
+            r#"<w:document {ns}><w:body><w:p><w:r><w:t>Report body.</w:t></w:r></w:p></w:body></w:document>"#
+        );
+        let h = wp("ACME Confidential");
+        let f = wp("Page 1 of 4");
+        let n = wp("1. Excludes VAT.");
+        let docx = zip_with_entries(&[
+            ("word/document.xml", &body),
+            ("word/header1.xml", &h),
+            ("word/footer1.xml", &f),
+            ("word/footnotes.xml", &n),
+        ]);
+        let text = document_text("ordinary.docx", &docx).unwrap();
+        for expected in [
+            "Report body.",
+            "ACME Confidential",
+            "Page 1 of 4",
+            "Excludes VAT",
+        ] {
+            assert!(
+                text.contains(expected),
+                "{expected:?} missing from {text:?}"
+            );
+        }
     }
 
     // ---- Headers, footers and notes ----------------------------------------
@@ -5093,7 +5479,10 @@ mod tests {
             text.contains("CONFIDENTIAL — Q3 board pack"),
             "the header is missing: {text:?}"
         );
-        assert!(text.contains("Page 1 of 4"), "the footer is missing: {text:?}");
+        assert!(
+            text.contains("Page 1 of 4"),
+            "the footer is missing: {text:?}"
+        );
     }
 
     #[test]
@@ -5122,7 +5511,10 @@ mod tests {
         let label_at = text.find("[Headers, footers and notes]").unwrap();
         let header_at = text.find("Running header").unwrap();
         assert!(body_at < label_at, "the body must come first: {text:?}");
-        assert!(label_at < header_at, "the extras must be announced: {text:?}");
+        assert!(
+            label_at < header_at,
+            "the extras must be announced: {text:?}"
+        );
     }
 
     #[test]
@@ -5141,7 +5533,10 @@ mod tests {
         // Word writes header parts for sections that have none.
         let docx = zip_with_entries(&[
             ("word/document.xml", &wp("Body.")),
-            ("word/header1.xml", "<w:document><w:body><w:p/></w:body></w:document>"),
+            (
+                "word/header1.xml",
+                "<w:document><w:body><w:p/></w:body></w:document>",
+            ),
         ]);
         let text = document_text("x.docx", &docx).unwrap();
         assert_eq!(text, "Body.");
@@ -5239,6 +5634,41 @@ mod tests {
         assert!(
             text.contains("Smith & Sons — page 1"),
             "the footer's entities did not survive: {text:?}"
+        );
+    }
+
+    #[test]
+    fn every_test_that_reads_this_source_normalises_its_line_endings() {
+        // Four tests failed on every Windows run because they matched patterns
+        // containing "\n" against a source Git had checked out with CRLF. The
+        // failure was invisible on macOS and Linux, so it survived until
+        // Dependabot opened a pull request and CI ran on windows-latest.
+        //
+        // `.gitattributes` pins the checkout to LF, which is the fix. This
+        // stops the next source-reading test from depending on that being
+        // true — a checkout setting is not something a test should assert on
+        // by accident.
+        // Assembled rather than written out, so this test does not count its
+        // own search pattern. Written literally it found two occurrences —
+        // `lib_source`'s and its own — and failed for a reason that had
+        // nothing to do with the code under test.
+        let needle = format!("include_str!({q}lib.rs{q})", q = '"');
+        let src = lib_source();
+        let direct = src.matches(needle.as_str()).count();
+        assert_eq!(
+            direct, 1,
+            "`include_str!(\"lib.rs\")` should appear once, inside lib_source(); \
+             found {direct}. Read the source through lib_source() instead, or a \
+             CRLF checkout will make the new test pass by matching nothing."
+        );
+    }
+
+    #[test]
+    fn the_checkout_is_pinned_to_lf() {
+        let attrs = include_str!("../../.gitattributes");
+        assert!(
+            attrs.contains("* text=auto eol=lf"),
+            ".gitattributes must pin text files to LF"
         );
     }
 
@@ -5387,11 +5817,7 @@ mod tests {
 
     /// Write a conversation file the way `save_conversation` does, carrying a
     /// project membership, so `owned_history_files` recognises it as ours.
-    fn write_conversation_in_project(
-        dir: &std::path::Path,
-        id: &str,
-        project_id: Option<&str>,
-    ) {
+    fn write_conversation_in_project(dir: &std::path::Path, id: &str, project_id: Option<&str>) {
         let value = serde_json::json!({
             "id": id,
             "title": format!("chat {id}"),
@@ -5453,9 +5879,18 @@ mod tests {
         // The sidebar reads the index, so a fix that only rewrote the files
         // would still show the deleted project against these chats.
         let index = read_conv_index(&dir);
-        let a = index.iter().find(|m| m.id == "a").expect("a is in the index");
-        assert_eq!(a.project_id, None, "the index still names the deleted project");
-        let c = index.iter().find(|m| m.id == "c").expect("c is in the index");
+        let a = index
+            .iter()
+            .find(|m| m.id == "a")
+            .expect("a is in the index");
+        assert_eq!(
+            a.project_id, None,
+            "the index still names the deleted project"
+        );
+        let c = index
+            .iter()
+            .find(|m| m.id == "c")
+            .expect("c is in the index");
         assert_eq!(c.project_id, Some("proj-2".into()));
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -5692,7 +6127,7 @@ mod tests {
         // key "just for the settings page". Both existing readers must route
         // through key_hint, and no command may name a secret field in its
         // return type.
-        let src = include_str!("lib.rs");
+        let src = lib_source();
         for reader in ["async fn get_key_hint", "async fn get_terminal_key_status"] {
             let at = src
                 .find(reader)
@@ -5820,7 +6255,7 @@ mod tests {
         // in every build, so an inherited environment variable could send the
         // user's Scaleway key elsewhere. This test runs under cfg(test), where
         // the override is live — what it pins is that the source guards it.
-        let src = include_str!("lib.rs");
+        let src = lib_source();
         let at = src.find("fn base_url()").expect("base_url is gone");
         let body = &src[..at];
         assert!(
@@ -6137,7 +6572,7 @@ mod tests {
         // The interface has a button, but the command is the boundary: a
         // compromised webview can call it directly, and this is the one command
         // that fetches a script from the internet and runs it.
-        let src = include_str!("lib.rs");
+        let src = lib_source();
 
         // The leading newline matters: without it this finds the string literal
         // on this very line, and slices from inside the test instead of from
@@ -6228,7 +6663,7 @@ mod tests {
         // rather than calling them — which is weaker than exercising the
         // behaviour, and is the honest way to check a property about which
         // function is allowed to write a file.
-        let src = include_str!("lib.rs");
+        let src = lib_source();
 
         let at = src
             .find("fn history_dir_for")
@@ -6569,7 +7004,7 @@ mod tests {
     /// that lies cannot get past either.
     #[test]
     fn the_zip_reader_refuses_before_reading_and_caps_what_it_reads() {
-        let src = include_str!("lib.rs");
+        let src = lib_source();
         let at = src
             .find("fn zip_entry_string")
             .expect("zip_entry_string is gone");
@@ -6671,7 +7106,7 @@ mod tests {
             <w:p><w:r><w:t>Hello </w:t></w:r><w:r><w:t>world &amp; more</w:t></w:r></w:p>
             <w:p><w:r><w:t>Second paragraph</w:t></w:r></w:p>
         </w:body></w:document>"#;
-        let text = tidy_text(&xml_to_text(xml, &["w:p"]));
+        let text = tidy_text(&xml_to_text(xml, &["w:p"], DOCX_DROPPED));
         assert_eq!(text, "Hello world & more\nSecond paragraph");
     }
 
@@ -6686,21 +7121,21 @@ mod tests {
         // they contain no line break, so they are inline spacing rather than
         // pretty-printing. Getting this wrong collapsed "a & b" to "a& b".
         let xml = "<w:p><w:t>&amp; &lt; &gt; &quot; &apos;</w:t></w:p>";
-        assert_eq!(xml_to_text(xml, &["w:p"]), "& < > \" '\n");
+        assert_eq!(xml_to_text(xml, &["w:p"], DOCX_DROPPED), "& < > \" '\n");
 
         // Surrounded by real text, spacing is preserved — this is the shape
         // that actually occurs in a document.
         let xml = "<w:p><w:t>Smith &amp; Sons</w:t></w:p>";
-        assert_eq!(xml_to_text(xml, &["w:p"]), "Smith & Sons\n");
+        assert_eq!(xml_to_text(xml, &["w:p"], DOCX_DROPPED), "Smith & Sons\n");
 
         // Numeric character references, decimal and hexadecimal.
         let xml = "<w:p><w:t>&#38;&#x26;</w:t></w:p>";
-        assert_eq!(xml_to_text(xml, &["w:p"]), "&&\n");
+        assert_eq!(xml_to_text(xml, &["w:p"], DOCX_DROPPED), "&&\n");
 
         // An entity this parser has no definition for is kept verbatim rather
         // than silently removed.
         let xml = "<w:p><w:t>a &custom; b</w:t></w:p>";
-        assert_eq!(xml_to_text(xml, &["w:p"]), "a &custom; b\n");
+        assert_eq!(xml_to_text(xml, &["w:p"], DOCX_DROPPED), "a &custom; b\n");
     }
 
     #[test]
@@ -6709,7 +7144,7 @@ mod tests {
             <text:h>Title</text:h>
             <text:p>Body <text:span>text</text:span></text:p>
         </office:text></office:body>"#;
-        let text = tidy_text(&xml_to_text(xml, &["text:p", "text:h"]));
+        let text = tidy_text(&xml_to_text(xml, &["text:p", "text:h"], ODT_DROPPED));
         assert_eq!(text, "Title\nBody text");
     }
 
@@ -7996,7 +8431,7 @@ mod tests {
     fn the_fetch_resolves_each_hop_exactly_once() {
         // A structural guard on the shape of the bug rather than the branch:
         // two lookups where there should be one, with only the second pinned.
-        let src = include_str!("lib.rs");
+        let src = lib_source();
         let at = src.find("async fn fetch_as_data_url").unwrap();
         let body = &src[at..src[at..].find("\n}\n").unwrap() + at];
         let lookups = body.matches("vetted_ip(").count()

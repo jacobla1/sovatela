@@ -3,9 +3,9 @@
 
 fn main() {
     // Before anything else. Started with the helper flag, this process exists
-    // only to parse one PDF under a memory cap and hand back the text — it
+    // only to parse one document under a memory cap and hand back the text — it
     // must not open a window, touch the keychain, or build an HTTP client.
-    if scale_lib::pdf_sandbox::run_helper_if_requested() {
+    if scale_lib::doc_sandbox::run_helper_if_requested() {
         return;
     }
     scale_lib::run()

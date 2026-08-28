@@ -1,7 +1,7 @@
 //! End-to-end checks on the PDF extraction helper, run against the real
 //! binary rather than a stub.
 //!
-//! The unit tests in `pdf_sandbox` cover the parent's side — killing a child
+//! The unit tests in `doc_sandbox` cover the parent's side — killing a child
 //! that hangs, refusing one that floods, mapping exit statuses — using shell
 //! stubs, because provoking each of those with an actual PDF is unreliable.
 //! What a stub cannot show is the thing the whole module exists for: that a
@@ -15,10 +15,10 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-const HELPER_FLAG: &str = "--sovatela-extract-pdf-helper";
+const HELPER_FLAG: &str = "--sovatela-extract-doc-helper";
 
 /// Exit code the helper uses for an unreadable file. Kept in step with
-/// `pdf_sandbox::EXIT_UNREADABLE`, which is private.
+/// `doc_sandbox::EXIT_UNREADABLE`, which is private.
 const EXIT_UNREADABLE: i32 = 33;
 
 /// Frame every helper reply opens with, so the parent can tell the helper's
@@ -96,8 +96,16 @@ struct Run {
 }
 
 fn run_helper(pdf: &[u8]) -> Run {
+    run_helper_as("pdf", pdf)
+}
+
+fn run_helper_as(kind: &str, doc: &[u8]) -> Run {
     let mut child = Command::new(env!("CARGO_BIN_EXE_scale"))
         .arg(HELPER_FLAG)
+        // The helper takes the format as a token rather than the user's
+        // filename: the parent already knows the format, and argv is not the
+        // place to put a name that came from outside.
+        .arg(kind)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -105,7 +113,7 @@ fn run_helper(pdf: &[u8]) -> Run {
         .expect("could not start the helper");
 
     let mut stdin = child.stdin.take().unwrap();
-    let data = pdf.to_vec();
+    let data = doc.to_vec();
     // On its own thread: the helper may die before it has read the whole
     // document, and a bomb is larger than a pipe buffer.
     let writer = std::thread::spawn(move || {
@@ -213,7 +221,11 @@ fn deeply_nested_pdf_objects_do_not_take_the_application_down() {
     // Control first: the same document without the nesting must extract, so a
     // pass here cannot come from a fixture that was never readable.
     let control = run_helper(&build_pdf(b"BT /F1 24 Tf 72 700 Td (ok) Tj ET\n"));
-    assert_eq!(control.code, Some(0), "the control document was not readable");
+    assert_eq!(
+        control.code,
+        Some(0),
+        "the control document was not readable"
+    );
     assert!(control.stdout.contains("ok"));
 
     let depth = 20_000;
@@ -242,4 +254,88 @@ fn deeply_nested_pdf_objects_do_not_take_the_application_down() {
         elapsed < std::time::Duration::from_secs(30),
         "a {depth}-deep PDF took {elapsed:?}"
     );
+}
+
+/// Build a `.docx` with `count` header parts, each inflating to `mb` megabytes.
+/// Every part is individually legal and well inside the per-entry cap; only the
+/// total is hostile, which is the shape that defeated the old per-entry bound.
+fn docx_with_many_headers(count: usize, mb: usize) -> Vec<u8> {
+    use std::io::Write as _;
+    let ns = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
+    let filler = "A".repeat(mb * 1024 * 1024);
+    let hdr = format!(r#"<w:hdr {ns}><w:p><w:r><w:t>{filler}</w:t></w:r></w:p></w:hdr>"#);
+    let body = format!(
+        r#"<w:document {ns}><w:body><w:p><w:r><w:t>the body survived</w:t></w:r></w:p></w:body></w:document>"#
+    );
+
+    let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let opts = zip::write::SimpleFileOptions::default();
+    w.start_file("word/document.xml", opts).unwrap();
+    w.write_all(body.as_bytes()).unwrap();
+    for i in 1..=count {
+        w.start_file(format!("word/header{i}.xml"), opts).unwrap();
+        w.write_all(hdr.as_bytes()).unwrap();
+    }
+    w.finish().unwrap().into_inner()
+}
+
+#[test]
+fn a_word_document_is_extracted_in_the_helper_too() {
+    // 1.5.5 sandboxed PDFs and left the zip formats in the main process, in the
+    // same release that gave those formats more parts to read. This asserts the
+    // helper handles them at all.
+    use std::io::Write as _;
+    let ns = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
+    let body = format!(
+        r#"<w:document {ns}><w:body><w:p><w:r><w:t>Smith &amp; Sons quarterly</w:t></w:r></w:p></w:body></w:document>"#
+    );
+    let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    w.start_file(
+        "word/document.xml",
+        zip::write::SimpleFileOptions::default(),
+    )
+    .unwrap();
+    w.write_all(body.as_bytes()).unwrap();
+    let docx = w.finish().unwrap().into_inner();
+
+    let run = run_helper_as("docx", &docx);
+    assert_eq!(run.code, Some(0), "a valid .docx should extract cleanly");
+    assert!(
+        run.stdout.contains("Smith & Sons quarterly"),
+        "expected the document's text, got {:?}",
+        run.stdout
+    );
+}
+
+#[test]
+fn a_docx_with_many_large_parts_cannot_take_the_application_down() {
+    // The 1.5.5 regression: an 823 KB file with 40 headers reached 1.95 GB
+    // resident and 4.5 seconds, in the main process. Bounds inside the
+    // extractor fixed that; this asserts the *other* half — that even if a
+    // bound is wrong or a future format gets a new one wrong, the process that
+    // pays for it is expendable.
+    let docx = docx_with_many_headers(80, 12);
+    assert!(
+        docx.len() < 20 * 1024 * 1024,
+        "the fixture must pass the upload limit to prove anything: {} bytes",
+        docx.len()
+    );
+
+    let started = std::time::Instant::now();
+    let run = run_helper_as("docx", &docx);
+    let elapsed = started.elapsed();
+
+    // Extracted or refused are both fine. Hanging is not, and neither is this
+    // test process being the thing that dies.
+    assert!(
+        elapsed < std::time::Duration::from_secs(60),
+        "took {elapsed:?} — the deadline did not hold"
+    );
+    if run.code == Some(0) {
+        assert!(
+            run.stdout.len() < 32 * 1024 * 1024,
+            "returned {} bytes of text from an 80-part file",
+            run.stdout.len()
+        );
+    }
 }

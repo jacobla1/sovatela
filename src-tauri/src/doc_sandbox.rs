@@ -1,4 +1,4 @@
-//! PDF text extraction in a memory-capped, killable child process.
+//! Document text extraction in a memory-capped, killable child process.
 //!
 //! A PDF's page content is stored as compressed streams, and a small file may
 //! legitimately declare very large ones. `pdf-extract` inflates them with no
@@ -8,9 +8,17 @@
 //! and an out-of-memory kill from the operating system does not unwind either.
 //! Whatever the parser does to itself, it does to the whole application.
 //!
-//! So extraction runs somewhere expendable. The application re-executes its own
-//! binary with [`HELPER_FLAG`], feeds the document in on stdin and reads the
-//! text back from stdout. If the child dies — from the cap below, from the
+//! The same reasoning applies to the zip formats. A `.docx` is an archive, and
+//! 1.5.5 began reading its headers and footers as well as its body — any number
+//! of parts, each legal on its own. Bounds were added for that in 1.5.6, and
+//! bounds are worth having; but a bound is a number somebody chose, and the
+//! next format or the next feature gets to choose again. A process that cannot
+//! exceed its allowance whatever the parser does is the property that does not
+//! need revisiting.
+//!
+//! So extraction runs somewhere expendable — for every format, not just PDF.
+//! The application re-executes its own binary with [`HELPER_FLAG`] and a kind,
+//! feeds the document in on stdin and reads the text back from stdout. If the child dies — from the cap below, from the
 //! deadline, or from a parser bug — the parent sees a failed child and reports
 //! an unreadable document. Nothing else in the application notices.
 //!
@@ -41,10 +49,10 @@ use std::time::{Duration, Instant};
 /// argv marker that turns a run of this binary into the extraction helper.
 /// Deliberately not a plausible file name: it is checked before anything else
 /// starts, so it must not collide with an argument the platform might pass.
-pub const HELPER_FLAG: &str = "--sovatela-extract-pdf-helper";
+pub const HELPER_FLAG: &str = "--sovatela-extract-doc-helper";
 
-/// Live-bytes ceiling inside the helper. A real 20 MB PDF — the largest the
-/// upload limit permits — extracts well inside this; a decompression bomb
+/// Live-bytes ceiling inside the helper. A real 20 MB document — the largest
+/// the upload limit permits — extracts well inside this; a decompression bomb
 /// passes it almost immediately.
 pub const HELPER_MEMORY_CAP: usize = 768 * 1024 * 1024;
 
@@ -77,6 +85,59 @@ const READ_GRACE: Duration = Duration::from_secs(10);
 /// summary and exits 0. Unframed, that summary came back as the contents of
 /// the user's document.
 const REPLY_MAGIC: &[u8] = b"SOVATELA-PDF/1\n";
+
+/// Which extractor the helper should run.
+///
+/// Passed as a token rather than the user's filename: the parent already knows
+/// the format, and argv is not the place to put a name that came from outside.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Pdf,
+    Docx,
+    Odt,
+}
+
+impl Kind {
+    pub fn from_filename(name: &str) -> Option<Self> {
+        let lower = name.to_lowercase();
+        if lower.ends_with(".pdf") {
+            Some(Kind::Pdf)
+        } else if lower.ends_with(".docx") {
+            Some(Kind::Docx)
+        } else if lower.ends_with(".odt") {
+            Some(Kind::Odt)
+        } else {
+            None
+        }
+    }
+
+    fn token(self) -> &'static str {
+        match self {
+            Kind::Pdf => "pdf",
+            Kind::Docx => "docx",
+            Kind::Odt => "odt",
+        }
+    }
+
+    fn from_token(t: &str) -> Option<Self> {
+        match t {
+            "pdf" => Some(Kind::Pdf),
+            "docx" => Some(Kind::Docx),
+            "odt" => Some(Kind::Odt),
+            _ => None,
+        }
+    }
+
+    /// A filename the in-process extractor will dispatch on. The helper does
+    /// not pass the user's own name through, so it supplies one.
+    fn stand_in_name(self) -> &'static str {
+        match self {
+            Kind::Pdf => "document.pdf",
+            Kind::Docx => "document.docx",
+            Kind::Odt => "document.odt",
+        }
+    }
+}
 
 // `usize::MAX` means "no limit", and is the value in the application proper.
 static LIMIT: AtomicUsize = AtomicUsize::new(usize::MAX);
@@ -212,6 +273,15 @@ pub fn run_helper_if_requested() -> bool {
         Some(a) if a == HELPER_FLAG => {}
         _ => return false,
     }
+    // The kind is ours, not the user's, so an unrecognised one is a bug in the
+    // parent rather than a bad document — but it still exits rather than
+    // guessing at a format.
+    let Some(kind) = args
+        .next()
+        .and_then(|a| a.to_str().and_then(Kind::from_token))
+    else {
+        std::process::exit(EXIT_UNREADABLE);
+    };
 
     let mut input = Vec::new();
     if std::io::stdin().read_to_end(&mut input).is_err() {
@@ -219,12 +289,19 @@ pub fn run_helper_if_requested() -> bool {
     }
 
     set_memory_cap(HELPER_MEMORY_CAP);
-    let result = std::panic::catch_unwind(|| pdf_extract::extract_text_from_mem(&input));
+    // The same extraction the application would have run in-process, with the
+    // cap and the deadline around it. Sharing the code rather than duplicating
+    // it is the point: the bounds inside `document_text` are unit-tested where
+    // they are, and this adds a ceiling those bounds cannot be argued out of.
+    let result = std::panic::catch_unwind(|| crate::document_text(kind.stand_in_name(), &input));
 
     let (code, payload) = match result {
         Ok(Ok(text)) => (0, text),
-        Ok(Err(e)) => (EXIT_UNREADABLE, format!("could not parse this PDF: {e}")),
-        Err(_) => (EXIT_UNREADABLE, "could not parse this PDF".to_string()),
+        Ok(Err(e)) => (EXIT_UNREADABLE, e),
+        Err(_) => (
+            EXIT_UNREADABLE,
+            "this document could not be read".to_string(),
+        ),
     };
     let out = std::io::stdout();
     let mut out = out.lock();
@@ -259,18 +336,18 @@ impl Outcome {
             // file: it is not going to be read. Neither says "the application
             // is in trouble", because it is not — this is why the work is in a
             // child.
-            Outcome::TimedOut => Err("this PDF took too long to read, so it was stopped. \
+            Outcome::TimedOut => Err("this document took too long to read, so it was stopped. \
                  It may be unusually large or complex."
                 .into()),
-            Outcome::Died => Err("this PDF could not be read — it asks for more memory than \
-                 a document should need. It may be corrupt, or built to be awkward."
+            Outcome::Died => Err("this document could not be read — it asks for more memory \
+                 than a document should need. It may be corrupt, or built to be awkward."
                 .into()),
             // Not the user's problem and not their file's: the application
             // failed to start its own helper. Saying "unreadable PDF" here
             // would send someone looking at a document that is fine.
-            Outcome::NotHelper => {
-                Err("the PDF reader did not start correctly, so this file was not read.".into())
-            }
+            Outcome::NotHelper => Err(
+                "the document reader did not start correctly, so this file was not read.".into(),
+            ),
         }
     }
 }
@@ -283,7 +360,7 @@ pub fn classify(exit_code: Option<i32>, stdout: String) -> Outcome {
         Some(EXIT_UNREADABLE) => {
             let msg = stdout.trim().to_string();
             Outcome::Unreadable(if msg.is_empty() {
-                "could not parse this PDF".to_string()
+                "this document could not be read".to_string()
             } else {
                 msg
             })
@@ -328,15 +405,16 @@ fn default_helper_command() -> Result<Command, String> {
 ///
 /// Blocks. Callers are on a blocking task, because the parse is seconds of CPU
 /// for a large document either way.
-pub fn extract_text(bytes: &[u8]) -> Result<String, String> {
-    run(bytes, HELPER_TIME_LIMIT).into_result()
+pub fn extract_text(kind: Kind, bytes: &[u8]) -> Result<String, String> {
+    run(kind, bytes, HELPER_TIME_LIMIT).into_result()
 }
 
-fn run(bytes: &[u8], time_limit: Duration) -> Outcome {
+fn run(kind: Kind, bytes: &[u8], time_limit: Duration) -> Outcome {
     let mut cmd = match helper_command() {
         Ok(c) => c,
         Err(e) => return Outcome::Unreadable(e),
     };
+    cmd.arg(kind.token());
     let mut child = match cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -347,7 +425,7 @@ fn run(bytes: &[u8], time_limit: Duration) -> Outcome {
         .spawn()
     {
         Ok(c) => c,
-        Err(e) => return Outcome::Unreadable(format!("could not start the PDF reader: {e}")),
+        Err(e) => return Outcome::Unreadable(format!("could not start the document reader: {e}")),
     };
 
     // Feeding stdin and draining stdout both have to be off this thread, or a
@@ -375,7 +453,9 @@ fn run(bytes: &[u8], time_limit: Duration) -> Outcome {
     std::thread::spawn(move || {
         let mut buf = Vec::new();
         if let Some(pipe) = stdout.take() {
-            let _ = pipe.take(MAX_HELPER_OUTPUT as u64 + 1).read_to_end(&mut buf);
+            let _ = pipe
+                .take(MAX_HELPER_OUTPUT as u64 + 1)
+                .read_to_end(&mut buf);
         }
         let _ = tx.send(buf);
     });
@@ -428,7 +508,7 @@ fn run(bytes: &[u8], time_limit: Duration) -> Outcome {
     };
     match String::from_utf8(body.to_vec()) {
         Ok(text) => classify(status.code(), text),
-        Err(_) => Outcome::Unreadable("could not parse this PDF".into()),
+        Err(_) => Outcome::Unreadable("this document could not be read".into()),
     }
 }
 
@@ -469,7 +549,9 @@ mod tests {
             "-c",
             "cat >/dev/null; printf 'SOVATELA-PDF/1\\nhello from the child'",
         ]);
-        let got = with_stub(&spec, || run(b"anything", Duration::from_secs(10)));
+        let got = with_stub(&spec, || {
+            run(Kind::Pdf, b"anything", Duration::from_secs(10))
+        });
         assert_eq!(got, Outcome::Extracted("hello from the child".into()));
     }
 
@@ -480,7 +562,9 @@ mod tests {
         // successful extraction that happened to find nothing — which would
         // send an empty document to the model and say nothing was wrong.
         let spec = stub(&["/bin/sh", "-c", "cat >/dev/null; kill -ABRT $$"]);
-        let got = with_stub(&spec, || run(b"anything", Duration::from_secs(10)));
+        let got = with_stub(&spec, || {
+            run(Kind::Pdf, b"anything", Duration::from_secs(10))
+        });
         assert_eq!(got, Outcome::Died);
         assert!(got.into_result().is_err());
     }
@@ -493,7 +577,9 @@ mod tests {
             "-c",
             "cat >/dev/null; printf 'SOVATELA-PDF/1\\ncould not parse this PDF: bad xref'; exit 33",
         ]);
-        let got = with_stub(&spec, || run(b"anything", Duration::from_secs(10)));
+        let got = with_stub(&spec, || {
+            run(Kind::Pdf, b"anything", Duration::from_secs(10))
+        });
         assert_eq!(
             got,
             Outcome::Unreadable("could not parse this PDF: bad xref".into())
@@ -505,7 +591,9 @@ mod tests {
     fn a_child_that_hangs_is_killed_and_the_parent_returns() {
         let spec = stub(&["/bin/sh", "-c", "cat >/dev/null; sleep 60"]);
         let started = Instant::now();
-        let got = with_stub(&spec, || run(b"anything", Duration::from_millis(300)));
+        let got = with_stub(&spec, || {
+            run(Kind::Pdf, b"anything", Duration::from_millis(300))
+        });
         assert_eq!(got, Outcome::TimedOut);
         assert!(
             started.elapsed() < Duration::from_secs(10),
@@ -520,7 +608,9 @@ mod tests {
         // `yes` writes without end. The read is bounded, so the parent stops
         // rather than growing to hold whatever the child produces.
         let spec = stub(&["/bin/sh", "-c", "cat >/dev/null; yes AAAAAAAAAAAAAAAA"]);
-        let got = with_stub(&spec, || run(b"anything", Duration::from_secs(5)));
+        let got = with_stub(&spec, || {
+            run(Kind::Pdf, b"anything", Duration::from_secs(5))
+        });
         assert!(
             matches!(got, Outcome::Died | Outcome::TimedOut),
             "a flooding child should not be reported as a successful extraction: {got:?}"
@@ -538,7 +628,7 @@ mod tests {
             "printf 'SOVATELA-PDF/1\\n'; wc -c | tr -d ' \\n'",
         ]);
         let big = vec![b'x'; 8 * 1024 * 1024];
-        let got = with_stub(&spec, || run(&big, Duration::from_secs(30)));
+        let got = with_stub(&spec, || run(Kind::Pdf, &big, Duration::from_secs(30)));
         assert_eq!(got, Outcome::Extracted(format!("{}", 8 * 1024 * 1024)));
     }
 
@@ -555,7 +645,9 @@ mod tests {
             "-c",
             "cat >/dev/null; printf 'running 0 tests\n\ntest result: ok.'",
         ]);
-        let got = with_stub(&spec, || run(b"anything", Duration::from_secs(10)));
+        let got = with_stub(&spec, || {
+            run(Kind::Pdf, b"anything", Duration::from_secs(10))
+        });
         assert_eq!(got, Outcome::NotHelper);
         let err = got.into_result().unwrap_err();
         assert!(
@@ -567,8 +659,14 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn a_reply_missing_its_frame_is_refused_even_when_it_looks_like_text() {
-        let spec = stub(&["/bin/sh", "-c", "cat >/dev/null; printf 'Invoice total 42 EUR'"]);
-        let got = with_stub(&spec, || run(b"anything", Duration::from_secs(10)));
+        let spec = stub(&[
+            "/bin/sh",
+            "-c",
+            "cat >/dev/null; printf 'Invoice total 42 EUR'",
+        ]);
+        let got = with_stub(&spec, || {
+            run(Kind::Pdf, b"anything", Duration::from_secs(10))
+        });
         assert_eq!(
             got,
             Outcome::NotHelper,
