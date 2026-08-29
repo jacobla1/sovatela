@@ -3,7 +3,7 @@
   import { knownProjectId } from "./projects.js";
   import { invoke, Channel } from "@tauri-apps/api/core";
   import { openUrl } from "@tauri-apps/plugin-opener";
-  import { save } from "@tauri-apps/plugin-dialog";
+  import { ask } from "@tauri-apps/plugin-dialog";
   import { cleanText, hasVisibleText, parseParts, renderMd } from "./text.js";
   import Artifact from "./Artifact.svelte";
   import Icon from "./Icon.svelte";
@@ -20,6 +20,8 @@
     isExtractableDocument,
     isLegacyDocument,
     legacyDocumentHint,
+    isTemplateDocument,
+    templateDocumentHint,
     extractDocument,
   } from "./files.js";
 
@@ -447,6 +449,20 @@
   }
 
   async function deleteConversation(id) {
+    // Deleting a project asks first, and that keeps its chats. Deleting a chat
+    // removes it and its images from disk with nothing to undo it, and asked
+    // nothing at all — a stray click, or one Enter on a button the keyboard
+    // could reach without showing it, and an hour's conversation was gone.
+    //
+    // The native dialog, because window.confirm is unreliable in a Tauri
+    // webview — the same reason the project editor uses it.
+    const meta = conversations.find((c) => c.id === id);
+    const ok = await ask("This cannot be undone.", {
+      title: `Delete “${meta?.title || "Untitled"}”?`,
+      kind: "warning",
+    });
+    if (!ok) return;
+
     // Cancel and unregister an in-flight run before removing the chat.
     if (runningIds[id]) {
       stoppedRequests.add(runningIds[id]);
@@ -520,11 +536,12 @@
       const m = dataUrl.match(/^data:image\/([a-z0-9.+-]+)/i);
       let ext = (m ? m[1] : "png").toLowerCase();
       if (ext === "jpeg") ext = "jpg";
-      const path = await save({
-        defaultPath: `generated-image.${ext}`,
-        filters: [{ name: "Image", extensions: [ext] }],
+      // The backend opens the dialog and checks the bytes really are an
+      // image, so there is no path for this side to get wrong.
+      await invoke("save_image", {
+        dataUrl,
+        suggestedName: `generated-image.${ext}`,
       });
-      if (path) await invoke("save_image", { dataUrl, path });
     } catch (e) {
       console.error("Could not save the image:", e);
     }
@@ -551,6 +568,11 @@
           }
           const dataUrl = await readAs(file, "dataURL");
           pending.push({ kind: "image", name: file.name, dataUrl });
+        } else if (isTemplateDocument(file)) {
+          // Checked before extraction, because a `.dotx` is a design with no
+          // content to ask about — the intent is unambiguous, and the answer
+          // is a different screen rather than a different file.
+          pending.push({ kind: "error", name: templateDocumentHint(file) });
         } else if (isExtractableDocument(file)) {
           // PDF / .docx / .odt → the Rust backend extracts the real text.
           if (file.size > MAX_DOC_BYTES) {
@@ -784,7 +806,43 @@
         `Never attach a data label to every point when labels could collide ` +
         `with marks or each other — label the line endpoints or key points ` +
         `only, or use hover tooltips. ` +
-        `Use a \`\`\`svg block for static vector graphics. On any ` +
+        `Use a \`\`\`svg block for static vector graphics. ` +
+        // Documents. Kept short deliberately: this costs tokens on every
+        // request, so it names the three fences and what goes inside them and
+        // stops. What the conversion does and does not carry is on the
+        // artifact itself, where someone is looking at the result.
+        `When the user asks for a document, spreadsheet or slide deck they can ` +
+        `keep, reply with a single \`\`\`docx, \`\`\`xlsx or \`\`\`pptx block and ` +
+        `they can save it as a real file. Write Markdown inside \`\`\`docx ` +
+        `(headings, paragraphs, lists, tables, bold and italic all carry over); ` +
+        `a table or comma-separated rows inside \`\`\`xlsx, with a header row ` +
+        `first and plain unformatted numbers so they arrive as numbers; and ` +
+        `Markdown inside \`\`\`pptx where the *top* heading level starts each ` +
+        `slide and anything deeper is content on it, so use one level for ` +
+        `slides and a deeper one for a subtitle; the lines under a heading ` +
+        `become its bullets. Never write the file format itself ` +
+        `— just the Markdown, and the app builds the file. ` +
+        // Asked to "create a docx", the model reaches for the file-writing
+        // tool and passes Markdown under a .docx name. The backend now builds
+        // a real document in that case rather than writing text under a lying
+        // extension; saying so here saves a wasted turn discovering it.
+        `The same applies when you write a file into the workspace folder: ` +
+        `give it a .docx, .xlsx or .pptx name with Markdown as the content and ` +
+        `a real document is built from it. ` +
+        // "Make it look like this one" is the obvious thing to try, and
+        // attaching a document cannot do it: an attachment is extracted to
+        // text and the design is never read. Without this the model agrees,
+        // writes the content, and the user gets a file in the wrong design
+        // with nothing saying why. The answer is a different screen, and it
+        // is a better answer than people expect — the writer copies a
+        // template's styles and never its text, so the document they already
+        // like works as the template unchanged.
+        `An attached document is read as text only, never for its design. If ` +
+        `someone wants generated files to look like a document they already ` +
+        `have, tell them to add that file in Settings ▸ Document templates: ` +
+        `the app takes its styles, headers and page setup and never its text, ` +
+        `so an existing report works as it is. ` +
+        `On any ` +
         `code block's opening fence, add a short title after the language ` +
         `(e.g. \`\`\`html Bar chart) to label the artifact. You cannot generate ` +
         `photographic images yourself — this app has a separate image-generation ` +

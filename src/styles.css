@@ -679,8 +679,22 @@ button.primary:disabled {
   opacity: 0;
 }
 
-.history-item:hover .history-del {
+/* Hidden until the row is hovered — and until it is *focused*, which it was
+   not. The button stays in the tab order whether it can be seen or not, so
+   tabbing through the chat list put focus on an invisible control every other
+   press: the highlight appeared to vanish, and Enter deleted the chat that had
+   been highlighted a moment earlier. A control that can be reached must be
+   visible when it is reached. */
+.history-item:hover .history-del,
+.history-del:focus-visible {
   opacity: 1;
+}
+
+.history-del:focus-visible,
+.history-open:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: 4px;
 }
 
 .history-del:hover {
@@ -2722,4 +2736,36 @@ button.mini:hover {
   font-size: var(--fs-sm);
   color: var(--muted);
   line-height: 1.5;
+}
+
+/* ---------- Document templates (Settings) ---------- */
+
+.template-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  padding: var(--sp-2) 0;
+  border-bottom: 1px solid var(--border-control);
+}
+.template-row:last-of-type {
+  border-bottom: none;
+}
+.template-what {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 12rem;
+}
+/* The file's own name, so it is recognisable a month later. */
+.template-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85em;
+  word-break: break-all;
+}
+.template-actions {
+  display: flex;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
 }

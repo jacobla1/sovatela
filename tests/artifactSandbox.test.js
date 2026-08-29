@@ -1,11 +1,32 @@
-import { describe, it, expect } from "vitest";
-import { render } from "@testing-library/svelte";
+import { describe, it, expect, vi } from "vitest";
+import { render, waitFor } from "@testing-library/svelte";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import Artifact from "../src/lib/Artifact.svelte";
 
 const repo = resolve(import.meta.dirname, "..");
+
+// The frame is staged through the backend and loaded by URL, so the document
+// the user would see is what gets handed to `stage_artifact`. Captured here,
+// because it is the thing worth asserting on.
+const h = vi.hoisted(() => ({ staged: [] }));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: async (cmd, args) => {
+    if (cmd !== "stage_artifact") throw new Error(`unexpected command: ${cmd}`);
+    h.staged.push(args.html);
+    return "artifact://localhost/0123456789abcdef";
+  },
+}));
+
+// The policy the frame is actually served with now lives in Rust, because a
+// header is the only place it cannot be intersected away by the window's.
+const artifactCsp = readFileSync(join(repo, "src-tauri/src/lib.rs"), "utf8")
+  .split('const ARTIFACT_CSP: &str = "')[1]
+  .split('";')[0]
+  .replace(/\\\s*\n/g, "")
+  .replace(/\s+/g, " ")
+  .trim();
 
 // SECURITY.md tells readers that model-generated code "cannot reach the Tauri
 // IPC bridge, the credential store, your filesystem, or the network", and
@@ -20,15 +41,16 @@ const repo = resolve(import.meta.dirname, "..");
 // `connect-src` to make a fetch work, and not realising what it cost.
 
 describe("artifact frame is sandboxed against the app", () => {
-  function frame(code = "<p>hi</p>", lang = "html") {
+  async function frame(code = "<p>hi</p>", lang = "html") {
     const { container } = render(Artifact, { props: { lang, code } });
-    const el = container.querySelector("iframe");
-    expect(el, "artifact rendered no iframe").toBeTruthy();
-    return el;
+    // The frame appears once the document has been staged, so it is loaded by
+    // URL rather than inlined — see below for why that matters.
+    await waitFor(() => expect(container.querySelector("iframe")).toBeTruthy());
+    return container.querySelector("iframe");
   }
 
-  it("runs scripts but denies same-origin", () => {
-    const sandbox = frame().getAttribute("sandbox");
+  it("runs scripts but denies same-origin", async () => {
+    const sandbox = (await frame()).getAttribute("sandbox");
     expect(sandbox).toBeTruthy();
     const tokens = sandbox.split(/\s+/).filter(Boolean);
     expect(tokens).toContain("allow-scripts");
@@ -38,8 +60,11 @@ describe("artifact frame is sandboxed against the app", () => {
     expect(tokens).not.toContain("allow-same-origin");
   });
 
-  it("grants nothing else that would reach the host", () => {
-    const tokens = frame().getAttribute("sandbox").split(/\s+/).filter(Boolean);
+  it("grants nothing else that would reach the host", async () => {
+    const tokens = (await frame())
+      .getAttribute("sandbox")
+      .split(/\s+/)
+      .filter(Boolean);
     for (const forbidden of [
       "allow-same-origin",
       "allow-top-navigation",
@@ -55,36 +80,56 @@ describe("artifact frame is sandboxed against the app", () => {
     }
   });
 
-  it("carries a deny-by-default CSP that permits no network of any kind", () => {
-    const doc = frame().getAttribute("srcdoc");
-    // Read the policy itself rather than scanning the whole document: the
-    // frame's stylesheet legitimately contains `*` and `::-webkit-scrollbar`,
-    // which look like wildcards to a naive match.
-    const policy = doc.match(
-      /<meta http-equiv="Content-Security-Policy" content="([^"]+)"/,
-    )?.[1];
-    expect(policy, "frame carries no CSP").toBeTruthy();
-    expect(policy).toMatch(/default-src\s+'none'/);
-    // There is deliberately no connect-src, so default-src 'none' catches
-    // fetch, XHR, WebSocket and EventSource together.
-    expect(policy).not.toMatch(/connect-src/);
-    // No directive may name a scheme or host that leaves the frame, and no
-    // wildcard source may widen one. img/font/media are data: only.
-    expect(policy).not.toMatch(/https?:/);
-    expect(policy).not.toMatch(/\*/);
+  it("is loaded over a registered scheme, never with srcdoc", async () => {
+    // This is not a style preference, it is the defect. A `srcdoc` document is
+    // a local scheme: it has no origin, so it inherits the window's CSP and
+    // cannot widen what it inherited. When the window dropped 'unsafe-inline'
+    // from script-src in 1.5.3, every artifact inherited that — model-written
+    // JavaScript stopped running, and so did the height reporter, so every
+    // frame sat at its initial height. `devCsp` still allows inline, so
+    // `tauri dev` could not show it, and no test here could either.
+    const el = await frame();
+    expect(el.getAttribute("srcdoc"), "back on srcdoc: artifacts will not run").toBeNull();
+    expect(el.getAttribute("src")).toMatch(/^(artifact:|http:\/\/artifact\.localhost)/);
   });
 
-  it("puts generated code inside the frame, never in the parent document", () => {
+  it("is served a deny-by-default CSP that permits no network of any kind", () => {
+    // Read the policy the backend sends, rather than the copy in the document:
+    // the header is what applies, and a header cannot be intersected away by
+    // the embedder the way an inherited policy narrows a frame's own meta tag.
+    expect(artifactCsp).toMatch(/default-src\s+'none'/);
+    // There is deliberately no connect-src, so default-src 'none' catches
+    // fetch, XHR, WebSocket and EventSource together.
+    expect(artifactCsp).not.toMatch(/connect-src/);
+    // No directive may name a scheme or host that leaves the frame, and no
+    // wildcard source may widen one. img/font/media are data: only.
+    expect(artifactCsp).not.toMatch(/https?:/);
+    expect(artifactCsp).not.toMatch(/\*/);
+  });
+
+  it("still states its own policy in the document it stages", async () => {
+    // Belt to the header's braces: if the frame is ever loaded some other way,
+    // it should still arrive with a policy rather than none.
+    await frame();
+    const policy = h.staged
+      .at(-1)
+      .match(/<meta http-equiv="Content-Security-Policy" content="([^"]+)"/)?.[1];
+    expect(policy, "the staged document carries no CSP").toBeTruthy();
+    expect(policy).toMatch(/default-src\s+'none'/);
+  });
+
+  it("puts generated code inside the frame, never in the parent document", async () => {
+    h.staged.length = 0;
     const payload = "<img src=x onerror=alert(1)>";
     const { container } = render(Artifact, {
       props: { lang: "html", code: payload },
     });
-    // The payload appears only as srcdoc text on the sandboxed frame. If it
-    // ever reaches the parent DOM as markup, the sandbox is irrelevant.
+    await waitFor(() => expect(h.staged.length).toBe(1));
+    // The payload reaches the sandboxed frame and nothing else. If it ever
+    // lands in the parent DOM as markup, the sandbox is irrelevant.
     expect(container.querySelector("img")).toBeNull();
-    expect(container.querySelector("iframe").getAttribute("srcdoc")).toContain(
-      "onerror",
-    );
+    expect(container.innerHTML).not.toContain("onerror");
+    expect(h.staged[0]).toContain("onerror");
   });
 
   it("renders non-renderable languages as text, not as a frame", () => {
@@ -93,6 +138,33 @@ describe("artifact frame is sandboxed against the app", () => {
     });
     expect(container.querySelector("iframe")).toBeNull();
     expect(container.querySelector("pre")).toBeTruthy();
+  });
+});
+
+describe("the window lets the artifact scheme be framed, and nothing else new", () => {
+  const conf = JSON.parse(
+    readFileSync(join(repo, "src-tauri/tauri.conf.json"), "utf8"),
+  );
+
+  it("permits the artifact scheme in frame-src, in both spellings", () => {
+    // Windows serves a registered scheme as http://<scheme>.localhost, and
+    // everywhere else it is <scheme>://. Missing either is a blank panel on
+    // one platform only.
+    for (const key of ["csp", "devCsp"]) {
+      const frameSrc = conf.app.security[key].match(/frame-src ([^;]+)/)[1];
+      expect(frameSrc, `${key} cannot frame the artifact scheme`).toContain("artifact:");
+      expect(frameSrc, `${key} breaks on Windows`).toContain("http://artifact.localhost");
+    }
+  });
+
+  it("does not let the artifact scheme anywhere it is not needed", () => {
+    // Framing is the only thing the scheme is for. Reaching it from script-,
+    // connect- or img-src would make it an ordinary origin the interface could
+    // talk to, which is the opposite of the point.
+    for (const directive of ["default-src", "script-src", "connect-src", "img-src"]) {
+      const value = conf.app.security.csp.match(new RegExp(`${directive} ([^;]+)`))?.[1] ?? "";
+      expect(value, `${directive} reaches the artifact scheme`).not.toContain("artifact");
+    }
   });
 });
 

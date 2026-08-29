@@ -5,8 +5,9 @@
 
   const features = [
     ["message", "Chat", "Talk to GLM-5.2 about anything."],
-    ["paperclip", "Upload files & images", "Attach documents (PDF, Word, ODT), text, code, or images and ask about them."],
+    ["paperclip", "Upload files & images", "Attach documents (PDF, Word, ODT, Excel, PowerPoint), text, code, or images and ask about them."],
     ["panel", "Create artifacts", "Ask for a chart, diagram, or small app — it renders in a panel on the right."],
+    ["file", "Write documents", "Ask for a Word document, spreadsheet or slide deck — see what it will contain, then save it or have it written into your workspace folder."],
     ["image", "Generate images", "Turn on the image button in the message bar to create an image from a prompt — with FLUX, you can attach a picture for it to work from."],
     ["globe", "Search the web", "Turn on the web-search button for current, cited information."],
     ["bookmark", "Memory", "Tell it about you once, and it remembers useful facts across chats (you approve each)."],
@@ -81,6 +82,35 @@
       strongest, while Linkup keeps data in the EU but runs on Microsoft Azure
       (a US company) — Settings explains each and
       links their docs. <em>(Settings → Web search)</em>
+    </li>
+  </ul>
+
+  <h3 class="guide-sub">Document templates</h3>
+  <ul class="guide-facts">
+    <li>
+      <strong>Use a document you already have.</strong> Point at any Word
+      document or presentation and everything generated comes out in its
+      design — its fonts, colours, headings, page size, and any header or
+      footer. <strong>Its text, its slides and its pictures stay behind</strong>,
+      so last quarter's report works exactly as it is: there is nothing to
+      empty out first. With none set, a plain built-in design is used.
+      <em>(Settings → Document templates)</em>
+    </li>
+    <li>
+      <strong>Set it in Settings, not by attaching it.</strong> Attaching a file
+      to a message reads its <em>text</em>, which is the opposite of what you
+      want from a template — so "make it look like this one" needs the setting.
+      The header and footer are the one part of a template that does carry its
+      wording: they are page furniture, so a letterhead reading
+      <em>Q3 2025 — Confidential</em> will appear on what you generate.
+    </li>
+    <li>
+      <strong>Some templates are refused, and the message says which one and
+      why.</strong> Macros, a link to something outside the file, or a field
+      that fetches when the document is opened: each of those would otherwise
+      travel to whoever you send the document to, and fire on their machine
+      rather than yours. Opening the file in Word and saving it again as a
+      plain .docx or .pptx clears most of them.
     </li>
   </ul>
 </div>

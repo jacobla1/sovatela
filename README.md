@@ -65,14 +65,33 @@ endpoint for chat; see the Roadmap.
 ## Features
 
 - **Streaming chat** with GLM-5.2.
-- **File uploads** — attach **documents** (PDF, .docx, .odt — text extracted
-  in Rust), text/code (folded into context), and **images** (routed to the
-  vision model). Nothing is uploaded to the developer; if chat recording is on,
-  an attachment is saved beside the conversation like any other message
-  content. Word and ODT
-  extraction covers the document body; headers, footers and notes live in
-  separate parts of those formats and are not read (a PDF of the same document
-  does include them).
+- **File uploads** — attach **documents** (PDF, `.docx`, `.odt`, `.pptx`,
+  `.xlsx` — text extracted in Rust, in a separate process that is allowed to
+  die so a hostile file cannot take the app with it), text/code (folded into
+  context), and **images** (routed to the vision model). Nothing is uploaded to
+  the developer; if chat recording is on, an attachment is saved beside the
+  conversation like any other message content.
+
+  Word and OpenDocument extraction covers the body **and** the headers,
+  footers, footnotes and endnotes. Text deleted with Track Changes is left
+  behind rather than sent. Comments are not read. A presentation is read in
+  slide order; a spreadsheet keeps its rows and columns, and its sheet names.
+
+- **Documents the assistant can write** — ask for a Word document, a
+  spreadsheet or a slide deck and it comes back as a real file you can open,
+  built from Markdown by the app rather than written as a file format by the
+  model. Save it from the conversation, or have it written into your workspace
+  folder.
+
+  Supply your own `.docx`, `.dotx`, `.pptx` or `.potx` in *Settings → Document
+  templates* and generated files come out in your fonts, colours, page size and
+  page furniture; headings and lists use your template's own styles for them,
+  where it defines any. Templates are checked when you choose one; those
+  containing macros, linking to anything outside themselves, or carrying a
+  field that fetches when the document is opened, are refused, and only
+  pictures are taken from a template's media folder. What the conversion
+  does not carry is listed in
+  [Technical specification § 7](docs/TECHNICAL-SPEC.md#7-known-technical-debt).
 - **Web search** (toggle 🌐) — the model searches when you ask, streaming its
   answer. Four EU paths: a **Linkup** API key (French search API, self-serve
   sign-up with a free tier — the recommended default), a **shared SearXNG

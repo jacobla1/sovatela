@@ -1,6 +1,6 @@
-# Release notes — Sovatela 1.5.6
+# Release notes — Sovatela 1.6.0
 
-Release date: 2026-08-28 · [All releases](https://github.com/jacobla1/sovatela/releases)
+Release date: 2026-08-29 · [All releases](https://github.com/jacobla1/sovatela/releases)
 
 > This is the user-facing shape of a release. The engineering history lives in
 > [`CHANGELOG.md`](../../CHANGELOG.md); this document adds the five sections a
@@ -9,6 +9,66 @@ Release date: 2026-08-28 · [All releases](https://github.com/jacobla1/sovatela/
 ---
 
 ## New
+
+**Ask for a document and get one.** A report, a spreadsheet or a slide deck
+arrives as something you can look at and then save — or have written straight
+into your workspace folder. You write the request; the model writes the words;
+the app builds the `.docx`, `.xlsx` or `.pptx`. It opens in Word, Excel and
+PowerPoint without a repair prompt.
+
+**What you see before you save is what you get.** The preview is drawn by the
+same code that writes the file, so a construct that will not survive the
+conversion is shown the way it will be written rather than the way a Markdown
+renderer would like it to look. There is no list of caveats to keep in step
+with the writer, because there is nothing to keep in step: one parser, one set
+of decisions, two things reading the answer.
+
+**Use a document you already have as a template.** *Settings → Document
+templates* takes any Word document or presentation — including the `.dotx` and
+`.potx` that Word and PowerPoint save templates as — and everything you
+generate comes out in its design: its fonts, colours, headings, page size and
+any header or footer. **Its text, its slides and its pictures stay behind**, so
+last quarter's report works as a template exactly as it is. There is nothing to
+empty out first, and with no template set a plain built-in design is used.
+
+**Templates are treated as what they are: a file from outside.** One is opened,
+parsed, and partly copied into documents you send to other people, so it is
+checked rather than trusted. A template is refused if it carries macros, links
+to anything outside itself, or holds a field that fetches when the document is
+opened — that last one reaches out on your *recipient's* machine, not yours.
+Only the parts that make up a design are taken, only pictures the design
+actually uses come with them, and the whole thing is proved by building a
+document from it while you are still looking at the file picker rather than
+three days later. Some legitimate corporate templates will be declined by this;
+that is the trade, and the message says which check declined it and why.
+
+**Two things this release fixes that earlier ones got wrong.**
+
+*Artifacts stopped running their own code in 1.5.3, and this is the first
+release to say so.* Charts that animate, buttons that respond, anything
+interactive — none of it has worked in a released build since 26 August, and
+because the panel measures its own height with the same mechanism, every
+artifact has appeared in a short fixed-height box regardless of what was in it.
+The cause was a security change made in 1.5.3 that was right in itself: the
+window stopped allowing inline code. Artifacts were rendered in a way that
+inherited that rule and could not opt out of it. They are now rendered in a way
+that carries its own rules, so the window keeps the stricter setting *and*
+artifacts work. Development builds were unaffected, which is why this went
+three releases without being caught.
+
+*A template could have made every document you generated reach out when
+somebody opened it.* The check that refuses a template carrying a fetching
+field did not cover one place such a field can sit. Put there, it was accepted,
+written into every document generated from that template, and fetched by Word
+on the machine of whoever opened the file. It was found by pointing the address
+at a listener and watching the request arrive. No template distributed by this
+project was ever affected — you would have had to be given one built to do it —
+and the check now covers that location too.
+
+---
+
+### Earlier in the 1.5 line
+
 
 Nothing here is a feature. An outside review of 1.5.5 found two problems in the
 part of the app that reads attached documents, and both were real. One of them
@@ -544,9 +604,36 @@ afterwards from *Settings → Appearance → Welcome screen*.
 
 ## Known limitations
 
-Documented rather than omitted. This is the complete user-facing list for 1.5.6;
+Documented rather than omitted. This is the complete user-facing list for 1.6.0;
 the engineering view is in [Technical specification §
 7](../TECHNICAL-SPEC.md#7-known-technical-debt).
+
+**What a generated document carries, and what it does not**
+
+- The Markdown a document understands is a **subset**: headings, paragraphs,
+  bullet and numbered lists, tables, and inline bold, italic and code.
+  **Links, images, block quotes, code fences, nested lists, strikethrough and
+  inline HTML are written as the literal characters the model produced** — a
+  link arrives as `[text](url)`. That is deliberate: text you can read and edit
+  beats a construct silently dropped, and the preview shows you exactly this
+  before you send anything.
+- A generated document **contains no images**, in any of the three formats.
+- A list is an indented paragraph carrying its own marker rather than a real
+  numbered list, so Word's list tools do not see it. A table on a slide becomes
+  one line per row. An `.xlsx` has one sheet, no formulas and no formatting
+  beyond column widths and a number format wide enough to show every digit.
+- **Headers and footers carry their wording.** They are part of a page's
+  design, so a letterhead reading *"Q3 2025 — Confidential"* will appear on
+  what you generate from that template.
+- A template that **defines no style for a heading level** falls back to the
+  nearest shallower one it does define, and to ordinary body text when there is
+  none — so a template defining only `Heading4` and below produces no visible
+  headings at all. Word renders an undefined style as body text without
+  complaining, which is why this is stated rather than left to be discovered.
+- Verifying that a generated file is right still means **opening it in the
+  application that owns the format**. Every defect found in these writers
+  during development was found that way and none was catchable by an automated
+  check, so that is a release step here rather than a nicety.
 
 **Reference images**
 
@@ -669,9 +756,9 @@ Scaleway API key: [Quick-start](../QUICKSTART.md).
 **Verify your download** before running it:
 
 ```sh
-shasum -a 256 Sovatela_1.5.6_universal.dmg      # macOS
-sha256sum sovatela_1.5.6_amd64.deb              # Linux
-Get-FileHash .\Sovatela_1.5.6_x64-setup.exe -Algorithm SHA256   # Windows
+shasum -a 256 Sovatela_1.6.0_universal.dmg      # macOS
+sha256sum sovatela_1.6.0_amd64.deb              # Linux
+Get-FileHash .\Sovatela_1.6.0_x64-setup.exe -Algorithm SHA256   # Windows
 ```
 
 **Downgrading** — install the older version over the top. The data format is

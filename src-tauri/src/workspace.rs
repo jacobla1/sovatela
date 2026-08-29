@@ -186,7 +186,36 @@ pub fn will_overwrite(root: &Path, rel: &str) -> Result<bool, String> {
     Ok(safe_join(root, rel)?.is_file())
 }
 
-pub fn write_file(root: &Path, rel: &str, content: &str) -> Result<(), String> {
+/// Write raw bytes — for a generated document, which is a zip archive rather
+/// than text.
+/// Write, refusing to replace a file when the caller was told it would create
+/// one.
+///
+/// The user approves a modal dialog that says either "create" or "overwrite",
+/// and that dialog can stand for minutes. If the file appears in between, a
+/// plain write truncates a file whose replacement nobody agreed to. The verb
+/// is the only part of the dialog that can go stale — path, bytes and size all
+/// still match — and this is what keeps it honest.
+fn write_new_or_existing(path: &Path, content: &[u8], replacing: bool) -> Result<(), String> {
+    use std::io::Write as _;
+
+    if replacing {
+        return std::fs::write(path, content).map_err(|e| format!("could not write the file: {e}"));
+    }
+    match std::fs::File::create_new(path) {
+        Ok(mut f) => f
+            .write_all(content)
+            .map_err(|e| format!("could not write the file: {e}")),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(
+            "that file appeared while you were deciding, and this was approved as a new file \
+             rather than a replacement. Ask again to overwrite it."
+                .into(),
+        ),
+        Err(e) => Err(format!("could not write the file: {e}")),
+    }
+}
+
+pub fn write_bytes(root: &Path, rel: &str, content: &[u8], replacing: bool) -> Result<(), String> {
     if content.len() > WORKSPACE_MAX_WRITE_BYTES {
         return Err("that content is too large to write".into());
     }
@@ -197,7 +226,11 @@ pub fn write_file(root: &Path, rel: &str, content: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("could not create folder: {e}"))?;
     }
-    std::fs::write(&path, content).map_err(|e| format!("could not write the file: {e}"))
+    write_new_or_existing(&path, content, replacing)
+}
+
+pub fn write_file(root: &Path, rel: &str, content: &str, replacing: bool) -> Result<(), String> {
+    write_bytes(root, rel, content.as_bytes(), replacing)
 }
 
 #[cfg(test)]
@@ -330,10 +363,34 @@ mod tests {
     }
 
     #[test]
+    fn a_file_that_appears_while_the_dialog_is_open_is_not_replaced() {
+        // The dialog says "create" or "overwrite" and can stand for minutes.
+        // If the file arrives in between, a plain write truncates something
+        // nobody agreed to replace — the verb is the one part of the dialog
+        // that can go stale.
+        let root = temp_root("toctou");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("report.docx"), b"someone else's work").unwrap();
+
+        let err = write_bytes(&root, "report.docx", b"ours", false)
+            .expect_err("replaced a file that was approved as a new one");
+        assert!(err.contains("appeared while you were deciding"), "{err}");
+        assert_eq!(
+            std::fs::read(root.join("report.docx")).unwrap(),
+            b"someone else's work"
+        );
+
+        // Approved as a replacement, it replaces.
+        write_bytes(&root, "report.docx", b"ours", true).unwrap();
+        assert_eq!(std::fs::read(root.join("report.docx")).unwrap(), b"ours");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
     fn write_read_roundtrip_and_overwrite_flag() {
         let root = temp_root("rw");
         assert!(!will_overwrite(&root, "out/report.md").unwrap());
-        write_file(&root, "out/report.md", "# Hello").unwrap();
+        write_file(&root, "out/report.md", "# Hello", false).unwrap();
         assert_eq!(read_file(&root, "out/report.md").unwrap(), "# Hello");
         assert!(will_overwrite(&root, "out/report.md").unwrap());
         let _ = std::fs::remove_dir_all(&root);

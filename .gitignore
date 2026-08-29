@@ -65,3 +65,7 @@ qa/prompt-suite/results/
 
 # Byte-code from the asset scripts (scripts/*.py)
 __pycache__/
+qa/office-oracle/out/
+# Generated template fixtures — one of them makes Word fetch a URL, and it is
+# rebuilt by qa/templates/make-fixtures.py whenever it is needed.
+qa/templates/out/

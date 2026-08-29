@@ -184,6 +184,16 @@ fn current_month() -> String {
     format!("{y:04}-{m:02}")
 }
 
+/// Today's date (UTC) as "YYYY-MM-DD".
+pub fn today() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let (y, m, d) = civil_from_days((secs / 86_400) as i64);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
 /// Days since 1970-01-01 → (year, month, day), UTC. Howard Hinnant's civil
 /// calendar algorithm — exact, dependency-free, valid across all dates.
 fn civil_from_days(z: i64) -> (i64, u32, u32) {

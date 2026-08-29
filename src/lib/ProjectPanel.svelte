@@ -9,6 +9,8 @@
     isExtractableDocument,
     isLegacyDocument,
     legacyDocumentHint,
+    isTemplateDocument,
+    templateDocumentHint,
     extractDocument,
   } from "./files.js";
 
@@ -46,7 +48,9 @@
         continue;
       }
       try {
-        if (isExtractableDocument(f)) {
+        if (isTemplateDocument(f)) {
+          error = templateDocumentHint(f);
+        } else if (isExtractableDocument(f)) {
           // PDF / .docx / .odt → the Rust backend extracts the real text.
           if (f.size > MAX_DOC_BYTES) {
             error = `${f.name} is too large (max 20 MB).`;

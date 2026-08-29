@@ -93,6 +93,80 @@
   // top of the page. The compiler warned about that ambiguity, not about a
   // defect, and this states the dependency instead of relying on the order
   // things happen to run in.
+  // ---------- Document templates ----------
+  // A generated .docx or .pptx is built into a template. The built-in one is
+  // used unless the user supplies theirs, and supplying one changes nothing
+  // else about how documents are made — same path, different template.
+  let templates = $state([]);
+  let templateBusy = $state("");
+  let templateError = $state("");
+
+  async function refreshTemplates() {
+    try {
+      // `?? []` because a command that resolves to nothing is not an error it
+      // would throw on — and assigning null here crashed the whole settings
+      // page on the next read, since `null.find` is not a thing.
+      templates = (await invoke("list_templates")) ?? [];
+    } catch (e) {
+      console.error("Could not list templates:", e);
+      templates = [];
+    }
+  }
+  refreshTemplates();
+
+  const templateFor = $derived(
+    (kind) => (templates ?? []).find((t) => t.kind === kind) || null,
+  );
+
+  async function chooseTemplate(kind) {
+    // A guard rather than `disabled` on the button. Disabling the element the
+    // user just activated moves focus to the document body for as long as the
+    // native file dialog is open, and nothing puts it back — a keyboard user
+    // returned to the top of Settings. `aria-busy` says the same thing without
+    // taking the focus away, and this stops the second activation.
+    if (templateBusy) return;
+    templateError = "";
+    templateBusy = kind;
+    try {
+      const path = await openDialog({
+        multiple: false,
+        filters: [
+          {
+            name: kind === "docx" ? "Word document" : "PowerPoint presentation",
+            // `.dotx`/`.potx` are what Word and PowerPoint save a template as,
+            // so they are the likeliest file to bring here.
+            extensions: kind === "docx" ? ["docx", "dotx"] : ["pptx", "potx"],
+          },
+        ],
+      });
+      if (path) {
+        await invoke("set_template", { kind, path });
+        await refreshTemplates();
+      }
+    } catch (e) {
+      // The backend refuses a template that carries macros, links to
+      // something outside itself, or would not produce a document that
+      // opens. Its reason is the one worth showing — prefixed with which
+      // format it was for, because one alert region serves both rows and the
+      // messages all begin "that template…".
+      const label = kind === "docx" ? "Word documents" : "Presentations";
+      templateError = `${label}: ${String(e)}`;
+    } finally {
+      templateBusy = "";
+    }
+  }
+
+  async function removeTemplate(kind) {
+    templateError = "";
+    try {
+      await invoke("clear_template", { kind });
+      await refreshTemplates();
+    } catch (e) {
+      const label = kind === "docx" ? "Word documents" : "Presentations";
+      templateError = `${label}: ${String(e)}`;
+    }
+  }
+
   let imageSectionEl = $state(null);
   let searchSectionEl = $state(null);
   let scalewaySectionEl = $state(null);
@@ -1233,6 +1307,83 @@
   </button>
 {/snippet}
 
+{#snippet templatesSection()}
+  <p class="hint">
+    Documents the assistant creates are built into a template. Supply your own
+    and generated files come out in your fonts, colours, page size and page
+    furniture — the content is unchanged, only the design it lands in.
+    Headings and lists use your template's own styles for them; a template
+    that defines none leaves those paragraphs plain, because inventing styles
+    it does not have would mean putting our design into yours. Spreadsheets
+    are not listed here because an <code>.xlsx</code> has nothing
+    corresponding to styles and layouts worth carrying over.
+  </p>
+
+  {#each [{ kind: "docx", label: "Word documents", ext: ".docx" }, { kind: "pptx", label: "Presentations", ext: ".pptx" }] as row (row.kind)}
+    {@const current = templateFor(row.kind)}
+    <div class="template-row">
+      <div class="template-what">
+        <strong>{row.label}</strong>
+        {#if current}
+          <span class="template-name">{current.name}</span>
+          <span class="hint">Added {current.added}</span>
+        {:else}
+          <span class="hint">Using the built-in template</span>
+        {/if}
+      </div>
+      <div class="template-actions">
+        <!-- Both rows carry buttons reading "Replace…" and "Use the built-in",
+             and the only thing telling them apart is the <strong> earlier in
+             the row, which is not associated with them. Tabbing through, the
+             accessible names were identical. -->
+        <button
+          class="secondary"
+          onclick={() => chooseTemplate(row.kind)}
+          aria-label={templateBusy === row.kind
+            ? `Checking the ${row.label.toLowerCase()} template`
+            : current
+              ? `Replace the template for ${row.label.toLowerCase()}`
+              : `Choose a ${row.ext} template for ${row.label.toLowerCase()}`}
+          aria-busy={templateBusy === row.kind}
+        >
+          {templateBusy === row.kind ? "Checking…" : current ? "Replace…" : `Choose a ${row.ext}…`}
+        </button>
+        {#if current}
+          <button
+            class="secondary"
+            onclick={() => removeTemplate(row.kind)}
+            aria-label={`Use the built-in template for ${row.label.toLowerCase()}`}
+          >
+            Use the built-in
+          </button>
+        {/if}
+      </div>
+    </div>
+  {/each}
+
+  {#if templateError}
+    <p class="warn-text" role="alert">{templateError}</p>
+  {/if}
+
+  <p class="hint">
+    A template is checked when you choose it, by building a document from it —
+    so a file that would not work is refused here rather than days later. Only
+    its styles, theme, layouts and page furniture are used; its own text and
+    slides are never copied into anything you generate. Templates containing
+    macros, linking to something outside themselves, or carrying a field that
+    fetches when the file is opened, are refused: a document built from one
+    would carry that to whoever opened it.
+  </p>
+  <p class="hint">
+    Where a template has no style for a heading level, the nearest
+    <em>shallower</em> one it defines is used — so a <code>##</code> heading
+    falls back to Heading&nbsp;1. A template that defines no heading styles at
+    all leaves those paragraphs as ordinary body text. The preview shows them
+    the way they will be written, so you can see which you have before you send
+    the file.
+  </p>
+{/snippet}
+
 {#snippet workspaceSection()}
   <p class="hint">
     Give the assistant a <strong>folder it can read and write</strong> — for
@@ -2019,6 +2170,11 @@
         <details class="section">
           <summary>Workspace (file access)</summary>
           <div class="section-body">{@render workspaceSection()}</div>
+        </details>
+
+        <details class="section">
+          <summary>Document templates</summary>
+          <div class="section-body">{@render templatesSection()}</div>
         </details>
       </div>
     </section>

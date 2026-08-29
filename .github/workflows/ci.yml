@@ -12,6 +12,12 @@ on:
 
 jobs:
   build-test:
+    # The public repository is a generated mirror and this workflow ships to it
+    # verbatim. Every other job in every other workflow carries this line — the
+    # commit that added them is called "Guard the workflows: a mirror must never
+    # build" — and this one was missed, so a pull request opened against the
+    # mirror would have started a three-OS Tauri build on it.
+    if: github.repository == 'jacobla1/Scale'
     strategy:
       fail-fast: false
       matrix:

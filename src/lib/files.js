@@ -23,18 +23,54 @@ export function looksBinary(content) {
 
 // Documents the Rust backend can extract real text from.
 export function isExtractableDocument(file) {
-  return /\.(pdf|docx|odt)$/i.test(file.name);
+  return /\.(pdf|docx|odt|pptx|xlsx)$/i.test(file.name);
 }
 
 // Legacy/unsupported office formats we can name a fix for.
+// Formats we cannot read, but can name a fix for. `.xlsx` and `.pptx` moved
+// out of this list when they became readable.
 export function isLegacyDocument(file) {
-  return /\.(doc|rtf|pages|xls|xlsx|ppt|pptx)$/i.test(file.name);
+  return /\.(doc|rtf|pages|key|numbers|xls|ppt)$/i.test(file.name);
 }
 
 export function legacyDocumentHint(file) {
-  return /\.doc$/i.test(file.name)
-    ? `${file.name} — old Word format; re-save it as .docx and try again`
-    : `${file.name} — this format isn't supported (PDF, .docx and .odt are)`;
+  const old = /\.(doc|xls|ppt)$/i.test(file.name);
+  return old
+    ? `${file.name} — an old Office format; re-save it as .docx, .xlsx or ` +
+        `.pptx and try again`
+    : `${file.name} — this format isn't supported (PDF, .docx, .odt, .xlsx ` +
+        `and .pptx are)`;
+}
+
+// The formats Word and PowerPoint save a *template* as. Someone attaching one
+// of these is not asking a question about its contents — a `.dotx` is a design
+// with no content to ask about — they are trying to make generated documents
+// look like it, and the place to do that is Settings. Attaching it here would
+// have read it as text: these match neither list above, so they fell through to
+// the plain-text branch and came back "not a readable text file", which is the
+// least helpful thing the app could have said about the one file the template
+// feature exists to take.
+export function isTemplateDocument(file) {
+  return /\.(dotx|potx|dotm|potm)$/i.test(file.name);
+}
+
+export function templateDocumentHint(file) {
+  // Macro-enabled templates are refused by the template reader too, so say the
+  // whole answer here rather than sending someone to a second refusal.
+  if (/\.(dotm|potm)$/i.test(file.name)) {
+    return (
+      `${file.name} — a macro-enabled template. Open it and save it as ` +
+      `.dotx or .potx (File ▸ Save As), then add it in Settings ▸ Document ` +
+      `templates. Macros are never copied into a document this app builds.`
+    );
+  }
+  const word = /\.dotx$/i.test(file.name);
+  const what = word ? "a Word template" : "a PowerPoint template";
+  return (
+    `${file.name} — that's ${what}. Add it in Settings ▸ Document templates ` +
+    `and everything generated will use its design. Attaching it to a message ` +
+    `would only read its text, and a template has none.`
+  );
 }
 
 /// Extract the text of a PDF/.docx/.odt via the Rust backend.

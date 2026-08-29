@@ -1,6 +1,6 @@
 # Technical and security specification
 
-Sovatela v1.5.6 · Companion to Product spec ·
+Sovatela v1.6.0 · Companion to Product spec ·
 UX spec · [Security policy](../SECURITY.md)
 
 Fuller engineering rationale is kept internally in `ENGINEERING_NOTES.md`, which
@@ -189,6 +189,19 @@ The main window holds `core:default`, `opener:default`, and `dialog:default`
 only. No filesystem, shell, or HTTP plugin is exposed to the webview — file
 access goes through purpose-built commands with their own validation.
 
+That claim was not true of the two commands that write files. `save_image` and
+`save_document` took a destination path from the interface, which obtained it
+from a save dialog — so in practice the path was one the user had chosen, and
+"in practice" is not a guarantee. A command that accepts a path writes wherever
+it is told.
+
+From 1.6.0 the dialog is opened by the backend, so no path crosses the
+boundary: the only destination that exists is the one the user picked. The
+suggested *filename* still comes from the interface and is treated as a name
+rather than a path — separators and dot segments are stripped — and image bytes
+are checked against their actual signature rather than the media type the data
+URL claims.
+
 ### Workspace confinement
 
 Writes are restricted to the granted root, with traversal (`../`, absolute
@@ -355,6 +368,36 @@ checkout is a superset and is not part of the repository.
   (`word/comments.xml`). Headers, footers, footnotes and endnotes are read
   from 1.5.5 and appear after the body under a `[Headers, footers and notes]`
   label
+- Generated documents (1.6.0) carry less than the application that opens them
+  can express, and the gaps are worth naming: a `.docx` list is an indented
+  paragraph carrying its own marker rather than a numbering definition, so
+  Word's list tools do not see it; a table on a slide becomes one line per row,
+  because a real one needs a graphic frame; a `.xlsx` has one sheet, no
+  formulas and no formatting; and none of the three can contain images
+- The Markdown a generated document understands is a **subset**: headings,
+  paragraphs, bullet and numbered lists, tables, and inline bold, italic and
+  code. **Links, images, block quotes, code fences, nested lists, strikethrough
+  and inline HTML are written as the literal characters the model produced** —
+  a link arrives as `[text](url)`. That is deliberate: text someone can read
+  and edit beats a construct silently dropped. The preview shows exactly this,
+  so it is visible before the file is sent, and a line above the preview says
+  so
+- A template whose **heading styles are missing** falls back to the nearest
+  *shallower* level it defines, and to ordinary body text when there is none —
+  so a template defining only `Heading4` and below produces no headings at all.
+  Word renders an undefined style as body text without complaint, which is why
+  this is stated rather than silently accepted
+- A user-supplied template that links to anything outside itself is **refused**
+  rather than having the link stripped, because a generated document carrying
+  an external relationship reaches out when a *recipient* opens it. The same
+  applies to **field instructions in a copied header or footer**: a field is
+  neither a relationship nor malformed XML, so nothing else looks at it, and an
+  `INCLUDEPICTURE` pointing at a URL fetches on open with no interaction at
+  all. Fields are checked against an allow-list of the kinds that stay inside
+  the document — `PAGE`, `NUMPAGES`, `STYLEREF`, `DATE` and the rest — so an
+  unfamiliar but harmless field will be refused too. Both checks will decline
+  some legitimate corporate templates — a hyperlink in a slide master is
+  enough — and are the trade worth revisiting first if they prove annoying
 - Custom image endpoint requests are not cancellable
 - Project reference files are never compacted
 - Orphaned assets if a conversation file is deleted outside the app

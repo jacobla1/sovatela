@@ -95,6 +95,8 @@ pub enum Kind {
     Pdf,
     Docx,
     Odt,
+    Pptx,
+    Xlsx,
 }
 
 impl Kind {
@@ -106,6 +108,10 @@ impl Kind {
             Some(Kind::Docx)
         } else if lower.ends_with(".odt") {
             Some(Kind::Odt)
+        } else if lower.ends_with(".pptx") {
+            Some(Kind::Pptx)
+        } else if lower.ends_with(".xlsx") {
+            Some(Kind::Xlsx)
         } else {
             None
         }
@@ -116,6 +122,8 @@ impl Kind {
             Kind::Pdf => "pdf",
             Kind::Docx => "docx",
             Kind::Odt => "odt",
+            Kind::Pptx => "pptx",
+            Kind::Xlsx => "xlsx",
         }
     }
 
@@ -124,6 +132,8 @@ impl Kind {
             "pdf" => Some(Kind::Pdf),
             "docx" => Some(Kind::Docx),
             "odt" => Some(Kind::Odt),
+            "pptx" => Some(Kind::Pptx),
+            "xlsx" => Some(Kind::Xlsx),
             _ => None,
         }
     }
@@ -135,6 +145,8 @@ impl Kind {
             Kind::Pdf => "document.pdf",
             Kind::Docx => "document.docx",
             Kind::Odt => "document.odt",
+            Kind::Pptx => "document.pptx",
+            Kind::Xlsx => "document.xlsx",
         }
     }
 }

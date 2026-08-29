@@ -7,6 +7,7 @@ use tauri::Manager;
 
 pub mod doc_sandbox;
 pub mod glm;
+pub mod ooxml;
 
 #[global_allocator]
 static ALLOCATOR: doc_sandbox::CappedAllocator = doc_sandbox::CappedAllocator;
@@ -44,6 +45,93 @@ impl Cancellations {
     fn remove(&self, id: &str) {
         self.0.lock().unwrap().remove(id);
     }
+}
+
+/// Artifact documents waiting to be framed, keyed by a content hash.
+///
+/// The frame used to be built with `srcdoc`, and that is what broke it. A
+/// `srcdoc` document is a *local scheme*: it has no origin of its own, so it
+/// inherits the embedder's Content-Security-Policy, and the frame's own
+/// permissive policy cannot widen what it inherits. When the window dropped
+/// `'unsafe-inline'` from `script-src` in 1.5.3 — good hardening, and the
+/// built page has no inline script needing it — every artifact inherited that
+/// too. Model-written JavaScript stopped running, and so did the height
+/// reporter, so every frame sat at its initial height whatever was in it.
+/// `tauri dev` uses `devCsp`, which still allows inline, so nothing in normal
+/// development could show it.
+///
+/// A document *fetched over a registered scheme* is not a local scheme and
+/// carries its own policy. So the artifact is staged here, framed by URL, and
+/// served below with the deny-everything policy it always meant to have —
+/// while `sandbox="allow-scripts"` keeps it in an opaque origin with no reach
+/// into the parent, the IPC bridge or the network.
+#[derive(Default)]
+struct StagedArtifacts(std::sync::Mutex<std::collections::HashMap<String, String>>);
+
+/// How many artifacts are held. A conversation's earlier artifacts are
+/// reopenable from the index, so this is not one; it is a bound, because
+/// nothing here is ever explicitly released.
+const MAX_STAGED_ARTIFACTS: usize = 32;
+
+/// Cap on one staged document. Model output is bounded long before this;
+/// the point is that this map cannot grow without one.
+const MAX_STAGED_BYTES: usize = 4 * 1024 * 1024;
+
+/// The policy the artifact frame is served with — the same one it used to
+/// carry as a `<meta>` tag, now delivered as a header where it cannot be
+/// intersected away by the window's.
+///
+/// `default-src 'none'` is the whole of the network story: no fetch, no
+/// XHR, no WebSocket, no image or font or stylesheet from anywhere but a
+/// `data:` URL. `script-src 'unsafe-inline'` is what makes an artifact an
+/// artifact, and it is confined to an origin that can reach nothing.
+const ARTIFACT_CSP: &str = "default-src 'none'; script-src 'unsafe-inline'; \
+style-src 'unsafe-inline'; img-src data:; font-src data:; media-src data:";
+
+/// Stage an artifact document and return the URL the frame loads it from.
+///
+/// The URL is built here rather than in the interface because its shape is a
+/// platform detail: Windows serves a registered scheme as
+/// `http://artifact.localhost/…` and everywhere else it is `artifact://…`.
+/// Guessing that from the renderer is one `navigator.userAgent` test away from
+/// a frame that silently fails on one platform.
+#[tauri::command]
+fn stage_artifact(
+    state: tauri::State<'_, StagedArtifacts>,
+    html: String,
+) -> Result<String, String> {
+    if html.len() > MAX_STAGED_BYTES {
+        return Err("that artifact is too large to render".into());
+    }
+    // Content-addressed, so re-rendering the same artifact reuses its entry
+    // rather than growing the map on every keystroke-sized re-render.
+    let id = format!("{:016x}", fnv1a(html.as_bytes()));
+    let mut map = state.0.lock().unwrap();
+    if !map.contains_key(&id) {
+        if map.len() >= MAX_STAGED_ARTIFACTS {
+            // Nothing here is worth an eviction policy: an artifact that is
+            // still on screen is re-staged by the component that draws it.
+            map.clear();
+        }
+        map.insert(id.clone(), html);
+    }
+    Ok(if cfg!(windows) {
+        format!("http://artifact.localhost/{id}")
+    } else {
+        format!("artifact://localhost/{id}")
+    })
+}
+
+/// FNV-1a, 64-bit. A name for the bytes, not a security property — the map is
+/// keyed by it and a collision would show the wrong artifact, which is why it
+/// is a hash and not a counter, but nothing trusts it beyond that.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x1000_0000_01b3);
+    }
+    h
 }
 
 /// Removes the request's cancel flag when the request ends, on every exit path.
@@ -1834,7 +1922,11 @@ async fn generate_image(
 /// Decode a `data:` image URL and write it to `path` (chosen by the user via a
 /// save dialog). App-side because the webview can't reliably download a data URL.
 #[tauri::command]
-fn save_image(data_url: String, path: String) -> Result<(), String> {
+fn save_image(
+    app: tauri::AppHandle,
+    data_url: String,
+    suggested_name: String,
+) -> Result<(), String> {
     let b64 = data_url
         .split_once(',')
         .map(|(_, d)| d)
@@ -1842,7 +1934,388 @@ fn save_image(data_url: String, path: String) -> Result<(), String> {
     let bytes = BASE64_STANDARD
         .decode(b64.as_bytes())
         .map_err(|e| format!("Could not decode the image: {e}"))?;
+
+    // What the bytes claim to be, checked against what they are. A data URL is
+    // a string from the renderer; its media type is a label, not evidence.
+    let extension = image_extension(&bytes)
+        .ok_or("That is not an image this app can save (PNG, JPEG, GIF or WebP).")?;
+
+    let name = sanitize_download_name(&suggested_name, extension);
+    let Some(path) = ask_where_to_save(&app, &name, "Image", extension) else {
+        return Ok(());
+    };
     std::fs::write(&path, bytes).map_err(|e| format!("Could not save the image: {e}"))
+}
+
+/// The format some bytes actually are, by their leading signature.
+fn image_extension(bytes: &[u8]) -> Option<&'static str> {
+    match bytes {
+        [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, ..] => Some("png"),
+        [0xFF, 0xD8, 0xFF, ..] => Some("jpg"),
+        [b'G', b'I', b'F', b'8', ..] => Some("gif"),
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => Some("webp"),
+        _ => None,
+    }
+}
+
+/// A file name safe to suggest in a save dialog.
+///
+/// The suggestion comes from the renderer, and a name is not a path: a
+/// separator or a `..` in it has no business reaching the dialog, whatever the
+/// dialog would do with it.
+fn sanitize_download_name(name: &str, extension: &str) -> String {
+    let stem: String = name
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("document")
+        .chars()
+        .filter(|c| !matches!(c, '/' | '\\' | ':' | '\0'))
+        .take(80)
+        .collect();
+    let stem = stem.trim().trim_matches('.');
+    let stem = if stem.is_empty() { "document" } else { stem };
+    if stem.to_lowercase().ends_with(&format!(".{extension}")) {
+        stem.to_string()
+    } else {
+        format!("{stem}.{extension}")
+    }
+}
+
+/// The document formats a generated artifact can be saved as.
+///
+/// The source text is whatever the model wrote inside the fence: Markdown for
+/// a document or a deck, tabular text for a spreadsheet. The model never emits
+/// OOXML — see `ooxml`.
+fn generate_document(
+    kind: &str,
+    source: &str,
+    template: Option<&ooxml::template::Template>,
+) -> Result<Vec<u8>, String> {
+    match kind {
+        "docx" => ooxml::docx::from_markdown_with(template, source),
+        "xlsx" => ooxml::xlsx::from_table(source),
+        "pptx" => ooxml::pptx::from_markdown_with(template, source),
+        other => Err(format!(
+            "{other} is not a document format this app can write"
+        )),
+    }
+}
+
+/// Build a document from an artifact and write it where the user asked.
+///
+/// The webview cannot write a file, and these are binary rather than a data
+/// URL, so the same shape as `save_image`: the interface picks the path
+/// through the OS dialog, and the backend writes the bytes.
+#[tauri::command]
+async fn save_document(
+    app: tauri::AppHandle,
+    kind: String,
+    source: String,
+    suggested_name: String,
+) -> Result<Option<String>, String> {
+    // Generating is pure computation over text already in memory — no network,
+    // no filesystem read — so the only work off the runtime is the write.
+    let (template, template_problem) = load_configured_template(&app, &kind);
+    let bytes = tokio::task::spawn_blocking({
+        let kind = kind.clone();
+        move || generate_document(&kind, &source, template.as_ref())
+    })
+    .await
+    .map_err(|_| "generating the document failed unexpectedly".to_string())??;
+
+    // Checked before it is written, not after. A file that will not open is
+    // worse than a refusal, because the user finds out somewhere else.
+    ooxml::validate(&bytes).map_err(|problems| {
+        format!(
+            "the document came out malformed and was not saved: {}",
+            problems.join("; ")
+        )
+    })?;
+
+    // The dialog is opened here rather than in the interface, so the only
+    // destination that exists is the one the user chose. Cancelling is not an
+    // error — it is the user saying no.
+    let name = sanitize_download_name(&suggested_name, &kind);
+    let Some(path) = ask_where_to_save(&app, &name, "Document", &kind) else {
+        return Ok(None);
+    };
+    std::fs::write(&path, bytes).map_err(|e| format!("Could not save the document: {e}"))?;
+    // The file is written either way; this is a note, not a failure.
+    Ok(template_problem)
+}
+
+/// The user's own template for this format, if they have chosen one.
+///
+/// A template that no longer loads — moved, edited, or replaced since it was
+/// accepted — falls back to the built-in one rather than failing the save. The
+/// user asked for a document; giving them one in the default style beats
+/// giving them nothing.
+fn load_configured_template<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    kind: &str,
+) -> (Option<ooxml::template::Template>, Option<String>) {
+    let name = match kind {
+        "docx" => "template.docx",
+        "pptx" => "template.pptx",
+        _ => return (None, None),
+    };
+    let Ok(dir) = app.path().app_data_dir() else {
+        return (None, None);
+    };
+    // No template configured is the ordinary case, not a problem.
+    let Ok(bytes) = std::fs::read(dir.join("templates").join(name)) else {
+        return (None, None);
+    };
+    match ooxml::template::load(name, &bytes) {
+        Ok(t) => (Some(t), None),
+        // Falling back to the built-in is right: the user asked for a
+        // document, and one in the default style beats none. Doing it
+        // *silently* is not — they would get a document in the wrong design
+        // with no way to find out why, and this used to say so only to a log
+        // nobody reads.
+        Err(e) => (
+            None,
+            Some(format!(
+                "Your saved {kind} template could not be used ({e}) The built-in one was \
+                 used instead — choose your template again in Settings, Document templates."
+            )),
+        ),
+    }
+}
+
+/// The document format a filename promises, if this app can build it.
+fn document_kind_of(path: &str) -> Option<&'static str> {
+    let lower = path.to_lowercase();
+    for kind in ["docx", "xlsx", "pptx"] {
+        if lower.ends_with(&format!(".{kind}")) {
+            return Some(kind);
+        }
+    }
+    None
+}
+
+/// A filename that promises *some* document format, including ones this app
+/// cannot write. Used to refuse rather than write text under a name that lies.
+fn is_document_name(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    [
+        ".pdf", ".doc", ".xls", ".ppt", ".odt", ".ods", ".odp", ".rtf", ".pages", ".key",
+        ".numbers", ".docm", ".xlsm", ".pptm", ".epub",
+    ]
+    .iter()
+    .any(|ext| lower.ends_with(ext))
+}
+
+/// What Settings shows about a configured template.
+#[derive(serde::Serialize)]
+struct TemplateInfo {
+    kind: String,
+    /// The file's original name, so it is recognisable a month later.
+    name: String,
+    added: String,
+}
+
+fn templates_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("templates");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+/// Accept a template the user chose and keep a copy.
+///
+/// The file is **copied** into the app's own data directory rather than
+/// referenced where it sits. A referenced path can be moved, deleted, or
+/// edited to something else after it was checked — and the last of those turns
+/// a vetted file into an unvetted one without anybody touching this app.
+#[tauri::command]
+async fn set_template(
+    app: tauri::AppHandle,
+    kind: String,
+    path: String,
+) -> Result<TemplateInfo, String> {
+    if kind != "docx" && kind != "pptx" {
+        return Err("templates are only used for Word documents and presentations".into());
+    }
+    let source = std::path::PathBuf::from(&path);
+    let name = source
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "template".into());
+
+    // Checked before reading, not after. The bounds inside the template reader
+    // apply to what an archive *contains*; this is the file itself, and
+    // reading it whole in order to discover it was too large is the wrong
+    // order of operations.
+    let meta = std::fs::metadata(&source).map_err(|e| format!("Could not read that file: {e}"))?;
+    if !meta.is_file() {
+        return Err("that is a folder, not a template file.".into());
+    }
+    if meta.len() > ooxml::template::MAX_TEMPLATE_FILE_BYTES {
+        return Err(format!(
+            "that file is {} MB. A template is a few hundred kilobytes; this one is too large to \
+             be one.",
+            meta.len() / (1024 * 1024)
+        ));
+    }
+
+    // Reading and vetting are file I/O and parsing, which do not belong on the
+    // async runtime's threads.
+    let wanted = kind.clone();
+    let (bytes, name) = tokio::task::spawn_blocking(move || {
+        let bytes = std::fs::read(&source).map_err(|e| format!("Could not read that file: {e}"))?;
+        // Vetted, and proved by building a document from it — while the user
+        // is still looking at a file picker, rather than in three days when a
+        // document fails to generate.
+        let template = ooxml::template::accept(&name, &bytes)?;
+        // The file is stored under the requested kind's name, so a deck
+        // chosen for the Word slot would be loaded later as a Word template
+        // and fail there instead of here.
+        if template.kind.slot() != wanted {
+            return Err(format!(
+                "that is a {} template, and it was chosen for {}.",
+                template.kind.slot(),
+                if wanted == "docx" {
+                    "Word documents"
+                } else {
+                    "presentations"
+                }
+            ));
+        }
+        Ok::<_, String>((bytes, name))
+    })
+    .await
+    .map_err(|_| "checking that template failed unexpectedly".to_string())??;
+
+    let dir = templates_dir(&app)?;
+    let dest = dir.join(format!("template.{kind}"));
+    std::fs::write(&dest, &bytes).map_err(|e| format!("Could not save the template: {e}"))?;
+
+    let added = usage::today();
+    std::fs::write(
+        dir.join(format!("template.{kind}.json")),
+        serde_json::json!({
+            "name": name, "added": added,
+        })
+        .to_string(),
+    )
+    .map_err(|e| format!("Could not save the template details: {e}"))?;
+
+    Ok(TemplateInfo { kind, name, added })
+}
+
+/// The templates currently in use, for Settings to display.
+#[tauri::command]
+async fn list_templates(app: tauri::AppHandle) -> Result<Vec<TemplateInfo>, String> {
+    let dir = templates_dir(&app)?;
+    let mut out = Vec::new();
+    for kind in ["docx", "pptx"] {
+        if !dir.join(format!("template.{kind}")).exists() {
+            continue;
+        }
+        let meta = std::fs::read_to_string(dir.join(format!("template.{kind}.json")))
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
+        out.push(TemplateInfo {
+            kind: kind.to_string(),
+            name: meta
+                .as_ref()
+                .and_then(|m| m["name"].as_str().map(str::to_string))
+                .unwrap_or_else(|| format!("template.{kind}")),
+            added: meta
+                .as_ref()
+                .and_then(|m| m["added"].as_str().map(str::to_string))
+                .unwrap_or_default(),
+        });
+    }
+    Ok(out)
+}
+
+/// Go back to the built-in template. Removes this app's copy only — the user's
+/// own file, wherever they got it from, is untouched.
+#[tauri::command]
+async fn clear_template(app: tauri::AppHandle, kind: String) -> Result<(), String> {
+    // The same check `set_template` makes, for the same reason: `kind` becomes
+    // a filename, and a command that builds a path out of an unchecked string
+    // is one deletion away from removing something it was never asked about.
+    if kind != "docx" && kind != "pptx" {
+        return Err("templates are only used for Word documents and presentations".into());
+    }
+    let dir = templates_dir(&app)?;
+    for name in [format!("template.{kind}"), format!("template.{kind}.json")] {
+        match std::fs::remove_file(dir.join(name)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("Could not remove the template: {e}")),
+        }
+    }
+    Ok(())
+}
+
+/// Ask the user where to save, natively, and return what they chose.
+///
+/// The path used to come from the renderer. The interface obtained it from a
+/// save dialog, so in practice it was one the user had picked — but "in
+/// practice" is not a guarantee: a command that accepts a path and writes to
+/// it will write anywhere the caller names, and the published specification
+/// claims these commands do their own validation. A renderer that was ever
+/// persuaded to call this directly could write any bytes anywhere the app can
+/// reach.
+///
+/// The dialog belongs on this side of the boundary. Then there is no path to
+/// validate, because the only path that exists is the one the user chose.
+fn ask_where_to_save<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    suggested_name: &str,
+    filter_label: &str,
+    extension: &str,
+) -> Option<std::path::PathBuf> {
+    use tauri_plugin_dialog::DialogExt;
+    app.dialog()
+        .file()
+        .set_file_name(suggested_name)
+        .add_filter(filter_label, &[extension])
+        .blocking_save_file()
+        .and_then(|p| p.into_path().ok())
+}
+
+/// What a document artifact will actually contain.
+///
+/// The preview used to parse the source a second time in the renderer — its
+/// own idea of what counted as a row for a spreadsheet, and `marked` for
+/// everything else. Two implementations of one rule disagree eventually, and
+/// here the disagreement is invisible until someone opens the saved file: a
+/// row that was never written, an escaped pipe that moved a column, a link
+/// shown as its text and written as its markup.
+///
+/// So the preview asks the writer. Same parser, same template, same decisions
+/// about styles and markers and where a slide begins — what is shown is what
+/// will be written, by construction rather than by care.
+///
+/// Takes the app handle because the answer depends on the configured
+/// template: a heading gets the style that template defines, or none, and the
+/// preview shows whichever it will be.
+//
+// `async` so it runs on the threadpool. A sync Tauri command is compiled as a
+// blocking one and runs inline on the IPC handler, so the whole of this — a
+// full parse of the artifact, against the configured template — was on the
+// thread that keeps the window responsive.
+#[tauri::command]
+async fn preview_document(
+    app: tauri::AppHandle,
+    kind: String,
+    source: String,
+) -> Result<ooxml::preview::Preview, String> {
+    // The note is discarded here on purpose. The preview and the file agree
+    // either way — both use the built-in styling when a configured template
+    // cannot be loaded — and the two paths that actually produce a file both
+    // report it. Repeating it on every preview would put a warning in front of
+    // someone who has not asked for a document yet.
+    let (template, _) = load_configured_template(&app, &kind);
+    ooxml::preview::of(&kind, template.as_ref(), &source)
 }
 
 /// The resolved web-search backend for a message.
@@ -2128,10 +2601,29 @@ const ODT_DROPPED: &[&str] = &["text:tracked-changes"];
 ///
 /// `dropped` names elements whose entire subtree is skipped — see
 /// [`DOCX_DROPPED`].
+/// The table cell and row elements of the formats this reads.
+///
+/// Named here rather than passed in because they cannot collide: a .docx never
+/// contains a `table:table-row`, and every caller already knows which format
+/// it handed over.
+const CELL_TAGS: &[&str] = &["w:tc", "a:tc", "table:table-cell"];
+const ROW_TAGS: &[&str] = &["w:tr", "a:tr", "table:table-row"];
+
 fn xml_to_text(xml: &str, para_tags: &[&str], dropped: &[&str]) -> String {
     use quick_xml::events::Event;
     let mut reader = quick_xml::Reader::from_str(xml);
     let mut out = String::new();
+    // A table's shape is information. Every paragraph ended a line, and a cell
+    // holds paragraphs, so a three-column table arrived as one long column of
+    // values with nothing saying which heading each belonged to — and a
+    // document's tables are usually the part someone uploads it to ask about.
+    // Tabs between cells and a newline per row is the same shape a spreadsheet
+    // arrives in.
+    let mut in_cell = 0usize;
+    // Where the current cell and row began in `out`, so trimming a separator
+    // can never reach back into what came before them.
+    let mut cell_floor: Vec<usize> = Vec::new();
+    let mut row_floor: Vec<usize> = Vec::new();
     // A depth, not a flag: these elements nest — a `w:del` can sit inside a
     // `w:moveFrom` — and a flag cleared by the first closing tag would let the
     // rest of the outer subtree back in.
@@ -2145,6 +2637,12 @@ fn xml_to_text(xml: &str, para_tags: &[&str], dropped: &[&str]) -> String {
                     skipping += 1;
                 } else if dropped.iter().any(|d| *d == name) {
                     skipping = 1;
+                } else if CELL_TAGS.iter().any(|c| *c == name) {
+                    // A depth, because a table can sit inside a cell.
+                    in_cell += 1;
+                    cell_floor.push(out.len());
+                } else if ROW_TAGS.iter().any(|r| *r == name) {
+                    row_floor.push(out.len());
                 }
             }
             // Inside a dropped subtree nothing is emitted, and the closing tag
@@ -2214,6 +2712,33 @@ fn xml_to_text(xml: &str, para_tags: &[&str], dropped: &[&str]) -> String {
                 let name = e.name();
                 let name = String::from_utf8_lossy(name.as_ref());
                 if para_tags.iter().any(|p| *p == name) {
+                    // Inside a cell a paragraph break is not a line break: the
+                    // cell is the line's unit, and several paragraphs in one
+                    // cell are one cell's worth of text.
+                    out.push(if in_cell > 0 { ' ' } else { '\n' });
+                } else if CELL_TAGS.iter().any(|c| *c == name) {
+                    in_cell = in_cell.saturating_sub(1);
+                    // Only back to where this cell began. Unbounded, the trim
+                    // reached past an empty cell into whatever came before it:
+                    // on the first cell of a table — a blank top-left corner
+                    // being the standard cross-tab shape — it ate the newline
+                    // ending the paragraph above, so the sentence introducing
+                    // the table became its first column heading. Between two
+                    // tables it ate the row boundary as well.
+                    let floor = cell_floor.pop().unwrap_or(0);
+                    while out.len() > floor && (out.ends_with(' ') || out.ends_with('\n')) {
+                        out.pop();
+                    }
+                    out.push('\t');
+                } else if ROW_TAGS.iter().any(|r| *r == name) {
+                    // Exactly the separator the last cell added, not every tab
+                    // in the row: a row ending in an empty cell has two, and
+                    // popping both dropped a column that the heading row still
+                    // had.
+                    let floor = row_floor.pop().unwrap_or(0);
+                    if out.len() > floor && out.ends_with('\t') {
+                        out.pop();
+                    }
                     out.push('\n');
                 }
             }
@@ -2424,12 +2949,615 @@ fn join_document_parts(body: String, sides: Vec<String>) -> String {
     out
 }
 
+/// Slide text from a `.pptx`, in slide order.
+///
+/// A deck's text lives in `ppt/slides/slideN.xml`, one part per slide, with
+/// paragraphs as `a:p`. The slides are numbered, not ordered by the archive,
+/// so `slide10` must not sort between `slide1` and `slide2` — a deck read out
+/// of order is worse than one read badly, because nothing looks wrong.
+///
+/// Each slide is announced. A model given forty paragraphs with no boundaries
+/// cannot tell a title from the bullet beneath it.
+fn pptx_to_text(bytes: &[u8], budget: &mut u64) -> Result<String, String> {
+    let Ok(mut archive) = zip::ZipArchive::new(std::io::Cursor::new(bytes)) else {
+        return Err("not a readable presentation".into());
+    };
+
+    // The order the presentation declares, not the order the parts are named.
+    // A deck can be reordered without renaming its parts — that is what the
+    // `sldIdLst` is for — so sorting slide1, slide2, slide3 returns a deck
+    // nobody assembled, while looking entirely successful.
+    let ordered = presentation_slide_order(&mut archive, budget);
+    let names = zip_entry_names(bytes);
+    let slides: Vec<String> = if ordered.is_empty() {
+        // No usable presentation part: fall back to numeric order, which is at
+        // least deterministic, rather than the archive's own order.
+        let mut numbered: Vec<(u32, String)> = names
+            .iter()
+            .filter(|n| n.starts_with("ppt/slides/slide") && n.ends_with(".xml"))
+            .filter_map(|n| {
+                n.trim_start_matches("ppt/slides/slide")
+                    .trim_end_matches(".xml")
+                    .parse()
+                    .ok()
+                    .map(|i| (i, n.clone()))
+            })
+            .collect();
+        numbered.sort_by_key(|(i, _)| *i);
+        numbered.into_iter().map(|(_, n)| n).collect()
+    } else {
+        ordered
+    };
+
+    if slides.is_empty() {
+        return Err("not a readable presentation".into());
+    }
+
+    let mut out = String::new();
+    for (position, name) in slides.iter().enumerate() {
+        if *budget == 0 {
+            break;
+        }
+        let Ok(xml) = read_entry_within(&mut archive, name, budget) else {
+            continue;
+        };
+        let text = xml_to_text(&xml, &["a:p"], &[]);
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        // Numbered by position in the deck, which is what a reader means by
+        // "slide 3" — not by which part file it happens to live in.
+        out.push_str(&format!("[Slide {}]\n{text}\n\n", position + 1));
+    }
+    Ok(out)
+}
+
+/// Slide parts in the order `presentation.xml` declares them.
+fn presentation_slide_order<R: std::io::Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    budget: &mut u64,
+) -> Vec<String> {
+    let Ok(pres) = read_entry_within(archive, "ppt/presentation.xml", budget) else {
+        return Vec::new();
+    };
+    let Ok(rels) = read_entry_within(archive, "ppt/_rels/presentation.xml.rels", budget) else {
+        return Vec::new();
+    };
+    let by_id = relationship_targets(&rels);
+    slide_id_order(&pres)
+        .into_iter()
+        .filter_map(|rid| by_id.get(&rid).cloned())
+        .map(|target| format!("ppt/{}", target.trim_start_matches("./")))
+        .collect()
+}
+
+/// The relationship ids in `sldIdLst`, in order.
+///
+/// Parsed rather than scanned for `r:id="`. The namespace prefix is
+/// conventional, not fixed — a deck written with `rel:id` is perfectly valid
+/// and was read in the wrong order, silently.
+fn slide_id_order(presentation: &str) -> Vec<String> {
+    use quick_xml::events::Event;
+    let mut reader = quick_xml::Reader::from_str(presentation);
+    let mut out = Vec::new();
+    let mut inside = false;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) if local(e.name().as_ref()) == b"sldIdLst" => inside = true,
+            Ok(Event::End(e)) if local(e.name().as_ref()) == b"sldIdLst" => break,
+            Ok(Event::Start(e)) | Ok(Event::Empty(e))
+                if inside && local(e.name().as_ref()) == b"sldId" =>
+            {
+                for attr in e.attributes().flatten() {
+                    if local(attr.key.as_ref()) == b"id" && attr.key.as_ref().contains(&b':') {
+                        if let Ok(v) = attr.decoded_and_normalized_value(
+                            quick_xml::XmlVersion::Implicit1_0,
+                            reader.decoder(),
+                        ) {
+                            out.push(v.into_owned());
+                        }
+                    }
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The part of a qualified XML name after its prefix.
+fn local(qualified: &[u8]) -> &[u8] {
+    crate::ooxml::template::local_name(qualified)
+}
+
+/// Relationship id to target, parsed rather than pattern-matched.
+fn relationship_targets(rels: &str) -> std::collections::HashMap<String, String> {
+    use quick_xml::events::Event;
+    let mut reader = quick_xml::Reader::from_str(rels);
+    let mut out = std::collections::HashMap::new();
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                if local(e.name().as_ref()) != b"Relationship" {
+                    continue;
+                }
+                let (mut id, mut target) = (String::new(), String::new());
+                for attr in e.attributes().flatten() {
+                    let value = attr
+                        .decoded_and_normalized_value(
+                            quick_xml::XmlVersion::Implicit1_0,
+                            reader.decoder(),
+                        )
+                        .map(|v| v.into_owned())
+                        .unwrap_or_default();
+                    match local(attr.key.as_ref()) {
+                        b"Id" => id = value,
+                        b"Target" => target = value,
+                        _ => {}
+                    }
+                }
+                if !id.is_empty() && !target.is_empty() {
+                    out.insert(id, target);
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Cell text from an `.xlsx`, laid out as rows.
+///
+/// Tab-separated cells and one row per line, because a spreadsheet flattened
+/// into prose stops being a table — a model cannot tell which figure belongs
+/// to which column, which is the only thing a spreadsheet is for.
+fn xlsx_to_text(bytes: &[u8], budget: &mut u64) -> Result<String, String> {
+    let Ok(mut archive) = zip::ZipArchive::new(std::io::Cursor::new(bytes)) else {
+        return Err("not a readable spreadsheet".into());
+    };
+
+    // Most spreadsheets store their text once in a shared table and reference
+    // it by index; a cell then holds a number that means nothing on its own.
+    let shared: Vec<String> = read_entry_within(&mut archive, "xl/sharedStrings.xml", budget)
+        .ok()
+        .map(|xml| shared_strings(&xml))
+        .unwrap_or_default();
+
+    // Which styles mean "show this number as a date", read once for the
+    // workbook. A missing or unreadable styles part is not a failure: it means
+    // no cell is a date, which is what a sheet of plain numbers looks like.
+    let dates: Vec<bool> = read_entry_within(&mut archive, "xl/styles.xml", budget)
+        .ok()
+        .map(|xml| date_styles(&xml))
+        .unwrap_or_default();
+
+    // Sheets in the order the workbook declares, carrying their real names.
+    // Sorting sheet1, sheet2 returns tabs in an order nobody chose, and drops
+    // the names entirely — and a workbook's sheets are usually named for a
+    // reason a reader needs.
+    let sheets = workbook_sheets(&mut archive, budget);
+    let sheets = if sheets.is_empty() {
+        let names = zip_entry_names(bytes);
+        let mut numbered: Vec<(u32, String)> = names
+            .iter()
+            .filter(|n| n.starts_with("xl/worksheets/sheet") && n.ends_with(".xml"))
+            .filter_map(|n| {
+                n.trim_start_matches("xl/worksheets/sheet")
+                    .trim_end_matches(".xml")
+                    .parse()
+                    .ok()
+                    .map(|i| (i, n.clone()))
+            })
+            .collect();
+        numbered.sort_by_key(|(i, _)| *i);
+        numbered
+            .into_iter()
+            .enumerate()
+            .map(|(i, (_, part))| (format!("Sheet {}", i + 1), part))
+            .collect()
+    } else {
+        sheets
+    };
+
+    if sheets.is_empty() {
+        return Err("not a readable spreadsheet".into());
+    }
+
+    let mut out = String::new();
+    for (label, part) in sheets {
+        if *budget == 0 {
+            break;
+        }
+        let Ok(xml) = read_entry_within(&mut archive, &part, budget) else {
+            continue;
+        };
+        let rows = sheet_rows(&xml, &shared, &dates);
+        if rows.is_empty() {
+            continue;
+        }
+        out.push_str(&format!("[{label}]\n"));
+        for row in rows {
+            out.push_str(&row.join("\t"));
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    Ok(out)
+}
+
+/// Sheets as `(name, part)`, in workbook order.
+fn workbook_sheets<R: std::io::Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    budget: &mut u64,
+) -> Vec<(String, String)> {
+    let Ok(book) = read_entry_within(archive, "xl/workbook.xml", budget) else {
+        return Vec::new();
+    };
+    let Ok(rels) = read_entry_within(archive, "xl/_rels/workbook.xml.rels", budget) else {
+        return Vec::new();
+    };
+    let by_id = relationship_targets(&rels);
+
+    use quick_xml::events::Event;
+    let mut reader = quick_xml::Reader::from_str(&book);
+    let mut out = Vec::new();
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                if local(e.name().as_ref()) != b"sheet" {
+                    continue;
+                }
+                let (mut name, mut rid) = (String::new(), String::new());
+                for attr in e.attributes().flatten() {
+                    let value = attr
+                        .decoded_and_normalized_value(
+                            quick_xml::XmlVersion::Implicit1_0,
+                            reader.decoder(),
+                        )
+                        .map(|v| v.into_owned())
+                        .unwrap_or_default();
+                    match local(attr.key.as_ref()) {
+                        b"name" => name = value,
+                        // Only the *prefixed* id is the relationship; a bare
+                        // `id` on a sheet is something else entirely.
+                        b"id" if attr.key.as_ref().contains(&b':') => rid = value,
+                        _ => {}
+                    }
+                }
+                if let Some(target) = by_id.get(&rid) {
+                    let part = format!("xl/{}", target.trim_start_matches("./"));
+                    let label = if name.is_empty() {
+                        format!("Sheet {}", out.len() + 1)
+                    } else {
+                        name
+                    };
+                    out.push((label, part));
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The shared string table, in index order.
+fn shared_strings(xml: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = xml;
+    // Each `si` is one string, possibly split across several `t` runs by
+    // formatting — joining them is what keeps "Smith & Sons" one value.
+    while let Some(at) = rest.find("<si>") {
+        rest = &rest[at + 4..];
+        let end = rest.find("</si>").unwrap_or(rest.len());
+        out.push(xml_to_text(&rest[..end], &[], &[]).trim().to_string());
+        rest = &rest[end..];
+    }
+    out
+}
+
+/// Rows of cell values from a worksheet, placed by their coordinates.
+///
+/// Parsed rather than scanned. The previous version looked for `<row`, `<c `,
+/// `t="s"` and `r="` as substrings, and every one broke on legal variation:
+/// single-quoted attributes returned an empty sheet, and namespace-prefixed
+/// elements — `<x:row>`, which Excel itself writes — returned "no text found"
+/// for a perfectly good file. Fixing those one at a time is how the same
+/// mistake keeps coming back; a parser answers all of them at once.
+/// Which cell styles mean "this number is a date".
+///
+/// A spreadsheet has no date type. A date cell holds a number — days since
+/// 1899-12-30 — and a style saying to show it as a date, and the two live in
+/// different parts. Reading only the worksheet gave the model `45383` where
+/// the user saw `2024-04-15`, in a column headed "Invoice date", every time.
+///
+/// `xl/styles.xml` lists the formats in use in `cellXfs`; a cell's `s`
+/// attribute is an index into that list.
+fn date_styles(xml: &str) -> Vec<bool> {
+    use quick_xml::events::Event;
+    let mut reader = quick_xml::Reader::from_str(xml);
+
+    let mut custom: std::collections::HashMap<u32, String> = std::collections::HashMap::new();
+    let mut ids: Vec<u32> = Vec::new();
+    let mut in_cell_xfs = false;
+    let mut in_num_fmts = false;
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => match local(e.name().as_ref()) {
+                // Only the workbook's own format table. `<dxf>` — a
+                // differential format, for conditional formatting — carries a
+                // `<numFmt>` of its own in a separate id space, and `<dxfs>`
+                // comes after `<numFmts>` in the part, so without this guard it
+                // overwrote the real definition and a currency column read
+                // back as dates. A `<dxf>` claiming id 0 was worse still: every
+                // General-formatted number in the workbook became a date.
+                b"numFmt" if in_num_fmts => {
+                    let id = attr_by_local(&e, b"numFmtId").and_then(|v| v.parse().ok());
+                    let code = attr_by_local(&e, b"formatCode");
+                    if let (Some(id), Some(code)) = (id, code) {
+                        custom.insert(id, code);
+                    }
+                }
+                b"numFmts" => in_num_fmts = true,
+                b"cellXfs" => in_cell_xfs = true,
+                // `cellStyleXfs` holds the same element and is *not* what a
+                // cell's `s` indexes into; counting both shifted every style
+                // by however many named styles the workbook had.
+                b"xf" if in_cell_xfs => {
+                    ids.push(
+                        attr_by_local(&e, b"numFmtId")
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(0),
+                    );
+                }
+                _ => {}
+            },
+            Ok(Event::End(e)) => match local(e.name().as_ref()) {
+                b"cellXfs" => in_cell_xfs = false,
+                b"numFmts" => in_num_fmts = false,
+                _ => {}
+            },
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+
+    ids.iter()
+        .map(|id| match id {
+            // The built-in date and time formats, fixed by the specification.
+            14..=22 | 45..=47 => true,
+            _ => custom.get(id).is_some_and(|c| is_date_format(c)),
+        })
+        .collect()
+}
+
+/// Whether a format code shows a date or a time.
+///
+/// Looks for the date and time placeholders — `y`, `d`, `h`, `s` — while
+/// stepping over the two places a letter means something else: quoted literal
+/// text, and the `[Red]`/`[$-409]` bracketed sections. `m` is deliberately not
+/// here on its own: it is minutes as often as months, and "General" and
+/// currency codes are full of stray letters.
+fn is_date_format(code: &str) -> bool {
+    let mut chars = code.chars().peekable();
+    let mut found = false;
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                for c in chars.by_ref() {
+                    if c == '"' {
+                        break;
+                    }
+                }
+            }
+            '[' => {
+                for c in chars.by_ref() {
+                    if c == ']' {
+                        break;
+                    }
+                }
+            }
+            '\\' => {
+                chars.next();
+            }
+            'y' | 'Y' | 'd' | 'D' | 'h' | 'H' => found = true,
+            // A lone `s` is seconds, but `\General` and `Standard` are not
+            // formats a date cell carries, and neither reaches here as a
+            // bare token.
+            's' | 'S' => found = true,
+            _ => {}
+        }
+    }
+    found
+}
+
+/// A spreadsheet serial number as the date it stands for.
+///
+/// Day 1 is 1900-01-01, and the epoch is therefore 1899-12-30 rather than
+/// 12-31: the format deliberately reproduces a 1983 bug in which 1900 is a
+/// leap year, so every serial from 61 on is one greater than the true day
+/// count. Anchoring two days early is how every other reader absorbs that.
+fn serial_to_datetime(serial: f64, want_time: bool) -> Option<String> {
+    if !serial.is_finite() || !(0.0..2_958_466.0).contains(&serial) {
+        return None;
+    }
+    let days = serial.trunc() as i64;
+    let fraction = serial - serial.trunc();
+    // Rounded to the second, because 0.5 of a day is not exactly representable
+    // and 12:00:00 came out as 11:59:59.
+    let seconds = (fraction * 86_400.0).round() as i64;
+    let (days, seconds) = if seconds == 86_400 {
+        (days + 1, 0)
+    } else {
+        (days, seconds)
+    };
+
+    // Serial 60 is 1900-02-29, a day that did not exist. There is no date to
+    // give for it, so the number stays a number.
+    if days == 60 {
+        return None;
+    }
+    // Before the phantom day the two calendars agree and the anchor is a day
+    // later; from 61 on the format is permanently one ahead, which is what
+    // makes 1899-12-30 the anchor everywhere else.
+    let offset = if days < 60 { 1 } else { 0 };
+    let (y, m, d) = civil_from_days(days - 25_569 + offset);
+    let date = format!("{y:04}-{m:02}-{d:02}");
+    if !want_time && seconds == 0 {
+        return Some(date);
+    }
+    let (h, min, s) = (seconds / 3600, (seconds % 3600) / 60, seconds % 60);
+    // A time-only cell — serial under 1 — has no meaningful date part.
+    if days == 0 {
+        return Some(format!("{h:02}:{min:02}:{s:02}"));
+    }
+    Some(format!("{date} {h:02}:{min:02}:{s:02}"))
+}
+
+/// Days since 1970-01-01 as a civil year, month and day.
+///
+/// Howard Hinnant's `civil_from_days`, which is exact for every day in the
+/// proleptic Gregorian calendar and needs no table.
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+fn attr_by_local(e: &quick_xml::events::BytesStart, want: &[u8]) -> Option<String> {
+    e.attributes().flatten().find_map(|a| {
+        (local(a.key.as_ref()) == want)
+            .then(|| String::from_utf8_lossy(a.value.as_ref()).into_owned())
+    })
+}
+
+fn sheet_rows(xml: &str, shared: &[String], dates: &[bool]) -> Vec<Vec<String>> {
+    use quick_xml::events::Event;
+    let mut reader = quick_xml::Reader::from_str(xml);
+
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut placed: Vec<(usize, String)> = Vec::new();
+    let mut row_number: Option<usize> = None;
+
+    let mut column = 0usize;
+    let mut kind = String::new();
+    let mut style: Option<usize> = None;
+    let mut in_cell = false;
+    let mut capturing = false;
+    let mut value = String::new();
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => match local(e.name().as_ref()) {
+                b"row" => {
+                    row_number = attr_by_local(&e, b"r").and_then(|r| r.parse().ok());
+                    placed.clear();
+                }
+                b"c" => {
+                    in_cell = true;
+                    value.clear();
+                    kind = attr_by_local(&e, b"t").unwrap_or_default();
+                    style = attr_by_local(&e, b"s").and_then(|s| s.parse().ok());
+                    column = attr_by_local(&e, b"r")
+                        .map(column_index)
+                        .unwrap_or(placed.len());
+                }
+                b"v" | b"t" if in_cell => capturing = true,
+                _ => {}
+            },
+            Ok(Event::Text(t)) if capturing => {
+                if let Ok(text) = t.xml10_content() {
+                    value.push_str(&text);
+                }
+            }
+            Ok(Event::End(e)) => match local(e.name().as_ref()) {
+                b"v" | b"t" => capturing = false,
+                b"c" => {
+                    in_cell = false;
+                    // `t="s"` means the value is an index into the shared
+                    // table; anything else is the value itself.
+                    let resolved = if kind == "s" {
+                        value
+                            .trim()
+                            .parse::<usize>()
+                            .ok()
+                            .and_then(|i| shared.get(i).cloned())
+                            .unwrap_or_default()
+                    } else if kind.is_empty() || kind == "n" {
+                        // A date is a number plus a style saying to show it as
+                        // one. Without the style the model was handed `45383`
+                        // under a heading reading "Invoice date".
+                        let is_date = style.is_some_and(|i| dates.get(i).copied().unwrap_or(false));
+                        let as_date = is_date
+                            .then(|| value.trim().parse::<f64>().ok())
+                            .flatten()
+                            .and_then(|n| serial_to_datetime(n, false));
+                        as_date.unwrap_or_else(|| value.trim().to_string())
+                    } else {
+                        value.trim().to_string()
+                    };
+                    placed.push((column, resolved));
+                    value.clear();
+                }
+                b"row" => {
+                    // A row's own number, so a gap between rows survives.
+                    let number = row_number.take().unwrap_or(rows.len() + 1);
+                    while rows.len() + 1 < number {
+                        rows.push(Vec::new());
+                    }
+                    let width = placed.iter().map(|(c, _)| *c + 1).max().unwrap_or(0);
+                    let mut cells = vec![String::new(); width];
+                    for (c, v) in placed.drain(..) {
+                        if let Some(slot) = cells.get_mut(c) {
+                            *slot = v;
+                        }
+                    }
+                    rows.push(cells);
+                }
+                _ => {}
+            },
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+
+    // Trailing blank rows carry no information; interior ones do.
+    while rows.last().is_some_and(|r| r.iter().all(String::is_empty)) {
+        rows.pop();
+    }
+    rows
+}
+
+/// `A` is 0, `Z` is 25, `AA` is 26 — a cell coordinate's column.
+fn column_index(reference: String) -> usize {
+    let mut n = 0usize;
+    for c in reference.chars().take_while(|c| c.is_ascii_alphabetic()) {
+        n = n * 26 + (c.to_ascii_uppercase() as usize - 'A' as usize + 1);
+    }
+    n.saturating_sub(1)
+}
+
 /// Squeeze runs of blank lines and trailing whitespace out of extracted text.
 fn tidy_text(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut blank_run = 0usize;
     for line in s.lines() {
-        let line = line.trim_end();
+        // Spaces, not tabs. Every tab this produces is a cell separator —
+        // nothing else here emits one — so a trailing tab is a trailing empty
+        // column, and trimming it left a row a column short of its own heading
+        // row.
+        let line = line.trim_end_matches([' ', '\r']);
         if line.trim().is_empty() {
             blank_run += 1;
             if blank_run > 1 {
@@ -2447,7 +3575,11 @@ fn tidy_text(s: &str) -> String {
 /// True if the filename is a document format we can extract text from.
 fn is_extractable_document(name: &str) -> bool {
     let l = name.to_lowercase();
-    l.ends_with(".pdf") || l.ends_with(".docx") || l.ends_with(".odt")
+    l.ends_with(".pdf")
+        || l.ends_with(".docx")
+        || l.ends_with(".odt")
+        || l.ends_with(".pptx")
+        || l.ends_with(".xlsx")
 }
 
 /// Extract readable text from a document's bytes (PDF / .docx / .odt), tidied
@@ -2497,10 +3629,24 @@ fn document_text(name: &str, bytes: &[u8]) -> Result<String, String> {
             &mut budget,
         );
         join_document_parts(body, sides)
+    } else if lower.ends_with(".pptx") {
+        let mut budget = DOC_TOTAL_TEXT_BUDGET;
+        pptx_to_text(bytes, &mut budget).map_err(|e| readable(e, "not a readable presentation"))?
+    } else if lower.ends_with(".xlsx") {
+        let mut budget = DOC_TOTAL_TEXT_BUDGET;
+        xlsx_to_text(bytes, &mut budget).map_err(|e| readable(e, "not a readable spreadsheet"))?
     } else {
         return Err("unsupported document type".into());
     };
-    let text = tidy_text(&text);
+    // `tidy_text` squeezes runs of blank lines, which is right for prose and
+    // wrong for a grid: two empty rows between data became one, so everything
+    // below them moved up a row. A spreadsheet's blank lines are positions,
+    // not spacing.
+    let text = if lower.ends_with(".xlsx") {
+        text.trim_end().to_string()
+    } else {
+        tidy_text(&text)
+    };
     if text.is_empty() {
         return Err("no text found — this may be a scanned or image-only document".into());
     }
@@ -3083,10 +4229,49 @@ async fn execute_tool<R: tauri::Runtime>(
                 Ok(o) => o,
                 Err(e) => return format!("Cannot write {path}: {e}"),
             };
+
+            // A name ending .docx, .xlsx or .pptx is a promise about the file's
+            // format, and writing text under it breaks that promise in a way
+            // only the recipient discovers — Word answers "unreadable content".
+            // Asked to "create a docx", a model reaches for this tool and
+            // writes Markdown, which is exactly what happened the first time
+            // this path met a real request. So the promise is kept: the content
+            // is built into the format the name claims.
+            //
+            // Built before the confirmation, not after, for two reasons. The
+            // dialog states a size, and stating the length of the Markdown for
+            // a file that will be twenty times that is a confirmation about
+            // something other than what happens. And a build that cannot
+            // succeed should say so without first making the user approve it.
+            let built = match document_kind_of(&path) {
+                Some(kind) => {
+                    let (template, template_problem) = load_configured_template(ctx.app, kind);
+                    match generate_document(kind, content, template.as_ref()).and_then(|doc| {
+                        ooxml::validate(&doc).map(|_| doc).map_err(|p| p.join("; "))
+                    }) {
+                        Ok(doc) => Some((kind, doc, template_problem)),
+                        Err(e) => return format!("Could not build {path}: {e}"),
+                    }
+                }
+                // A name this app cannot honour. Better to say so than to write
+                // text under it and let the failure surface somewhere else.
+                None if is_document_name(&path) => {
+                    return format!(
+                        "This app cannot write {path} — it can build .docx, .xlsx and .pptx from \
+                         Markdown, but not that format. Write the content as .md or .txt instead, \
+                         or offer the user one of the formats it can build."
+                    )
+                }
+                None => None,
+            };
+
             // Confirm before writing — always. A native dialog, blocking this
             // one request's task (the UI stays responsive on the main thread).
             let verb = if overwrite { "Overwrite" } else { "Create" };
-            let bytes = content.len();
+            let bytes = built
+                .as_ref()
+                .map(|(_, doc, _)| doc.len())
+                .unwrap_or(content.len());
             let approved = confirm_write(ctx.app, &path, verb, bytes);
             if !approved {
                 let _ = on_event.send(StreamEvent::Status(format!("✋ Write declined: {path}")));
@@ -3096,9 +4281,36 @@ async fn execute_tool<R: tauri::Runtime>(
                 );
             }
             let _ = on_event.send(StreamEvent::Status(format!("💾 Writing {path}…")));
-            match workspace::write_file(root, &path, content) {
-                Ok(()) => format!("Wrote {} bytes to {path}.", bytes),
-                Err(e) => format!("Could not write {path}: {e}"),
+            // Said to the user directly, not only handed to the model as
+            // "Tell the user: …". Whether they learned their own template had
+            // been skipped depended on the model deciding to repeat it, and
+            // the file was on disk either way — so the one path where a
+            // document is written without the user watching a dialog was the
+            // one path where the warning might never arrive.
+            if let Some((_, _, Some(problem))) = &built {
+                let _ = on_event.send(StreamEvent::Status(format!("⚠️ {problem}")));
+            }
+
+            match built {
+                Some((kind, doc, template_problem)) => {
+                    match workspace::write_bytes(root, &path, &doc, overwrite) {
+                        Ok(()) => {
+                            let note = template_problem
+                                .map(|p| format!(" Tell the user: {p}"))
+                                .unwrap_or_default();
+                            format!(
+                                "Wrote {path} as a real {kind} file ({bytes} bytes), built from \
+                                 the Markdown you supplied. The user can open it \
+                                 directly.{note}"
+                            )
+                        }
+                        Err(e) => format!("Could not write {path}: {e}"),
+                    }
+                }
+                None => match workspace::write_file(root, &path, content, overwrite) {
+                    Ok(()) => format!("Wrote {bytes} bytes to {path}."),
+                    Err(e) => format!("Could not write {path}: {e}"),
+                },
             }
         }
         other => format!("Unknown tool: {other}."),
@@ -5212,6 +6424,833 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    // ---- Writing a document into the workspace ----------------------------
+    //
+    // Asked to "create a docx file with this content", a model reaches for the
+    // workspace write tool and passes Markdown with a .docx filename. The file
+    // that lands is a text file wearing a .docx extension, and the first thing
+    // that happens is Word saying "unreadable content" — which is true, and
+    // which the user reasonably reads as the app being broken.
+    //
+    // Found the first time this path met a real request, not by a test.
+
+    #[test]
+    fn a_document_extension_is_recognised() {
+        assert_eq!(document_kind_of("report.docx"), Some("docx"));
+        assert_eq!(document_kind_of("figures.XLSX"), Some("xlsx"));
+        assert_eq!(document_kind_of("out/deck.pptx"), Some("pptx"));
+        assert_eq!(document_kind_of("notes.md"), None);
+        assert_eq!(document_kind_of("data.csv"), None);
+        // A name that merely contains the word is not a promise about format.
+        assert_eq!(document_kind_of("docx-notes.txt"), None);
+    }
+
+    #[test]
+    fn formats_this_app_cannot_build_are_named_so_they_can_be_refused() {
+        // Writing Markdown to report.pdf is the same broken promise, and this
+        // app has no PDF writer. Saying so beats producing the file.
+        for name in [
+            "report.pdf",
+            "old.doc",
+            "sheet.xls",
+            "deck.ppt",
+            "notes.odt",
+            "book.epub",
+        ] {
+            assert!(
+                is_document_name(name),
+                "{name} should be recognised as a document name"
+            );
+            assert_eq!(
+                document_kind_of(name),
+                None,
+                "{name} is not one we can build"
+            );
+        }
+        for name in ["notes.md", "data.csv", "script.py", "readme.txt"] {
+            assert!(!is_document_name(name), "{name} is not a document name");
+        }
+    }
+
+    /// Writes the documents `scripts/office-oracle.sh` opens in Word, Excel
+    /// and PowerPoint.
+    ///
+    /// Not a test — an ignored one so it can borrow the real generators
+    /// rather than reimplementing them. Every case here is a defect that
+    /// shipped: each produced a file that was valid OPC, passed every check
+    /// in this repo, and was wrong in a way only the application could show.
+    ///
+    ///   cargo test --manifest-path src-tauri/Cargo.toml --lib \
+    ///     office_oracle_fixtures -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn office_oracle_fixtures() {
+        let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../qa/office-oracle/out");
+        std::fs::create_dir_all(&out).expect("create out dir");
+
+        // Word merges adjacent tables, so these two were one grid with the
+        // second header sitting in it as an ordinary row. `count tables`
+        // answers 2 or it answers 1; nothing else in this repo can tell.
+        // The numbered list is here for the same reason: it read "— Step one"
+        // and every structural check was satisfied.
+        let word = "# Quarterly review\n\n\
+            Two tables, one after the other.\n\n\
+            | Region | Share |\n|---|---|\n| EU | 60% |\n| US | 25% |\n\n\
+            | Quarter | Revenue |\n|---|---|\n| Q1 | 1,200 |\n| Q2 | 1,350 |\n\n\
+            ## Steps\n\n\
+            1. First step\n2. Second step\n3. Third step\n\n\
+            - A bullet\n- Another bullet\n\n\
+            A table written without its outer pipes:\n\n\
+            Name | Role\n-----|-----\nAsha | Lead\n";
+        std::fs::write(
+            out.join("tables-and-lists.docx"),
+            generate_document("docx", word, None).unwrap(),
+        )
+        .expect("write fixture");
+
+        // Excel is the only thing that shows what a number became. The long
+        // reference must come back with every digit it went in with, which
+        // means it has to be text; the short one is a number and stays one.
+        let sheet = "| Reference | Count | Note |\n|---|---|---|\n\
+            | 9007199254740993 | 42 | must read back unchanged |\n\
+            | 4915123456789 | 7 | a number, and fits |\n";
+        std::fs::write(
+            out.join("precision.xlsx"),
+            generate_document("xlsx", sheet, None).unwrap(),
+        )
+        .expect("write fixture");
+
+        // Pagination: more content than fits, so the deck has to split it.
+        // A wrong split shows up as a slide count and as text off the slide,
+        // which the PDF export makes visible.
+        let mut deck = String::from("# Overflow deck\n\n");
+        for n in 1..=3 {
+            deck.push_str(&format!("## Section {n}\n\n"));
+            for line in 1..=14 {
+                deck.push_str(&format!("- Point {n}.{line} with enough text on it to take up a good part of the line\n"));
+            }
+            deck.push('\n');
+        }
+        std::fs::write(
+            out.join("overflow.pptx"),
+            generate_document("pptx", &deck, None).unwrap(),
+        )
+        .expect("write fixture");
+
+        // A template with revision marks left on — an ordinary thing, and the
+        // case that produced ill-formed documents Word would not open at all.
+        // `<w:sectPrChange>` nests a whole `<w:sectPr>` inside the live one, so
+        // taking the first `</w:sectPr>` cut the section off mid-element. The
+        // package was still structurally perfect, so nothing here objected;
+        // Word simply refused the file.
+        let styles = r#"<?xml version="1.0"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+            <w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/></w:style>
+            <w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/></w:style>
+            <w:style w:type="paragraph" w:styleId="ListParagraph"><w:name w:val="List Paragraph"/></w:style>
+            </w:styles>"#;
+        let document = r#"<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+            <w:p><w:r><w:t>The template author's own draft.</w:t></w:r></w:p>
+            <w:sectPr>
+              <w:pgSz w:w="15840" w:h="12240" w:orient="landscape"/>
+              <w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720" w:header="708" w:footer="708" w:gutter="0"/>
+              <w:sectPrChange w:id="1" w:author="A" w:date="2020-01-01T00:00:00Z">
+                <w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="2880" w:right="2880" w:bottom="2880" w:left="2880"/></w:sectPr>
+              </w:sectPrChange>
+            </w:sectPr></w:body></w:document>"#;
+        let ct = concat!(
+            r#"<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">"#,
+            r#"<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>"#,
+            r#"<Default Extension="xml" ContentType="application/xml"/>"#,
+            r#"<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>"#,
+            r#"</Types>"#
+        );
+        let template_bytes = zip_with_entries(&[
+            ("[Content_Types].xml", ct),
+            ("word/styles.xml", styles),
+            ("word/document.xml", document),
+        ]);
+        let template = ooxml::template::accept("tracked.docx", &template_bytes)
+            .expect("the tracked-change template was refused");
+        let md = "# Landscape\n\nBuilt from a template with revision marks left on.\n\n                  - The page should be landscape, 15840 twips wide\n                  - Not the 11906 the change record superseded\n";
+        std::fs::write(
+            out.join("tracked-template.docx"),
+            ooxml::docx::from_markdown_with(Some(&template), md).unwrap(),
+        )
+        .expect("write fixture");
+
+        eprintln!("\nwrote fixtures to {}", out.display());
+    }
+
+    #[test]
+    fn an_empty_first_cell_does_not_swallow_the_paragraph_before_the_table() {
+        // The trailing-whitespace trim had no lower bound, so on the first cell
+        // of a table it ate the newline that ended the paragraph above — and a
+        // blank top-left cell is the standard cross-tab shape. The sentence
+        // introducing the table became its first column heading.
+        let cell = |t: &str| {
+            if t.is_empty() {
+                "<w:tc><w:p/></w:tc>".to_string()
+            } else {
+                format!("<w:tc><w:p><w:r><w:t>{t}</w:t></w:r></w:p></w:tc>")
+            }
+        };
+        let xml =
+            format!(
+            "<w:document><w:body><w:p><w:r><w:t>Revenue by region, in millions.</w:t></w:r></w:p>\
+             <w:tbl><w:tr>{}{}{}</w:tr><w:tr>{}{}{}</w:tr></w:tbl>\
+             <w:p><w:r><w:t>Source: finance.</w:t></w:r></w:p></w:body></w:document>",
+            cell(""), cell("Q1"), cell("Q2"),
+            cell("EU"), cell("1,200"), cell("1,350"),
+        );
+        let text = document_text("x.docx", &zip_with("word/document.xml", &xml)).unwrap();
+        let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(
+            lines[0], "Revenue by region, in millions.",
+            "the sentence was pulled into the table: {text:?}"
+        );
+        assert_eq!(
+            lines[1], "\tQ1\tQ2",
+            "the empty heading cell vanished: {text:?}"
+        );
+        assert_eq!(lines[2], "EU\t1,200\t1,350", "{text:?}");
+    }
+
+    #[test]
+    fn two_tables_in_a_row_keep_their_row_boundary() {
+        // With an empty first cell in the second table the boundary went
+        // entirely: two tables and three rows of structure arrived as one line.
+        let xml = "<w:document><w:body>\
+            <w:tbl><w:tr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc>\
+                          <w:tc><w:p><w:r><w:t>B</w:t></w:r></w:p></w:tc></w:tr></w:tbl>\
+            <w:tbl><w:tr><w:tc><w:p/></w:tc>\
+                          <w:tc><w:p><w:r><w:t>Z</w:t></w:r></w:p></w:tc></w:tr></w:tbl>\
+            </w:body></w:document>";
+        let text = document_text("x.docx", &zip_with("word/document.xml", xml)).unwrap();
+        let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(lines.len(), 2, "the two tables ran together: {text:?}");
+        assert_eq!(lines[0], "A\tB");
+        assert_eq!(lines[1], "\tZ");
+    }
+
+    #[test]
+    fn a_trailing_empty_cell_is_still_a_column() {
+        // The row trim popped every trailing tab, so a row ending in an empty
+        // cell lost it and came up a column short against its heading row.
+        //
+        // The last cell of the last row of the whole document is the one
+        // exception: `tidy_text` trims the document's trailing whitespace, and
+        // a tab at the very end of the text goes with it. That is a document
+        // ending in an empty table cell with nothing after it at all, and
+        // keeping it would mean a file that ends in invisible whitespace.
+        let xml = "<w:document><w:body><w:tbl>\
+            <w:tr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc>\
+                  <w:tc><w:p><w:r><w:t>B</w:t></w:r></w:p></w:tc></w:tr>\
+            <w:tr><w:tc><w:p><w:r><w:t>1</w:t></w:r></w:p></w:tc>\
+                  <w:tc><w:p/></w:tc></w:tr>\
+            </w:tbl><w:p><w:r><w:t>After.</w:t></w:r></w:p></w:body></w:document>";
+        let text = document_text("x.docx", &zip_with("word/document.xml", xml)).unwrap();
+        let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(lines[1], "1\t", "the empty last cell was dropped: {text:?}");
+        assert_eq!(lines[2], "After.");
+    }
+
+    #[test]
+    fn a_word_table_keeps_its_rows_and_columns() {
+        // Every paragraph ended a line, and a cell holds paragraphs, so a
+        // three-column table arrived as one long column of values with nothing
+        // saying which heading each belonged to. A document's tables are
+        // usually the part someone uploads it to ask about.
+        let cell = |t: &str| format!("<w:tc><w:p><w:r><w:t>{t}</w:t></w:r></w:p></w:tc>");
+        let row =
+            |a: &str, b: &str, c: &str| format!("<w:tr>{}{}{}</w:tr>", cell(a), cell(b), cell(c));
+        let xml = format!(
+            "<w:document><w:body><w:p><w:r><w:t>Before.</w:t></w:r></w:p><w:tbl>{}{}</w:tbl>\
+             <w:p><w:r><w:t>After.</w:t></w:r></w:p></w:body></w:document>",
+            row("Region", "Q1", "Q2"),
+            row("EU", "1,200", "1,350"),
+        );
+        let text = document_text("report.docx", &zip_with("word/document.xml", &xml)).unwrap();
+        assert!(
+            text.contains("Region\tQ1\tQ2"),
+            "the header row was flattened: {text:?}"
+        );
+        assert!(
+            text.contains("EU\t1,200\t1,350"),
+            "the body row was flattened: {text:?}"
+        );
+        assert!(text.contains("Before."), "{text:?}");
+        assert!(text.contains("After."), "{text:?}");
+    }
+
+    #[test]
+    fn a_cell_holding_several_paragraphs_is_still_one_cell() {
+        let xml = "<w:document><w:body><w:tbl><w:tr>\
+            <w:tc><w:p><w:r><w:t>Line one</w:t></w:r></w:p>\
+                  <w:p><w:r><w:t>line two</w:t></w:r></w:p></w:tc>\
+            <w:tc><w:p><w:r><w:t>Other</w:t></w:r></w:p></w:tc>\
+            </w:tr></w:tbl></w:body></w:document>";
+        let text = document_text("x.docx", &zip_with("word/document.xml", xml)).unwrap();
+        assert!(
+            text.contains("Line one line two\tOther"),
+            "a cell's paragraphs broke the row: {text:?}"
+        );
+    }
+
+    #[test]
+    fn a_table_inside_a_cell_does_not_lose_the_outer_row() {
+        // A table inside a cell is ordinary in a real document, and its rows
+        // must not be mistaken for the outer table's.
+        let xml = "<w:document><w:body><w:tbl><w:tr>\
+            <w:tc><w:tbl><w:tr><w:tc><w:p><w:r><w:t>inner</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:tc>\
+            <w:tc><w:p><w:r><w:t>outer</w:t></w:r></w:p></w:tc>\
+            </w:tr></w:tbl></w:body></w:document>";
+        let text = document_text("nested-table.docx", &zip_with("word/document.xml", xml)).unwrap();
+        // Both cells belong to one row of the outer table.
+        assert!(
+            text.contains("inner\touter"),
+            "the nested table ended the outer row early: {text:?}"
+        );
+    }
+
+    #[test]
+    fn markdown_written_to_a_docx_name_becomes_a_real_document() {
+        // The exact shape of the failure: the content is Markdown, the name
+        // promises Word. What lands must be a document, not the Markdown.
+        let md = "# The Colour That Kept Its Word\n\nElias Smith & Sons, founded 1817.";
+        let bytes = generate_document("docx", md, None).unwrap();
+
+        assert_eq!(ooxml::validate(&bytes), Ok(()));
+        // A zip, not text. `PK` is the whole difference between a file Word
+        // opens and one it refuses.
+        assert_eq!(&bytes[..2], b"PK", "not a zip archive");
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains("# The Colour"),
+            "the Markdown was written through verbatim"
+        );
+
+        // And it reads back as the document it claims to be.
+        let text = document_text("out.docx", &bytes).unwrap();
+        assert!(
+            text.contains("The Colour That Kept Its Word"),
+            "got: {text:?}"
+        );
+        assert!(text.contains("Elias Smith & Sons"), "got: {text:?}");
+    }
+
+    #[test]
+    fn a_date_cell_reads_as_a_date_not_a_serial_number() {
+        // A spreadsheet has no date type: a date cell holds days since
+        // 1899-12-30 and a *style* saying to show it as a date, and the two
+        // live in different parts. Reading only the worksheet handed the model
+        // `45000` under a heading reading "Invoice date" — a number it could
+        // do nothing sensible with, in the column most likely to be asked
+        // about.
+        let styles = r#"<?xml version="1.0"?><styleSheet>
+          <numFmts count="1"><numFmt numFmtId="164" formatCode="dd/mm/yyyy"/></numFmts>
+          <cellStyleXfs count="1"><xf numFmtId="0"/></cellStyleXfs>
+          <cellXfs count="4">
+            <xf numFmtId="0"/><xf numFmtId="14"/><xf numFmtId="164"/><xf numFmtId="4"/>
+          </cellXfs></styleSheet>"#;
+        let sheet = r#"<?xml version="1.0"?><worksheet><sheetData>
+          <row r="1"><c r="A1" s="1"><v>45000</v></c><c r="B1" s="2"><v>44927</v></c>
+                     <c r="C1" s="3"><v>45000</v></c><c r="D1"><v>45000</v></c></row>
+          </sheetData></worksheet>"#;
+        let bytes = zip_with_entries(&[
+            ("xl/styles.xml", styles),
+            ("xl/worksheets/sheet1.xml", sheet),
+        ]);
+        let text = document_text("invoices.xlsx", &bytes).unwrap();
+        // A built-in date format, and a custom one.
+        assert!(
+            text.contains("2023-03-15"),
+            "built-in format not read: {text}"
+        );
+        assert!(
+            text.contains("2023-01-01"),
+            "custom format not read: {text}"
+        );
+        // A number that is styled, but not as a date, is still a number —
+        // `numFmtId="4"` is `#,##0.00`, and money is not a date.
+        assert!(
+            text.contains("45000"),
+            "a currency cell was turned into a date: {text}"
+        );
+    }
+
+    #[test]
+    fn a_conditional_format_does_not_decide_what_a_cell_holds() {
+        // `<dxf>` carries its own `<numFmt>` in an id space of its own, for
+        // conditional formatting, and `<dxfs>` comes after `<numFmts>` in the
+        // part — so with no scope guard it overwrote the real definition. A
+        // currency column became dates.
+        let styles = r##"<?xml version="1.0"?><styleSheet>
+          <numFmts><numFmt numFmtId="164" formatCode="#,##0.00\ &quot;kr&quot;"/></numFmts>
+          <cellXfs count="2"><xf numFmtId="0"/><xf numFmtId="164"/></cellXfs>
+          <dxfs count="1"><dxf><numFmt numFmtId="164" formatCode="dd\-mmm\-yy"/></dxf></dxfs>
+        </styleSheet>"##;
+        assert_eq!(
+            date_styles(styles),
+            vec![false, false],
+            "a conditional-formatting rule turned a currency cell into a date"
+        );
+    }
+
+    #[test]
+    fn a_conditional_format_cannot_redefine_general() {
+        // The worse variant: a `<dxf>` claiming id 0 turned every
+        // General-formatted number in the workbook into a date.
+        let styles = r#"<?xml version="1.0"?><styleSheet>
+          <cellXfs count="2"><xf numFmtId="0"/><xf numFmtId="0"/></cellXfs>
+          <dxfs count="1"><dxf><numFmt numFmtId="0" formatCode="yyyy\-mm\-dd"/></dxf></dxfs>
+        </styleSheet>"#;
+        assert_eq!(date_styles(styles), vec![false, false]);
+    }
+
+    #[test]
+    fn a_workbooks_own_custom_date_format_is_still_read() {
+        // The guard must not shut out the thing it is there to let through.
+        let styles = r#"<?xml version="1.0"?><styleSheet>
+          <numFmts><numFmt numFmtId="165" formatCode="dd/mm/yyyy"/></numFmts>
+          <cellXfs count="2"><xf numFmtId="0"/><xf numFmtId="165"/></cellXfs>
+        </styleSheet>"#;
+        assert_eq!(date_styles(styles), vec![false, true]);
+    }
+
+    #[test]
+    fn a_cells_style_indexes_cell_xfs_and_not_the_named_styles() {
+        // `cellStyleXfs` holds the same `<xf>` element and is a different
+        // list. Counting both shifted every style by however many named
+        // styles the workbook had — so the date column came out as a number
+        // and some other column came out as a date.
+        let styles = r#"<?xml version="1.0"?><styleSheet>
+          <cellStyleXfs count="3"><xf numFmtId="14"/><xf numFmtId="14"/><xf numFmtId="14"/></cellStyleXfs>
+          <cellXfs count="2"><xf numFmtId="0"/><xf numFmtId="14"/></cellXfs></styleSheet>"#;
+        assert_eq!(date_styles(styles), vec![false, true]);
+    }
+
+    #[test]
+    fn serial_numbers_convert_to_the_dates_a_spreadsheet_shows() {
+        for (serial, want) in [
+            (45000.0, "2023-03-15"),
+            (44927.0, "2023-01-01"),
+            (25569.0, "1970-01-01"),
+            // Before the format's phantom leap day the anchor is a day later.
+            (1.0, "1900-01-01"),
+            (59.0, "1900-02-28"),
+            (61.0, "1900-03-01"),
+        ] {
+            assert_eq!(
+                serial_to_datetime(serial, false).as_deref(),
+                Some(want),
+                "serial {serial}"
+            );
+        }
+        // 1900-02-29 never happened. There is no date to give, so the number
+        // stays a number rather than becoming a wrong one.
+        assert_eq!(serial_to_datetime(60.0, false), None);
+        // A fraction is the time of day, and 0.5 is noon — not 11:59:59.
+        assert_eq!(
+            serial_to_datetime(45000.5, false).as_deref(),
+            Some("2023-03-15 12:00:00")
+        );
+        // A serial under 1 is a time with no date.
+        assert_eq!(serial_to_datetime(0.25, true).as_deref(), Some("06:00:00"));
+        // Nothing a cell could hold makes this panic.
+        assert_eq!(serial_to_datetime(f64::NAN, false), None);
+        assert_eq!(serial_to_datetime(-1.0, false), None);
+        assert_eq!(serial_to_datetime(1e18, false), None);
+    }
+
+    #[test]
+    fn a_format_code_that_is_not_a_date_is_not_read_as_one() {
+        // The letters that matter appear inside quoted literals and bracketed
+        // sections too, where they are not placeholders.
+        for date in [
+            "dd/mm/yyyy",
+            "yyyy-mm-dd hh:mm",
+            "[$-409]d-mmm-yy;@",
+            "h:mm:ss AM/PM",
+        ] {
+            assert!(is_date_format(date), "{date} is a date format");
+        }
+        for not in [
+            "General",
+            "#,##0.00",
+            "0.00%",
+            r#""kr"\ #,##0.00"#,
+            "[Red]-#,##0",
+            "0.00_);(0.00)",
+        ] {
+            assert!(!is_date_format(not), "{not} is not a date format");
+        }
+    }
+
+    #[test]
+    fn a_spreadsheet_name_gets_a_spreadsheet() {
+        let bytes = generate_document("xlsx", "| A | B |\n| --- | --- |\n| 1 | 2 |", None).unwrap();
+        assert_eq!(&bytes[..2], b"PK");
+        assert_eq!(ooxml::validate(&bytes), Ok(()));
+    }
+
+    #[test]
+    fn a_deck_name_gets_a_deck() {
+        // The workspace route had tests for .docx and .xlsx and not for .pptx,
+        // which is the format that has needed the most correcting.
+        let md = "# Quarterly review\n\n- Revenue up 12%\n- Smith & Sons renewed";
+        let bytes = generate_document("pptx", md, None).unwrap();
+        assert_eq!(&bytes[..2], b"PK", "not a zip archive");
+        assert_eq!(ooxml::validate(&bytes), Ok(()));
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains("# Quarterly review"),
+            "the Markdown was written through verbatim"
+        );
+    }
+
+    #[test]
+    fn an_unbuildable_format_is_an_error_rather_than_a_guess() {
+        assert!(generate_document("pdf", "# Title", None).is_err());
+        assert!(generate_document("odt", "# Title", None).is_err());
+    }
+
+    // ---- Reading presentations and spreadsheets ----------------------------
+
+    #[test]
+    fn a_presentation_reads_its_slides_in_order() {
+        // Slides are numbered, not ordered by the archive, so slide10 must not
+        // sort between slide1 and slide2. A deck read out of order is worse
+        // than one read badly, because nothing about it looks wrong.
+        let a_ns = r#"xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main""#;
+        let slide =
+            |t: &str| format!(r#"<p:sld {a_ns}><a:p><a:r><a:t>{t}</a:t></a:r></a:p></p:sld>"#);
+        let mut entries: Vec<(String, String)> = Vec::new();
+        for i in 1..=11 {
+            entries.push((
+                format!("ppt/slides/slide{i}.xml"),
+                slide(&format!("Slide number {i}")),
+            ));
+        }
+        let refs: Vec<(&str, &str)> = entries
+            .iter()
+            .map(|(a, b)| (a.as_str(), b.as_str()))
+            .collect();
+        let text = document_text("deck.pptx", &zip_with_entries(&refs)).unwrap();
+
+        let at = |n: usize| {
+            text.find(&format!("Slide number {n}"))
+                .expect("slide missing")
+        };
+        assert!(at(1) < at(2), "slides are out of order");
+        assert!(at(2) < at(10), "slide10 sorted before slide2");
+        assert!(at(10) < at(11));
+        assert!(
+            text.contains("[Slide 1]"),
+            "slides are not announced: {text:?}"
+        );
+    }
+
+    #[test]
+    fn a_spreadsheet_keeps_its_rows_and_columns() {
+        // Flattened into prose a spreadsheet stops being a table, and a model
+        // cannot tell which figure belongs to which column — the only thing a
+        // spreadsheet is for.
+        let shared =
+            r#"<sst><si><t>Region</t></si><si><t>Revenue</t></si><si><t>EMEA</t></si></sst>"#;
+        let sheet = r#"<worksheet><sheetData>
+            <row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row>
+            <row r="2"><c r="A2" t="s"><v>2</v></c><c r="B2"><v>128400</v></c></row>
+        </sheetData></worksheet>"#;
+        let xlsx = zip_with_entries(&[
+            ("xl/sharedStrings.xml", shared),
+            ("xl/worksheets/sheet1.xml", sheet),
+        ]);
+        let text = document_text("figures.xlsx", &xlsx).unwrap();
+        assert!(
+            text.contains("Region\tRevenue"),
+            "columns not separated: {text:?}"
+        );
+        assert!(text.contains("EMEA\t128400"), "row lost: {text:?}");
+    }
+
+    #[test]
+    fn a_shared_string_split_by_formatting_is_rejoined() {
+        // Word and Excel split a string across runs wherever formatting
+        // changes, so "Smith & Sons" can arrive as three fragments.
+        let shared =
+            r#"<sst><si><r><t>Smith </t></r><r><t>&amp; </t></r><r><t>Sons</t></r></si></sst>"#;
+        let sheet = r#"<worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c></row></sheetData></worksheet>"#;
+        let text = document_text(
+            "x.xlsx",
+            &zip_with_entries(&[
+                ("xl/sharedStrings.xml", shared),
+                ("xl/worksheets/sheet1.xml", sheet),
+            ]),
+        )
+        .unwrap();
+        assert!(text.contains("Smith & Sons"), "got: {text:?}");
+    }
+
+    #[test]
+    fn inline_strings_are_read_as_well_as_shared_ones() {
+        // A spreadsheet this app generated uses inline strings, so it must be
+        // able to read back what it writes.
+        let sheet = r#"<worksheet><sheetData><row r="1">
+            <c r="A1" t="inlineStr"><is><t>Client</t></is></c>
+            <c r="B1"><v>42</v></c></row></sheetData></worksheet>"#;
+        let text = document_text(
+            "x.xlsx",
+            &zip_with_entries(&[("xl/worksheets/sheet1.xml", sheet)]),
+        )
+        .unwrap();
+        assert!(text.contains("Client\t42"), "got: {text:?}");
+    }
+
+    #[test]
+    fn a_document_this_app_generated_can_be_read_back() {
+        // The round trip that matters most: what the writer produces, the
+        // reader understands.
+        let deck = ooxml::pptx::from_markdown("# Quarterly review\n\n- Revenue up 12%").unwrap();
+        let text = document_text("d.pptx", &deck).unwrap();
+        assert!(text.contains("Quarterly review"), "got: {text:?}");
+        assert!(text.contains("Revenue up 12%"), "got: {text:?}");
+
+        let book = ooxml::xlsx::from_table("| A | B |\n| --- | --- |\n| EMEA | 128400 |").unwrap();
+        let text = document_text("b.xlsx", &book).unwrap();
+        assert!(text.contains("EMEA\t128400"), "got: {text:?}");
+    }
+
+    #[test]
+    fn a_file_that_is_not_really_one_of_these_is_refused() {
+        let notes = zip_with_entries(&[("random.xml", "<x/>")]);
+        assert!(document_text("x.pptx", &notes).is_err());
+        assert!(document_text("x.xlsx", &notes).is_err());
+    }
+
+    #[test]
+    fn bytes_that_are_not_an_image_are_refused() {
+        // A data URL's media type is a label the renderer wrote, not evidence.
+        assert_eq!(image_extension(b"\x89PNG\r\n\x1a\nrest"), Some("png"));
+        assert_eq!(image_extension(b"\xFF\xD8\xFFrest"), Some("jpg"));
+        assert_eq!(image_extension(b"GIF89a"), Some("gif"));
+        assert_eq!(image_extension(b"RIFF____WEBPVP8 "), Some("webp"));
+        assert_eq!(image_extension(b"MZ\x90\x00 an executable"), None);
+        assert_eq!(image_extension(b"#!/bin/sh\nrm -rf /"), None);
+        assert_eq!(image_extension(b""), None);
+    }
+
+    #[test]
+    fn a_suggested_name_cannot_carry_a_path() {
+        // The suggestion comes from the renderer. A name is not a path, and a
+        // separator in one has no business reaching a save dialog whatever the
+        // dialog would do with it.
+        assert_eq!(sanitize_download_name("report", "docx"), "report.docx");
+        assert_eq!(sanitize_download_name("report.docx", "docx"), "report.docx");
+        assert_eq!(
+            sanitize_download_name("../../../etc/passwd", "docx"),
+            "passwd.docx"
+        );
+        assert_eq!(
+            sanitize_download_name("C:\\Windows\\system32", "png"),
+            "system32.png"
+        );
+        assert_eq!(sanitize_download_name("", "png"), "document.png");
+        assert_eq!(sanitize_download_name("...", "png"), "document.png");
+        // And it cannot grow without limit.
+        assert!(sanitize_download_name(&"x".repeat(500), "png").len() < 100);
+    }
+
+    #[test]
+    fn an_empty_row_is_kept_so_the_rows_below_do_not_shift_up() {
+        // Skipping empty rows moved everything below them upward — a table
+        // where the figures no longer line up with the years beside them.
+        let sheet = r#"<worksheet><sheetData>
+            <row r="1"><c r="A1" t="inlineStr"><is><t>top</t></is></c></row>
+            <row r="3"><c r="A3" t="inlineStr"><is><t>bottom</t></is></c></row>
+        </sheetData></worksheet>"#;
+        let text = document_text(
+            "x.xlsx",
+            &zip_with_entries(&[("xl/worksheets/sheet1.xml", sheet)]),
+        )
+        .unwrap();
+        let body = text.trim_start_matches("[Sheet 1]\n");
+        let lines: Vec<&str> = body.trim_end().split('\n').collect();
+        assert_eq!(lines, vec!["top", "", "bottom"], "the gap row was dropped");
+    }
+
+    #[test]
+    fn a_deck_using_another_namespace_prefix_still_reads_in_order() {
+        // `r:` is conventional, not fixed. A deck written with `rel:` is valid
+        // and was read in the wrong order, silently.
+        let a = r#"xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main""#;
+        let sld = |t: &str| format!(r#"<p:sld {a}><a:p><a:r><a:t>{t}</a:t></a:r></a:p></p:sld>"#);
+        let pres = r#"<p:presentation xmlns:rel="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><p:sldIdLst><p:sldId id="256" rel:id="rIdB"/><p:sldId id="257" rel:id="rIdA"/></p:sldIdLst></p:presentation>"#;
+        let rels = r#"<Relationships><Relationship Id="rIdA" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/><Relationship Id="rIdB" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide2.xml"/></Relationships>"#;
+        let deck = zip_with_entries(&[
+            ("ppt/presentation.xml", pres),
+            ("ppt/_rels/presentation.xml.rels", rels),
+            ("ppt/slides/slide1.xml", &sld("SECOND")),
+            ("ppt/slides/slide2.xml", &sld("FIRST")),
+        ]);
+        let text = document_text("d.pptx", &deck).unwrap();
+        assert!(text.find("FIRST") < text.find("SECOND"), "got: {text:?}");
+    }
+
+    #[test]
+    fn a_workbook_using_another_prefix_keeps_its_sheet_names() {
+        let book = r#"<workbook xmlns:rel="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Summary" sheetId="1" rel:id="rIdB"/><sheet name="Detail" sheetId="2" rel:id="rIdA"/></sheets></workbook>"#;
+        let rels = r#"<Relationships><Relationship Id="rIdA" Type="t" Target="worksheets/sheet1.xml"/><Relationship Id="rIdB" Type="t" Target="worksheets/sheet2.xml"/></Relationships>"#;
+        let cell = |t: &str| {
+            format!(
+                r#"<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>{t}</t></is></c></row></sheetData></worksheet>"#
+            )
+        };
+        let xlsx = zip_with_entries(&[
+            ("xl/workbook.xml", book),
+            ("xl/_rels/workbook.xml.rels", rels),
+            ("xl/worksheets/sheet1.xml", &cell("detail")),
+            ("xl/worksheets/sheet2.xml", &cell("summary")),
+        ]);
+        let text = document_text("b.xlsx", &xlsx).unwrap();
+        assert!(text.contains("[Summary]"), "sheet names lost: {text:?}");
+        assert!(
+            text.find("[Summary]") < text.find("[Detail]"),
+            "order lost: {text:?}"
+        );
+    }
+
+    #[test]
+    fn two_empty_rows_stay_two_empty_rows() {
+        // Data in rows 1 and 4 was presented as rows 1 and 3: `tidy_text`
+        // squeezes runs of blank lines, which is right for prose and wrong for
+        // a grid, where a blank line is a position rather than spacing.
+        let sheet = r#"<worksheet><sheetData>
+            <row r="1"><c r="A1" t="inlineStr"><is><t>one</t></is></c></row>
+            <row r="4"><c r="A4" t="inlineStr"><is><t>four</t></is></c></row>
+        </sheetData></worksheet>"#;
+        let text = document_text(
+            "x.xlsx",
+            &zip_with_entries(&[("xl/worksheets/sheet1.xml", sheet)]),
+        )
+        .unwrap();
+        let body = text.trim_start_matches("[Sheet 1]\n");
+        let lines: Vec<&str> = body.trim_end().split('\n').collect();
+        assert_eq!(lines, vec!["one", "", "", "four"], "the gap was squeezed");
+    }
+
+    #[test]
+    fn single_quoted_attributes_are_read_like_any_other() {
+        // These returned an empty sheet — "no text found" for a valid file.
+        let sheet = r#"<worksheet><sheetData><row r='1'>
+            <c r='A1' t='inlineStr'><is><t>alpha</t></is></c>
+            <c r='C1' t='inlineStr'><is><t>gamma</t></is></c>
+        </row></sheetData></worksheet>"#;
+        let text = document_text(
+            "x.xlsx",
+            &zip_with_entries(&[("xl/worksheets/sheet1.xml", sheet)]),
+        )
+        .unwrap();
+        assert!(text.contains("alpha\t\tgamma"), "got: {text:?}");
+    }
+
+    #[test]
+    fn a_namespace_prefixed_worksheet_is_read() {
+        // `<x:row>` is what Excel itself writes in some files, and it returned
+        // "no text found".
+        let sheet = r#"<x:worksheet xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><x:sheetData><x:row r="1"><x:c r="A1" t="inlineStr"><x:is><x:t>alpha</x:t></x:is></x:c><x:c r="B1"><x:v>42</x:v></x:c></x:row></x:sheetData></x:worksheet>"#;
+        let text = document_text(
+            "x.xlsx",
+            &zip_with_entries(&[("xl/worksheets/sheet1.xml", sheet)]),
+        )
+        .unwrap();
+        assert!(text.contains("alpha\t42"), "got: {text:?}");
+    }
+
+    // ---- Findings from the 1.6.0 review ------------------------------------
+
+    #[test]
+    fn a_deck_is_read_in_the_order_it_is_presented() {
+        // A deck can be reordered without renaming its parts — that is what
+        // sldIdLst is for. Sorting slide1, slide2 returned a deck nobody
+        // assembled, while looking entirely successful.
+        let a = r#"xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main""#;
+        let sld = |t: &str| format!(r#"<p:sld {a}><a:p><a:r><a:t>{t}</a:t></a:r></a:p></p:sld>"#);
+        let pres = r#"<p:presentation xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><p:sldIdLst><p:sldId id="256" r:id="rIdB"/><p:sldId id="257" r:id="rIdA"/></p:sldIdLst></p:presentation>"#;
+        let rels = r#"<Relationships><Relationship Id="rIdA" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/><Relationship Id="rIdB" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide2.xml"/></Relationships>"#;
+        let deck = zip_with_entries(&[
+            ("ppt/presentation.xml", pres),
+            ("ppt/_rels/presentation.xml.rels", rels),
+            ("ppt/slides/slide1.xml", &sld("SECOND IN THE DECK")),
+            ("ppt/slides/slide2.xml", &sld("FIRST IN THE DECK")),
+        ]);
+        let text = document_text("d.pptx", &deck).unwrap();
+        let first = text.find("FIRST IN THE DECK").expect("missing");
+        let second = text.find("SECOND IN THE DECK").expect("missing");
+        assert!(
+            first < second,
+            "read in file-name order, not deck order: {text:?}"
+        );
+        // And numbered by position, which is what "slide 2" means to a reader.
+        assert!(
+            text.contains("[Slide 1]\nFIRST IN THE DECK"),
+            "got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn a_cell_lands_in_its_own_column() {
+        // A row holding A1 and C1 came out as two columns, moving C's value
+        // into B. A value in the wrong column is wrong data, handed to the
+        // model as though nothing had happened.
+        let sheet = r#"<worksheet><sheetData><row r="1">
+            <c r="A1" t="inlineStr"><is><t>alpha</t></is></c>
+            <c r="C1" t="inlineStr"><is><t>gamma</t></is></c>
+        </row></sheetData></worksheet>"#;
+        let text = document_text(
+            "x.xlsx",
+            &zip_with_entries(&[("xl/worksheets/sheet1.xml", sheet)]),
+        )
+        .unwrap();
+        assert!(
+            text.contains("alpha\t\tgamma"),
+            "C did not land in column C: {text:?}"
+        );
+    }
+
+    #[test]
+    fn columns_past_z_are_placed_correctly() {
+        assert_eq!(column_index("A1".into()), 0);
+        assert_eq!(column_index("B2".into()), 1);
+        assert_eq!(column_index("Z9".into()), 25);
+        assert_eq!(column_index("AA1".into()), 26);
+        assert_eq!(column_index("AB1".into()), 27);
+        assert_eq!(column_index("BA1".into()), 52);
+    }
+
+    #[test]
+    fn sheets_keep_their_names_and_their_order() {
+        // A workbook's sheets are named for a reason a reader needs, and their
+        // order is the author's, not the archive's.
+        let book = r#"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Summary" sheetId="1" r:id="rIdB"/><sheet name="Detail" sheetId="2" r:id="rIdA"/></sheets></workbook>"#;
+        let rels = r#"<Relationships><Relationship Id="rIdA" Type="t" Target="worksheets/sheet1.xml"/><Relationship Id="rIdB" Type="t" Target="worksheets/sheet2.xml"/></Relationships>"#;
+        let cell = |t: &str| {
+            format!(
+                r#"<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>{t}</t></is></c></row></sheetData></worksheet>"#
+            )
+        };
+        let xlsx = zip_with_entries(&[
+            ("xl/workbook.xml", book),
+            ("xl/_rels/workbook.xml.rels", rels),
+            ("xl/worksheets/sheet1.xml", &cell("detail rows")),
+            ("xl/worksheets/sheet2.xml", &cell("summary rows")),
+        ]);
+        let text = document_text("b.xlsx", &xlsx).unwrap();
+        assert!(text.contains("[Summary]"), "sheet names lost: {text:?}");
+        assert!(text.contains("[Detail]"), "sheet names lost: {text:?}");
+        assert!(
+            text.find("[Summary]") < text.find("[Detail]"),
+            "sheets read in file-name order: {text:?}"
+        );
     }
 
     // ---- Tracked changes ---------------------------------------------------
@@ -9390,6 +11429,38 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(Cancellations::default())
+        .manage(StagedArtifacts::default())
+        // Serves the artifact frame. Registered rather than using `srcdoc`
+        // because a `srcdoc` document inherits the window's CSP and a fetched
+        // one does not — see `StagedArtifacts`. The only thing this can serve
+        // is a document the interface staged a moment ago; the id is a map
+        // key, so there is no path here and nothing to traverse.
+        .register_uri_scheme_protocol("artifact", |ctx, request| {
+            use tauri::Manager as _;
+            let id = request.uri().path().trim_start_matches('/').to_string();
+            let staged = ctx
+                .app_handle()
+                .state::<StagedArtifacts>()
+                .0
+                .lock()
+                .unwrap()
+                .get(&id)
+                .cloned();
+            match staged {
+                Some(html) => tauri::http::Response::builder()
+                    .header(
+                        tauri::http::header::CONTENT_TYPE,
+                        "text/html; charset=utf-8",
+                    )
+                    .header(tauri::http::header::CONTENT_SECURITY_POLICY, ARTIFACT_CSP)
+                    .body(html.into_bytes())
+                    .unwrap(),
+                None => tauri::http::Response::builder()
+                    .status(404)
+                    .body(Vec::new())
+                    .unwrap(),
+            }
+        })
         .setup(|app| {
             // Resolve the config dir once so the pricing/usage ledgers can
             // persist without an AppHandle in the deep code that records them.
@@ -9412,6 +11483,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             cancel_request,
+            stage_artifact,
             save_api_key,
             has_api_key,
             get_key_hint,
@@ -9441,6 +11513,11 @@ pub fn run() {
             extract_document,
             generate_image,
             save_image,
+            save_document,
+            preview_document,
+            set_template,
+            list_templates,
+            clear_template,
             get_usage_summary,
             reset_usage,
             update_pricing,
