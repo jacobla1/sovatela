@@ -311,23 +311,77 @@ async fn response_error(response: reqwest::Response) -> CompletionError {
 }
 
 fn network_error(error: reqwest::Error) -> CompletionError {
+    // Only the timeout branch used to be written for a person. The other two
+    // interpolated reqwest's own text, so pulling the network out produced
+    // "The connection to Scaleway failed: error sending request for url
+    // (https://api.scaleway.ai/v1/chat/completions)" — which names the
+    // endpoint rather than the problem, and is rendered as a *link*, so the
+    // reply handed the user a clickable API URL that answers 401 to anyone who
+    // follows it. Meanwhile the status dot beside it said the useful thing:
+    // check your internet connection.
+    //
+    // Connect failures, DNS failures and a proxy refusing all mean one thing
+    // to the person holding the machine — the request never left — and one
+    // action. The detail is kept on stderr, where a bug report can quote it
+    // and a user is not asked to read it.
     let message = if error.is_timeout() {
-        "Scaleway stopped responding (timed out). Please try again.".into()
-    } else if error.is_connect() {
-        format!("Could not connect to Scaleway: {error}")
+        "Scaleway stopped responding (timed out). Please try again."
     } else {
-        format!("The connection to Scaleway failed: {error}")
+        eprintln!("network error reaching Scaleway: {error}");
+        "Could not reach Scaleway. Check your internet connection, then try again."
     };
-    CompletionError::new(ErrorKind::Network, message)
+    CompletionError::new(ErrorKind::Network, message.to_string())
 }
 
 fn stream_network_error(error: reqwest::Error) -> CompletionError {
+    // The mid-reply wording is already right — a reply is on screen and the
+    // user needs to know it stopped rather than finished — but it carried the
+    // raw error in brackets for the same reason as above, and with it the URL.
     let message = if error.is_timeout() {
-        "Scaleway stopped responding mid-reply (timed out). Please try again.".into()
+        "Scaleway stopped responding mid-reply (timed out). Please try again."
     } else {
-        format!("The connection to Scaleway dropped mid-reply — please try again. ({error})")
+        eprintln!("network error mid-reply from Scaleway: {error}");
+        "The connection to Scaleway dropped mid-reply. Please try again."
     };
-    CompletionError::new(ErrorKind::Network, message)
+    CompletionError::new(ErrorKind::Network, message.to_string())
+}
+
+#[cfg(test)]
+mod network_message_tests {
+    /// Whatever the transport says, the user is told one thing they can act
+    /// on — and never an address.
+    ///
+    /// Pulling the network out produced "The connection to Scaleway failed:
+    /// error sending request for url (https://api.scaleway.ai/v1/chat/
+    /// completions)". Replies render links, so that arrived as a clickable API
+    /// endpoint returning 401 to anyone who followed it, in place of the
+    /// sentence the status dot two inches away was already showing.
+    #[test]
+    fn a_network_message_names_the_problem_and_not_the_endpoint() {
+        let source = include_str!("glm.rs");
+        let body = source
+            .split("fn network_error(")
+            .nth(1)
+            .and_then(|s| s.split("\nfn ").next())
+            .expect("network_error is gone");
+        let stream = source
+            .split("fn stream_network_error(")
+            .nth(1)
+            .and_then(|s| s.split("\nfn ").next())
+            .expect("stream_network_error is gone");
+        for (name, f) in [("network_error", body), ("stream_network_error", stream)] {
+            // The message is chosen from string literals; interpolating the
+            // transport error is what put a URL in front of a user.
+            let message_lines: String = f
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("//") && !l.contains("eprintln!"))
+                .collect();
+            assert!(
+                !message_lines.contains("{error}"),
+                "{name} still puts the raw transport error in front of the user"
+            );
+        }
+    }
 }
 
 const CONTEXT_LIMIT_MSG: &str =

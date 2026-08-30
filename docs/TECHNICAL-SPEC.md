@@ -402,14 +402,49 @@ checkout is a superset and is not part of the repository.
 - Project reference files are never compacted
 - Orphaned assets if a conversation file is deleted outside the app
 - `nom v1.2.4` future-incompatibility warning (transitive)
-- 19 `cargo audit` warnings, none of them a vulnerability: 17 unmaintained
-  crates, one unsoundness advisory (`glib`'s `VariantStrIter` iterator impls),
-  and one yanked version (`chacha20`). Most arrive through Tauri's Linux stack
-  and are not movable from here, but not all are GTK — `unic-*`, `ttf-parser`
-  and `proc-macro-error` are not
+- 19 `cargo audit` warnings, none of them a vulnerability — triaged in § 7.1
 - No structured logging, so no post-hoc diagnosis
 - No auto-updater. *Settings → About* now has a manual **Check for updates**,
   so a release is at least discoverable from inside the app, but a security
   fix still reaches nobody who does not press it
 - Windows and Linux builds unsigned; macOS CI degrades silently to unsigned if
   the Apple secrets lapse
+
+### 7.1 Dependency advisories, triaged
+
+`cargo audit` reports **0 vulnerabilities and 19 warnings** across 609 crates.
+A warning is not a vulnerability, and "no vulnerabilities" is not an answer to
+someone asking what the warnings are. Each is recorded below with the path that
+pulls it in and what is being done about it. Paths are from `cargo tree -i`;
+re-run after any dependency change.
+
+**The distinction that decides most of this: 17 of the 19 are Linux-only.**
+`cargo tree -i glib --target aarch64-apple-darwin` prints *nothing to print* —
+the GTK stack reaches the tree solely through Tauri's Linux backend, so it is
+absent from the macOS and Windows builds entirely. On Linux it is the toolkit
+the window is made of, and cannot be removed without leaving Tauri.
+
+| Advisory | Crate | Reaches us via | Decision |
+| --- | --- | --- | --- |
+| RUSTSEC-2024-0429 · **unsound** | `glib 0.18.5` | `glib → atk → gtk → muda → tauri` — **Linux only** | **Accepted.** The unsoundness is in `VariantStrIter`'s `Iterator`/`DoubleEndedIterator` impls. Nothing here constructs a `Variant` or iterates one; it is reachable only from GTK's own menu code. Fixed in `glib 0.19`, which Tauri's GTK3 backend does not use. Revisit when Tauri moves to GTK4 |
+| RUSTSEC-2024-0413/0416 and 14 others · **unmaintained** | `atk`, `atk-sys`, `gdk`, `gdk-sys`, `gdkwayland-sys`, `gdkx11`, `gdkx11-sys`, `gtk`, `gtk-sys`, `gtk3-macros`, `glib`, `glib-sys`, `gobject-sys`, `pango`, `pango-sys`, `soup3`… | all under `gtk 0.18` — **Linux only** | **Accepted, not actionable here.** The gtk-rs project has stopped maintaining its GTK3 bindings. Moving off them means Tauri moving to GTK4; it is not a change this repository can make. Recorded rather than silenced so it is re-read when Tauri does |
+| RUSTSEC-2024-0370 · **unmaintained** | `proc-macro-error 1.0.4` | `proc-macro-error → glib-macros → glib` — **Linux only** | **Accepted.** A build-time proc-macro; no code from it is in the binary |
+| RUSTSEC-2026-0192 · **unmaintained** | `ttf-parser 0.25.1` | `ttf-parser → lopdf → pdf-extract → scale` — **all platforms** | **Watch.** This one *does* ship, and it parses font tables inside a PDF the user attached — untrusted input. Mitigated by construction rather than by the crate: PDF extraction runs in a killable child process with a memory cap and a deadline (`doc_sandbox.rs`), which is the property that does not depend on a parser being sound. Upgrade when `lopdf` moves |
+| RUSTSEC-2025-0075/0080/0081/0098/0100 · **unmaintained** | `unic-char-property`, `unic-char-range`, `unic-common`, `unic-ucd-ident`, `unic-ucd-version` | `unic-* → urlpattern → tauri-utils → tauri` — **all platforms** | **Accepted.** Unicode character tables, used by Tauri's URL-pattern matching at build time. Unmaintained here means "finished": they encode a fixed Unicode version and have no attack surface of their own |
+| **yanked** | `chacha20 0.10.1` | `chacha20 → rand 0.10.2 → lopdf → pdf-extract → scale` — **all platforms** | **Watch.** Yanked by its author, not an advisory. It arrives as `rand`'s RNG backend inside a PDF parser, where it generates object ids rather than protecting anything. No action beyond taking the newer version when `lopdf` does |
+| future-incompat | `nom 1.2.4` | `pdf-extract` | **Watch.** Will be rejected by a future rustc. Nothing to do until `pdf-extract` moves; it will surface as a build failure, not a silent one |
+
+**The shape of the list.** Four of the seven rows are Tauri's Linux toolkit and
+move when Tauri moves. The three that ship on every platform — `ttf-parser`,
+`chacha20`, `nom` — all arrive through `pdf-extract`, which is the single
+dependency worth watching, and all three are behind the process isolation that
+was built for exactly this: a parser reading a file somebody sent you.
+
+Re-run the triage with:
+
+```sh
+cd src-tauri && cargo audit
+cargo tree -i <crate> --target x86_64-unknown-linux-gnu   # for the GTK stack
+cargo tree -i <crate>                                     # for the rest
+```
+

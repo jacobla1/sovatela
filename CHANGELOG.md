@@ -66,6 +66,33 @@ something that has been broken in the three releases before it.
   Word and PowerPoint save a template *as*, so the message now names the
   setting where a template goes.
 
+### Found during release testing
+Everything below was found by using a built copy of this release rather than by
+reading the source, and none of it is new in 1.6.0.
+
+- **Image generation had stopped working on Black Forest Labs.** BFL answers its
+  EU endpoint with a polling address on a regional shard — `api.eu2.bfl.ai` —
+  and the check required that address to equal the submit origin exactly, so
+  every request was refused. The provider had moved; the app read it as
+  tampering. Checking stays, because the key is sent on every poll and the
+  address comes out of a response body: the rule is now HTTPS to
+  `api.eu<digits>.bfl.ai`, which admits the next shard without a release.
+  `api.us.bfl.ai` is still refused, and that is the sovereignty claim rather
+  than a security one.
+- **Losing your connection produced reqwest's own words and a clickable API
+  URL** — *"error sending request for url (https://api.scaleway.ai/…)"* — while
+  the status dot two inches above already said the useful thing. Both the
+  pre-flight and mid-reply cases now name the problem and the action; the
+  transport detail goes to stderr.
+- **A long attachment error was cut off mid-word.** Attachment chips truncate at
+  240px on one line, which is right for a filename and wrong for a sentence
+  whose second half names the setting to go to.
+- **The privacy policy contradicted itself about update checks** — §4 listed
+  `sovatela.eu` among the destinations it reaches, §7 said the app does not
+  check for updates. Both were written honestly; the second predates the
+  feature. Raised by an external reviewer as the biggest trust problem in the
+  repository, and they were right.
+
 
 ## 1.5.6 — 2026-08-28
 

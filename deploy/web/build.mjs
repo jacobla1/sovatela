@@ -96,12 +96,17 @@ mkdirSync(dist, { recursive: true });
 // way, so clearing one on a document that says it is unreviewed fails the build
 // rather than quietly publishing it.
 const PAGES = [
-  ["privacy", "docs/PRIVACY.md", "Privacy policy",
-    { hold: "PRIVACY.md: outline for legal review, per its own banner" }],
+  // Published from 1.6.0. It no longer calls itself an outline: it says who
+  // wrote it, that a lawyer did not, and which half of it is checkable — the
+  // factual half, which a network capture against a released build confirms.
+  // A 404 here on a product whose pitch is data protection was the worse of
+  // the two honest options.
+  ["privacy", "docs/PRIVACY.md", "Privacy policy", {}],
+  // Still held, and genuinely: six open questions on consumer law, liability
+  // and pre-contract duties, none of which the privacy analysis shares.
   ["terms", "docs/TERMS.md", "Terms of use",
     { hold: "TERMS.md: outline for legal review, per its own banner" }],
-  ["security", "SECURITY.md", "Security",
-    { hold: "held by choice — the document itself is publishable" }],
+  ["security", "SECURITY.md", "Security", {}],
   ["accessibility", "docs/ACCESSIBILITY.md", "Accessibility statement", {}],
 ];
 

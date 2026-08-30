@@ -42,6 +42,15 @@ document from it while you are still looking at the file picker rather than
 three days later. Some legitimate corporate templates will be declined by this;
 that is the trade, and the message says which check declined it and why.
 
+**Image generation was broken, and is fixed.** Black Forest Labs answers its
+European endpoint with a polling address on a regional shard, and this app
+required that address to be the exact one it had submitted to — so every image
+request was refused. The check itself is right and stays: your key is sent on
+every poll, and an address that arrives in a response body must not be able to
+send a credential somewhere else. It now accepts any of Black Forest Labs'
+European endpoints and still refuses the American ones. If you tried image
+generation on an earlier release and it failed, this is why.
+
 **Two things this release fixes that earlier ones got wrong.**
 
 *Artifacts stopped running their own code in 1.5.3, and this is the first

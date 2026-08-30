@@ -674,6 +674,43 @@ fn origin_of(url: &str) -> Option<String> {
     })
 }
 
+/// Whether a Black Forest Labs polling address is one this app will send the
+/// key to.
+///
+/// The key is sent on every poll and the address comes out of a response body,
+/// so it cannot be taken on trust. Requiring it to equal the submit origin
+/// exactly was the first answer, and it stopped working: BFL answers the EU
+/// endpoint with a polling address on a regional shard — `api.eu2.bfl.ai` —
+/// so every image request was refused. That is the provider moving, not a
+/// tampered response, and the two need opposite reactions.
+///
+/// So: HTTPS, host exactly `api.eu<digits>.bfl.ai` with the digits optional.
+/// `api.us.bfl.ai` stays out, which is the sovereignty claim rather than a
+/// security one — a European user's prompt should not be answered from a US
+/// shard because a response body asked for it. `api.eu.bfl.ai.evil.example`
+/// stays out because the suffix has to be the end of the host.
+fn bfl_polling_allowed(url: &str) -> bool {
+    let Ok(u) = reqwest::Url::parse(url.trim()) else {
+        return false;
+    };
+    if u.scheme() != "https" {
+        return false;
+    }
+    let Some(host) = u.host_str() else {
+        return false;
+    };
+    let Some(region) = host
+        .strip_prefix("api.")
+        .and_then(|h| h.strip_suffix(".bfl.ai"))
+    else {
+        return false;
+    };
+    // `eu`, or `eu` followed by a shard number and nothing else.
+    region
+        .strip_prefix("eu")
+        .is_some_and(|rest| rest.chars().all(|c| c.is_ascii_digit()))
+}
+
 /// A token belongs to the endpoint it was issued for. The interface never
 /// echoes a saved secret, so an empty field means "keep what is stored" — and
 /// that meant pointing a self-hosted endpoint at a different host, leaving the
@@ -1579,8 +1616,20 @@ async fn bfl_generate(
     // The key is sent to this address on every poll, and the address came out
     // of a response body. Keep it on the origin the key belongs to, so a
     // tampered or unexpected response cannot direct the credential elsewhere.
-    if origin_of(&polling_url) != origin_of(BFL_BASE) {
-        return Err("Black Forest Labs: the polling address was not on api.eu.bfl.ai".into());
+    if !bfl_polling_allowed(&polling_url) {
+        // Name the origin it actually gave. The message used to say only that
+        // the address "was not on api.eu.bfl.ai", which is the one fact the
+        // reader already had — and left no way to tell a provider that has
+        // moved its polling host from a response that had been tampered with.
+        // The host only, never the URL: the path carries a request id.
+        return Err(format!(
+            "Black Forest Labs answered with a polling address on {}, which is not \
+             one of its European endpoints, so the request was stopped — your key \
+             is sent on every poll and only goes to an address the key belongs to. \
+             If Black Forest Labs has moved that endpoint this needs a change here; \
+             report it at info@anaubi.com.",
+            origin_of(&polling_url).unwrap_or_else(|| "an address that is not a URL".into())
+        ));
     }
 
     // Poll until the image is ready (results expire fast, so we fetch right after).
@@ -8268,24 +8317,46 @@ mod tests {
     }
 
     #[test]
-    fn the_bfl_polling_address_must_stay_on_the_bfl_origin() {
+    fn the_bfl_polling_address_must_stay_on_a_european_bfl_endpoint() {
         // The key is sent to this address on every poll and it comes out of a
-        // response body.
-        assert_eq!(
-            origin_of(BFL_BASE).as_deref(),
-            Some("https://api.eu.bfl.ai")
-        );
-        assert_eq!(
-            origin_of("https://api.eu.bfl.ai/v1/get_result?id=x"),
-            origin_of(BFL_BASE)
-        );
-        for elsewhere in [
-            "https://api.eu.bfl.ai.evil.example/v1/get_result",
-            "http://api.eu.bfl.ai/v1/get_result",
-            "https://api.us.bfl.ai/v1/get_result",
+        // response body, so it is checked rather than followed.
+        //
+        // Requiring it to equal the submit origin exactly was the first
+        // answer, and it broke image generation outright: BFL answers the EU
+        // endpoint with a polling address on a regional shard. Found by
+        // generating an image during release testing and reading the refusal,
+        // which named `https://api.eu2.bfl.ai`.
+        for allowed in [
+            "https://api.eu.bfl.ai/v1/get_result?id=x",
+            "https://api.eu1.bfl.ai/v1/get_result?id=x",
+            "https://api.eu2.bfl.ai/v1/get_result?id=x",
         ] {
-            assert_ne!(origin_of(elsewhere), origin_of(BFL_BASE), "{elsewhere}");
+            assert!(bfl_polling_allowed(allowed), "refused {allowed}");
         }
+        for refused in [
+            // A US shard is refused on the sovereignty claim, not a security
+            // one: a European user's prompt should not be answered from the
+            // United States because a response body asked for it.
+            "https://api.us.bfl.ai/v1/get_result",
+            "https://api.us1.bfl.ai/v1/get_result",
+            // The suffix has to end the host.
+            "https://api.eu.bfl.ai.evil.example/v1/get_result",
+            "https://api.eu2.bfl.ai.evil.example/v1/get_result",
+            // A shard name is digits, so this is not one.
+            "https://api.eu-evil.bfl.ai/v1/get_result",
+            "https://api.euanything.bfl.ai/v1/get_result",
+            // Not a subdomain of the endpoint either.
+            "https://evil.api.eu.bfl.ai/v1/get_result",
+            // Plaintext carries the key in the clear.
+            "http://api.eu.bfl.ai/v1/get_result",
+            // Not a URL at all.
+            "api.eu.bfl.ai/v1/get_result",
+            "",
+        ] {
+            assert!(!bfl_polling_allowed(refused), "allowed {refused}");
+        }
+        // The submit endpoint itself is, necessarily, one of them.
+        assert!(bfl_polling_allowed(BFL_BASE));
     }
 
     #[test]

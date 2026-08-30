@@ -19,9 +19,16 @@ Quit Sovatela first; the script has to watch the launch.
 ./analyse.sh results/raw-<stamp>.tsv
 ```
 
-The script prompts through phases — idle, chat, document, update check, price
-check, and optionally web search and image generation — and watches while you
-perform each one.
+The script prompts through phases — idle, chat, document, artifact, update
+check, price check, and optionally web search and image generation — and
+watches while you perform each one.
+
+The **artifact** phase exists because 1.6.0 changed how that frame is loaded:
+from `srcdoc` to a registered `artifact:` scheme, so the frame carries its own
+policy rather than inheriting the window's. The scheme is handled in-process,
+so it should produce no socket — and an artifact is the one place model-chosen
+markup reaches the engine, which makes silence there worth recording rather
+than assuming.
 
 ## What it watches, and why two process sets
 

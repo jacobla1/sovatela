@@ -1,12 +1,15 @@
-# Privacy policy — outline
+# Privacy policy
 
-**Status: outline for legal review. Not yet a published policy.**
-Last updated: 2026-08-10 · Applies to: Sovatela v1.2.0
+Last updated: 2026-08-30 · Applies to: Sovatela v1.6.0
 
-> This document is drafted to be accurate about what the software does. It is
-> not legal advice, and the structure below should be reviewed by a
-> qualified adviser before publication — particularly the controller analysis,
-> which is unusual for this kind of product.
+> **How this was written, since you are entitled to know.** By the publisher,
+> not by a lawyer. It is written to be accurate about what the software does,
+> and that half is checkable rather than asserted: every destination named in
+> § 4 was confirmed by capturing a released build's network traffic, and the
+> code that decides each one is public. What has *not* had professional review
+> is the legal characterisation in § 5 — who is a controller for what. That is
+> said here rather than left to be discovered, because an unreviewed policy you
+> can read beats a reviewed one you cannot.
 
 ---
 
@@ -79,8 +82,11 @@ Each provider processes that data under **its own terms and privacy policy**,
 which you accept when you create an account with them. Links to each provider's
 policy are shown in the app where you enable that provider.
 
-The app makes no other network connections. It does not phone home, check for
-updates, or load remote resources into its interface.
+The app makes no other network connections, and none of the three above happens
+on its own: each is a button you press. Nothing runs in the background, nothing
+is reported about you or your machine, and no remote resource is loaded into the
+interface. There is no automatic updater — the version check is a button in
+Settings ▸ About, and it fetches a static file.
 
 ## 5. Legal basis and roles
 
@@ -101,11 +107,6 @@ access to them.
 Your relationship with Scaleway and your other providers is direct: your
 account, your key, their terms. The publisher is not a party to it and cannot
 act on your behalf there.
-
-> **For review:** the two rows above are the controller analysis. Confirm they
-> are complete — in particular whether publishing software that facilitates a
-> transfer to a provider creates any residual obligation, which is the one
-> unusual question this product raises.
 
 ## 6. Website
 
@@ -165,8 +166,11 @@ notes. Prior versions are available on request.
 
 ## Reviewer's checklist
 
-- [ ] Confirm the controller analysis in §5 is complete — correspondence is
-      stated as the whole of it, as an answer rather than a question
+- [ ] Confirm the controller analysis in §5 is complete — this was also stated
+      inline in §5 until 1.6.0, where it rendered onto the public page. The
+      question is unchanged: whether publishing software that facilitates a
+      transfer to a provider creates any residual obligation, which is the one
+      unusual question this product raises
 - [x] §6 website processing — **removed rather than documented.** The site was
       self-hosted and its nginx logs recorded IP addresses, which would have
       required a log format, a truncation decision, a retention period, a

@@ -1888,6 +1888,16 @@ button.ghost:hover {
 .att-chip.att-error {
   color: var(--error);
   border-color: var(--error);
+  /* An error is a sentence, not a filename. Truncating at 240px is right for
+     `a-very-long-quarterly-report-name.pdf` and wrong for prose, because the
+     half that says what to do about it is at the end: a `.dotx` was told it
+     was "that's a Word" and nothing more, with the sentence naming the
+     setting it should have gone to cut off mid-word. Filenames still
+     truncate; messages wrap. */
+  max-width: 100%;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
 }
 
 .att-x {

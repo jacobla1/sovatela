@@ -21,6 +21,10 @@ set -uo pipefail
 RAW="${1:-}"
 [ -f "$RAW" ] || { echo "usage: ./analyse.sh results/raw-<stamp>.tsv" >&2; exit 1; }
 
+# A capture records which build it describes. Print it: a result that does not
+# say what it was run against is a result nobody can act on later.
+grep -m2 '^# ' "$RAW" 2>/dev/null | sed 's/^# /  /' | expand -t 12
+
 # host|what it is — from the URLs in src-tauri/src
 EXPECTED=(
   "api.scaleway.ai|chat and vision (Scaleway, France)"
@@ -61,7 +65,7 @@ echo "Expected hosts resolved to $(wc -l < "$MAP" | tr -d ' ') addresses."
 echo
 
 echo "── idle: launched, untouched ──"
-idle=$(awk -F'\t' '$1=="idle" {print $4}' "$RAW" | sort -u)
+idle=$(awk -F'\t' '$1 !~ /^#/ && $1=="idle" {print $4}' "$RAW" | sort -u)
 if [ -z "$idle" ]; then
   echo "   nothing was contacted before the app was touched"
 else
@@ -77,7 +81,7 @@ fi
 echo
 
 echo "── the webview ──"
-wv=$(awk -F'\t' 'NR>1 && $3=="webview" {print $4}' "$RAW" | sort -u)
+wv=$(awk -F'\t' '$1 !~ /^#/ && $1!="phase" && $3=="webview" {print $4}' "$RAW" | sort -u)
 if [ -z "$wv" ]; then
   echo "   silent — nothing left the interface itself, which is what"
   echo "   connect-src ipc: and \"no remote assets\" assert"
@@ -90,7 +94,7 @@ echo
 echo "── every endpoint, by phase ──"
 echo "   (an established connection is kept alive and so reappears in later"
 echo "    phases; the phase is where it was seen, not necessarily where it began)"
-awk -F'\t' 'NR>1 {print $1"\t"$3"\t"$4}' "$RAW" | sort -u | while IFS=$'\t' read -r ph src ep; do
+awk -F'\t' '$1 !~ /^#/ && $1!="phase" {print $1"\t"$3"\t"$4}' "$RAW" | sort -u | while IFS=$'\t' read -r ph src ep; do
   ip="${ep%:*}"
   printf '%-13s %-8s %-21s %-36s %s\n' "$ph" "$src" "$ep" "$(ptr_of "$ip")" "$(verdict_of "$ip")"
 done
@@ -101,7 +105,7 @@ tot=0; bad=0
 while read -r ep; do
   ip="${ep%:*}"; tot=$((tot+1))
   case "$(verdict_of "$ip")" in UNEXPLAINED*) bad=$((bad+1));; esac
-done < <(awk -F'\t' 'NR>1 {print $4}' "$RAW" | sort -u)
+done < <(awk -F'\t' '$1 !~ /^#/ && $1!="phase" {print $4}' "$RAW" | sort -u)
 echo "   $tot distinct endpoint(s); $bad unexplained"
 if [ "$bad" -eq 0 ]; then
   echo "   PASS — every host is one the code names."

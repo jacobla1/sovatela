@@ -159,6 +159,19 @@ describe("attaching a template says where templates go", () => {
     }
   });
 
+  it("is short enough to read, or wraps so it can be", () => {
+    // The hint is only worth anything if its second half is visible: it names
+    // the setting to go to. Attachment chips truncate at 240px on one line,
+    // which is right for a filename and cut this off at "that\u2019s a Word".
+    const css = readFileSync(
+      resolve(import.meta.dirname, "../src/styles.css"),
+      "utf8",
+    ).replace(/\s+/g, " ");
+    const errorRule = css.match(/\.att-chip\.att-error \{([^}]*)\}/)?.[1] ?? "";
+    expect(errorRule, "error chips still clip to one line").toMatch(/white-space:\s*normal/);
+    expect(errorRule, "error chips still cap at the filename width").toMatch(/max-width:\s*100%/);
+  });
+
   it("sends the user to the setting rather than to another refusal", () => {
     const hint = templateDocumentHint({ name: "House.dotx" });
     expect(hint).toMatch(/Settings . Document templates/);
