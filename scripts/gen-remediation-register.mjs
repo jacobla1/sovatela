@@ -59,8 +59,10 @@ ${rows.map((r) => `| \`${r[0]}\` | ${r.slice(1).join(" | ")} |`).join("\n")}
 
 ## Standing facts
 
-- **Every defect above is present in the public v1.6.0 release, and in every
-  release before it.** Those releases stay as published. The fixes are in
+- **The terminal-access defects (\`F01\`, \`F02\`, \`F09\`) are present in 1.2.0
+  through 1.6.0**, which is every release that shipped the \`claude-glm\`
+  integration. **The other findings are present in the public v1.6.0 release**
+  unless a row says otherwise. Those releases stay as published; the fixes are in
   **v1.6.1**, released 2026-09-01.
 - **Installing 1.6.1 repairs nothing by itself.** The launcher sits outside the
   application and is not replaced until setup is run again, and a key that was in

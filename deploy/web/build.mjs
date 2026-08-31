@@ -115,11 +115,14 @@ const PAGES = [
     "Security note — terminal access", {}],
 ];
 
+// The footer text for each page. Every published page needs an entry here —
+// see the check beside the footer, which exists because one did not.
 const LABELS = {
   privacy: "Privacy",
   terms: "Terms of use",
   security: "Security",
   accessibility: "Accessibility",
+  "security-note-claude-glm": "Terminal access note",
 };
 
 // Internal docs that have a public equivalent, matched with any path prefix so
@@ -246,6 +249,20 @@ for (const [slug, src, title, opts] of PAGES) {
 
 // The footer is generated from the pages that were actually built, so a page
 // held back cannot leave a footer link pointing at a 404.
+//
+// A page with no LABELS entry used to render as `undefined` in the footer of
+// every page on the site, silently: the link worked, and only its text was
+// wrong. That shipped, on the release that published the security note. So the
+// missing label is now a refusal rather than a word.
+const unlabelled = [...published].filter((slug) => !(slug in LABELS));
+if (unlabelled.length) {
+  console.error(
+    `\nRefusing to build — published with no footer label: ${unlabelled.join(", ")}`,
+  );
+  console.error("  Add it to LABELS in this file.");
+  process.exit(2);
+}
+
 const policyLinks = [...published]
   .map((slug) => `<a href="/${slug}">${LABELS[slug]}</a>`)
   .join(" ·\n        ");

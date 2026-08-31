@@ -175,7 +175,8 @@ are used descriptively only.
 The optional `claude-glm` integration is unofficial; Anthropic's documentation
 states it does not support routing Claude Code to non-Claude models. Use it at
 your own risk and in accordance with Anthropic's terms. Its launcher has known
-defects in every released version, including 1.6.0 — see the
+defects in every released version of the `claude-glm` integration, 1.2.0 through
+1.6.0 — see the
 [security note](release/SECURITY-NOTE-2026-08-30-claude-glm.md). A launcher
 installed before that rewrite is not repaired by installing a newer version of
 this application, because nothing here updates itself.

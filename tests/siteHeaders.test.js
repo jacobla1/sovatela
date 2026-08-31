@@ -105,3 +105,33 @@ describe("the update-check destination stays usable", () => {
     expect(build).toContain('"security-note-claude-glm", "docs/release/SECURITY-NOTE-2026-08-30-claude-glm.md"');
   });
 });
+
+// A published page with no LABELS entry rendered as the word `undefined` in the
+// footer of every page on the site. The link worked and the page was fine, so
+// nothing failed — it was found by a reader looking at the live site. Two guards
+// now: the build refuses, and this fails first, before a build is even attempted.
+describe("every published page has footer text", () => {
+  const build = read("deploy/web/build.mjs");
+
+  // Scoped to the PAGES array, and matched on slug-then-markdown-path, because
+  // a long entry wraps onto a second line.
+  const pages = build.slice(build.indexOf("const PAGES = ["), build.indexOf("];", build.indexOf("const PAGES = [")));
+  const slugs = [...pages.matchAll(/\["([a-z0-9-]+)", "[^"]+\.md"/g)].map((m) => m[1]);
+  const labels = build.slice(build.indexOf("const LABELS = {"), build.indexOf("};", build.indexOf("const LABELS = {")));
+
+  it("finds the page list", () => {
+    expect(slugs.length).toBeGreaterThan(3);
+    expect(slugs).toContain("security-note-claude-glm");
+  });
+
+  for (const slug of slugs) {
+    it(`${slug} has a label`, () => {
+      expect(labels, `add "${slug}" to LABELS in deploy/web/build.mjs`)
+        .toMatch(new RegExp(`(^|\\s)"?${slug}"?:`, "m"));
+    });
+  }
+
+  it("the build refuses rather than printing the missing word", () => {
+    expect(build).toContain("published with no footer label");
+  });
+});
