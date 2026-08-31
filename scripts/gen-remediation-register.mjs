@@ -59,14 +59,23 @@ ${rows.map((r) => `| \`${r[0]}\` | ${r.slice(1).join(" | ")} |`).join("\n")}
 
 ## Standing facts
 
-- **Every defect above is present in the public v1.6.0 release.** Nothing on this
-  branch has been released.
+- **Every defect above is present in the public v1.6.0 release, and in every
+  release before it.** Those releases stay as published. The fixes are in
+  **v1.6.1**, released 2026-09-01.
+- **Installing 1.6.1 repairs nothing by itself.** The launcher sits outside the
+  application and is not replaced until setup is run again, and a key that was in
+  an agent's environment stays exposed whatever is installed afterwards. The
+  remediation is manual, and it is the same for everyone who used the feature.
 - **The affected population is unknown.** The application has no telemetry, so
   there is no way to establish who installed terminal access. There is **no known
   exploitation**, which is not the same as no exploitation.
-- The corrected security note is
-  [\`SECURITY-NOTE-2026-08-30-claude-glm.md\`](SECURITY-NOTE-2026-08-30-claude-glm.md).
-  **It is not yet published, and no GHSA has been filed.**
+- **Disclosed 2026-09-01.** The security note is published at
+  <https://sovatela.eu/security-note-claude-glm>, the download page carries it
+  above the downloads, and \`version.json\` points *Check for updates* at it — which
+  reaches 1.5.0 and later only, since the update check did not exist before 1.5.0.
+  The advisory is
+  [GHSA-jpv9-3mvc-5v5c](https://github.com/jacobla1/sovatela/security/advisories/GHSA-jpv9-3mvc-5v5c),
+  CVSS 6.3, with a CVE requested and not yet assigned.
 - Accepted risks are recorded with their trade in
   [\`TECHNICAL-SPEC.md\` § 7.2](../TECHNICAL-SPEC.md#72-accepted-risks-from-the-august-2026-review).
 `;
