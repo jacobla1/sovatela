@@ -13,6 +13,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 }));
 
 import { invoke } from "@tauri-apps/api/core";
+import { ask } from "@tauri-apps/plugin-dialog";
 import KeyPage from "../src/lib/KeyPage.svelte";
 
 // Canned backend responses. get_usage_summary is rich so the usage panel and
@@ -143,5 +144,53 @@ describe("KeyPage (settings mode)", () => {
         settings: expect.objectContaining({ provider: "staan" }),
       }),
     );
+  });
+});
+
+// "Delete all data" ignored every remove_file result and returned success as
+// long as it could finish, and the panel showed "Deleted ✓". A chat that could
+// not be removed — open in another program, on a synced folder that was
+// offline — was reported to the user as gone. On a machine being sold or handed
+// on, that is the one failure that has to be visible.
+describe("a deletion that did not finish is not reported as done", () => {
+  beforeEach(() => {
+    ask.mockReset();
+    ask.mockResolvedValue(true);
+  });
+
+  async function deleteAll() {
+    render(KeyPage, { props: { mode: "settings" } });
+    await screen.findByText(/Connected/);
+    await fireEvent.click(
+      screen.getByText(/Delete all chats, projects & memory…/),
+    );
+  }
+
+  it("shows Deleted ✓ when everything really went", async () => {
+    await deleteAll();
+    expect(await screen.findByText("Deleted ✓")).toBeTruthy();
+    expect(document.querySelector(".warn-text")).toBeNull();
+  });
+
+  it("shows what is still on the device when some of it survived", async () => {
+    invoke.mockImplementation((cmd) => {
+      if (cmd === "delete_all_data") {
+        return Promise.reject(
+          new Error(
+            "1 item could not be deleted and is still on this device:\n\n  /Users/x/Sovatela/a-chat.json\n",
+          ),
+        );
+      }
+      return Promise.resolve(cmd in canned ? canned[cmd] : null);
+    });
+
+    await deleteAll();
+
+    const warned = await screen.findByRole("alert");
+    expect(warned.textContent).toContain("could not be deleted");
+    // The path, because the user has to be able to go and look.
+    expect(warned.textContent).toContain("a-chat.json");
+    // And never both at once.
+    expect(screen.queryByText("Deleted ✓")).toBeNull();
   });
 });

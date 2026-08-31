@@ -162,10 +162,12 @@ Three caveats, all shown in the app next to the button:
 - **It's less sovereign than the app.** Your prompts follow the proxy to
   Scaleway, but Claude Code is an agent that runs commands, installs packages,
   and fetches pages — those can reach hosts outside Europe.
-- **Setting it up reaches outside Europe too.** It downloads and runs an
-  installer from `astral.sh` to get **uv**, uses that to install the
-  **LiteLLM** proxy from PyPI, and adds a directory to your `PATH`. Both hosts
-  are US-based. Nothing is installed until you press the button, and
+- **Setting it up reaches outside Europe too.** It downloads **uv** from GitHub
+  and the **LiteLLM** proxy from PyPI into a folder belonging to the app, and
+  adds a directory to your `PATH`. Both hosts are US-based. Every download is
+  checked against a checksum built into the app, so what arrives is what was
+  chosen — though that cannot tell you whether those projects are themselves
+  trustworthy. Nothing is installed until you press the button, and
   *Settings → Uninstalling & your data* lists how to remove every piece —
   including uv and LiteLLM, which are general-purpose tools you may be using
   for other work.

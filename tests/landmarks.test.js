@@ -45,7 +45,7 @@ describe("the chat list is navigable structure", () => {
 
   it("groups chats into lists tied to their date heading", () => {
     expect(history).toMatch(/<ul class="history-group"[^>]*aria-labelledby=/);
-    expect(history).toMatch(/<li class="history-item/);
+    expect(history).toMatch(/<li role="listitem" class="history-item/);
   });
 
   it('keeps role="list", which list-style:none removes in WebKit', () => {
@@ -55,6 +55,27 @@ describe("the chat list is navigable structure", () => {
     const css = read("src/styles.css");
     const rule = css.slice(css.indexOf(".history-group {"), css.indexOf("}", css.indexOf(".history-group {")));
     expect(rule).toMatch(/list-style:\s*none/);
+  });
+
+  it('keeps role="listitem", which display:flex removes in WebKit', () => {
+    // The recorded chat-list failure. WebKit drops the implicit listitem role
+    // from a flex <li>, so the list announced as a list while its rows
+    // announced as nothing — no position, no count. The two roles are removed
+    // by different rules, so restoring one does not restore the other, and a
+    // test for the <ul> alone passed throughout.
+    expect(history).toMatch(/<li role="listitem" class="history-item/);
+
+    const css = read("src/styles.css");
+    const rule = css.slice(css.indexOf(".history-item {"), css.indexOf("}", css.indexOf(".history-item {")));
+    // If the row ever stops being a flex container the role is harmless; if it
+    // stays one, the role is load-bearing. This asserts the pairing so that
+    // removing the role while keeping the layout fails here.
+    if (/display:\s*(flex|grid|contents)/.test(rule)) {
+      expect(
+        history,
+        "the chat row is still a flex container, so it still needs role=listitem",
+      ).toMatch(/role="listitem"/);
+    }
   });
 
   it("marks the open conversation, and names each delete button", () => {

@@ -1,5 +1,194 @@
 # Changelog
 
+## 1.6.1 — 2026-09-01
+
+Remediation of an external review of 1.6.0. **A patch release, not a re-cut of
+1.6.0**: 1.6.0 is published and its artifacts stay exactly as they are. These are
+safety and correctness fixes to a feature that shipped, so the affected-version
+statements in the security note and in `docs/release/QA-1.6.0.md` deliberately
+still name 1.6.0 and must not be swept to 1.6.1. The strongest parts of
+that review's verdict stand — no publisher backend, keys in the OS credential
+store, strict CSP, isolated artifacts, bounded document extraction — and what
+follows is the rest of it.
+
+### Security
+- **The `claude-glm` launcher is rewritten, and the feature is back on macOS.** The Scaleway key is exported
+  inside the one subshell that becomes the proxy and nowhere else; provider
+  secrets already in the user's shell are stripped before Claude Code starts;
+  the proxy is always this session's own child on a port the OS had just called
+  free, never an adopted listener, with the port's owner checked against the
+  child's id; it stops with the session, so there is no PID file and no
+  long-lived proxy on a published port. The proxy installs into a virtual
+  environment inside the app's own config directory with a lock file, instead of
+  `uv tool install --force` replacing a LiteLLM installed for other work, and
+  anything overwritten is backed up. `deploy/claude-glm/verify-launcher.sh` runs
+  the launcher the installer embeds against a stub keychain, proxy and agent and
+  asserts what each could see; it runs as part of the test suite.
+
+  Three bugs were found by writing that script rather than by reading the code:
+  the secret-stripping loop was a no-op in zsh (which does not word-split an
+  unquoted parameter, so ten variable names were one), `status=` aborted every
+  macOS run under `set -e` (`status` is read-only in zsh), and the first version
+  of the harness passed against a copy of the launcher rather than the one that
+  ships.
+  It is enabled on **all three platforms**, each because something ran it:
+  macOS installed and used in a real session; Linux by
+  `deploy/claude-glm/verify-linux-docker.sh`, which runs the real installer and
+  the real LiteLLM in a container and reads the proxy's environment through
+  `/proc`; Windows by `.github/workflows/windows-terminal-access.yml` on a real
+  runner. Each check is committed, and a test fails if one disappears.
+
+  Every one of those checks found something the code review had not. The zsh
+  word-splitting no-op and the read-only `status` came from the macOS harness;
+  the Windows job failed first time on an identity check that compared the
+  listening socket's owner against the pid `Start-Process` returned — on Windows
+  that is the console-script shim, while python.exe binds — so the launcher
+  refused its own proxy. A listener is ours if it descends from the process we
+  started. The
+  interface no longer keeps its own switch for this: `claude_glm_status`
+  answers, and `install_claude_glm` refuses on the same answer, so the section
+  being visible and the command being permitted cannot come apart.
+- **The `claude-glm` defects are described in a
+  [security note](docs/release/SECURITY-NOTE-2026-08-30-claude-glm.md), and they
+  are present in every released version including 1.6.0.** The launcher exported
+  `SCW_SECRET_KEY` and then ran `exec env … claude`, which keeps the existing
+  environment — so the Scaleway key reached Claude Code and every command, hook
+  and MCP server it spawned. It also treated any authenticated 200 on
+  `127.0.0.1:4000` as proof its own proxy was up, so another local account could
+  bind that port first and receive the prompts.
+
+  An earlier version of this entry said the feature was "withdrawn in 1.6.0".
+  **That was false**: the withdrawal was written after 1.6.0 was published, in an
+  uncommitted working copy that was discarded when the work moved here. Nothing
+  reached a release. **An existing
+  installation is not repaired by updating** — the advisory says what to do.
+- **The workspace grant moved into the backend.** `set_workspace_dir` took any
+  string from the renderer, so the native folder picker was a courtesy rather
+  than the trust boundary; anything reaching the IPC surface could grant itself
+  `/` and have the model read from it. `choose_workspace_dir` now opens the
+  picker in Rust and canonicalizes what it returns, and the renderer can only
+  clear the grant.
+- **Authenticated endpoints require HTTPS.** A custom SearXNG or image endpoint
+  saved as `http://` received a bearer token, search queries and image prompts
+  in cleartext. Plain HTTP is now accepted only for loopback. Checked when the
+  setting is saved and again where the request leaves, since a hand-edited
+  `settings.json` never passes through the setter.
+- **A provider's reply is an image only if the bytes are one.** OVHcloud's path
+  labelled an absent or non-image content type `image/jpeg` and embedded the
+  body; every image path now reads against a cap and identifies the format from
+  the bytes.
+- **The two irreversible deletions confirm in the backend.** Deleting a chat
+  and deleting all chats, projects and memory asked in Svelte — real native
+  dialogs, but shown or not shown by the renderer, which put the check on the
+  side of the boundary a compromised renderer controls. Both now ask in Rust,
+  and the interface no longer asks a second time. The reversible, single-item
+  commands deliberately do not, and that line is
+  [written down](SECURITY.md#what-this-does-not-protect-against) rather than
+  left implicit.
+- **A link out of the update check can only point at sovatela.eu.**
+  `version.json` carried an arbitrary `url` that the app opened in the system
+  browser on a click — and the user is trusting the app at that moment, not
+  reading the address. HTTPS, exact host, no credentials, no port; anything else
+  falls back to the download page. Both the version and price bodies are now
+  read against a cap.
+- **A configured endpoint cannot redirect out of HTTPS.** The first version of
+  the transport check looked at the address you type and nothing else, while the
+  shared client followed redirects — so an endpoint reached over HTTPS could
+  answer 302 and send the request onward in the clear. `reqwest` drops
+  `Authorization` across a host-or-port change, which covers an ordinary
+  downgrade but not a same-port one, and never covers the search terms in the
+  query string or the image prompt in the body. Both callers now use a client
+  that applies the same rule to every hop, and a live redirect test covers it.
+- **A fetched price list is checked for being a price list.** `serde` accepted a
+  negative rate, an implausible one, a currency the interface cannot label, and
+  a `javascript:` source link — and the cost estimate is the number someone
+  decides whether to keep going on. Rates, currencies and source links are
+  validated before the table replaces one that was correct.
+- **The published stop command could kill an unrelated process.**
+  `kill "$(cat …/litellm.pid)"` appeared in the app and three documents; a
+  reused PID meant it stopped whatever had inherited the number. Replaced
+  everywhere with a command that verifies the process first.
+
+### Fixed
+- **A chat that could not be saved said so.** Save failures were a
+  `console.error` behind fire-and-forget calls, so a full disk or a permission
+  error lost whole conversations while the interface looked normal. There is now
+  a banner naming the reason, a retry, and the failed snapshot kept in memory —
+  and it survives switching chats, which is when it used to disappear.
+- **"Deleted ✓" is only shown when the deletion happened.** Every removal in
+  `delete_all_data` was a discarded result and the command reported success if
+  it finished. Each removal is now verified by looking for the file afterwards,
+  and what survived is reported.
+- **Moving the history folder is all-or-nothing.** Failures were discarded and
+  the new location was saved regardless, leaving chats split across two folders
+  with the app reading one. A failed move now rolls back and keeps the old
+  folder. A name collision no longer produces `id-moved-1.json`, which nothing
+  could ever open again — ids are UUIDs, so a collision is the same
+  conversation, and the newer copy wins under its own name.
+- **A settings file that cannot be read is no longer treated as a fresh
+  install.** Every read error produced defaults, and the next write put those
+  defaults over the real file — discarding the history folder, personalization
+  and provider settings on a transient error.
+- **Writes are durable and no longer share one temp name.** Every write to a
+  path used the same `<name>.tmp`, so two writers could publish each other's
+  half-written bytes. Unique names created exclusively, contents flushed before
+  the rename and the directory entry after it.
+- **Deleting a chat removes the chat first**, then its images and index entry.
+  The old order could leave a conversation that still opened with its pictures
+  gone.
+- **A usage tally that could not be written says so** rather than reporting
+  figures as recorded.
+- **A message has a budget, not just its files.** Per-file limits let a dropped
+  folder through in full, to be extracted, held in the renderer and sent as one
+  request.
+
+### Accepted, not fixed
+- **Four findings were accepted rather than fixed**, and are now written down
+  in [Technical specification § 7.2](docs/TECHNICAL-SPEC.md#72-accepted-risks-from-the-august-2026-review)
+  with what each would take and why the trade was made: the workspace symlink
+  race, unsigned release metadata, untested Windows and Linux screen readers,
+  and the website's missing response headers. An accepted risk that is not
+  recorded is indistinguishable from one nobody noticed.
+- **The public site carries what a static host can carry.** `sovatela.eu` is on
+  GitHub Pages, which cannot set response headers, so both page templates now
+  declare a strict `Content-Security-Policy` and `no-referrer` in meta tags —
+  an outbound link to a provider no longer carries which page of a privacy tool
+  the reader came from. `frame-ancestors` and `nosniff` have no meta form and
+  are recorded in § 7.2 rather than claimed.
+
+### Accessibility
+- **The chat list should announce its positions under VoiceOver.** WebKit drops
+  the implicit `listitem` role from a flex list item, and each chat row is one,
+  so the list announced as a list while its rows announced as nothing — no
+  "3 of 12". The `list` role had been restored on the container; the two are
+  dropped by different rules and only one had been put back. **Not yet confirmed
+  with a screen reader**, so the accessibility statement keeps the gap open, now
+  with the cause and the change recorded against it. NVDA, JAWS and Orca remain
+  untested and the statement still says so.
+
+### Documentation
+- **The privacy policy was wrong about the one automatic network call.** It said
+  nothing happens on its own; the connection check has always run at launch.
+  Corrected in the table and in the text, with a note saying so.
+- Quick Start said Word headers and footers are not sent; they have been read
+  since 1.5.5. Text scaling is 200%, not 150%, in three places.
+- The uninstall text no longer claims deleting chats and keys "clears everything
+  the app has saved" — it names what it leaves.
+- An install page states plainly that the Windows and Linux packages are
+  unsigned and have never been installed, upgraded or uninstalled on a clean
+  machine.
+- `docs/ACCESSIBILITY.md` is in the repository, which the test suite has
+  required since it was written. The published tag did not pass its own tests.
+- Terms of use carry a review date, an owner, and what to decide if the date
+  passes. They said "Applies to: Sovatela v1.2.0" while 1.6.0 was public.
+
+### Build
+- **The third-party manifest ships.** `THIRD-PARTY-LICENSES.md` said one
+  "should accompany any formal binary release" and none did.
+  `scripts/gen-third-party-manifest.mjs` generates it from `cargo metadata` and
+  the installed tree, it is bundled into every installer as a resource, and
+  *Settings → About* opens it.
+
 ## 1.6.0 — 2026-08-29
 
 Documents. The app writes Word documents, spreadsheets and slide decks, into a

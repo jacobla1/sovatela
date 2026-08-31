@@ -217,13 +217,36 @@ use.
 ### The proxy won't start, or replies fail
 
 ```sh
-tail -f ~/.config/claude-glm/litellm.log        # what the proxy is doing
-kill "$(cat ~/.config/claude-glm/litellm.pid)"  # stop it; next run restarts it
-uv tool upgrade litellm                          # after a Claude Code update
+tail -f ~/.config/claude-glm/litellm.log   # what the proxy is doing
+CLAUDE_GLM_UPGRADE=1 ./install-claude-glm.command   # re-resolve after a
+                                                   # Claude Code update
 ```
 
-On Windows the config lives in `%USERPROFILE%\.claude-glm\`; stop the proxy from
-Task Manager or with `Stop-Process -Name litellm`.
+**To stop the proxy.** From 1.6.1 it stops on its own when the `claude-glm`
+session ends, so normally there is nothing to do — starting a new session starts
+a new proxy on a new port. If a crash left one behind, or you have a launcher
+installed before 1.6.1 (a long-lived proxy on port 4000), stop it by what it is:
+
+```sh
+pkill -f 'claude-glm/venv/bin/litellm' || pkill -f 'claude-glm/litellm.yaml'
+```
+
+Through 1.6.0 this page said `kill "$(cat …/litellm.pid)"` with no check. **Do
+not use that**, here or wherever you have it saved: a PID file holds the number
+a process had when it started, and the system reuses those numbers. If the proxy
+had already exited without cleaning up, that number belongs to something else by
+now — an editor, a database, a build — and the command killed it without asking.
+
+On Windows the config lives in `%USERPROFILE%\.claude-glm\`:
+
+```powershell
+Get-CimInstance Win32_Process |
+  Where-Object { $_.CommandLine -like '*claude-glm*litellm*' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId }
+```
+
+Not `Stop-Process -Name litellm` — that stops every LiteLLM on the machine,
+including one you run for something else.
 
 A Claude Code update occasionally needs a matching LiteLLM update — upgrading
 the proxy is the first thing to try after one.

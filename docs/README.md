@@ -12,7 +12,7 @@
 | [Support](SUPPORT.md) | Where to go, what we can and can't help with |
 | [Accessibility statement](https://sovatela.eu/accessibility) | Conformance, known failures, plan — also published at [sovatela.eu/accessibility](https://sovatela.eu/accessibility) |
 | [Privacy policy](PRIVACY.md) | *Outline — pending legal review* |
-| [Terms of use](TERMS.md) | *Outline — pending legal review* |
+| [Terms of use](TERMS.md) | *Drafted, not published — qualified review due 2026-09-30* |
 | [Security policy](../SECURITY.md) | Design, reporting, what it doesn't protect against |
 
 ## For the product

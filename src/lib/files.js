@@ -5,6 +5,67 @@ export const MAX_IMAGE_BYTES = 6 * 1024 * 1024; // base64 images balloon token c
 export const MAX_TEXT_BYTES = 400 * 1024; // plain text per file
 export const MAX_DOC_BYTES = 20 * 1024 * 1024; // PDF/Word/ODT before extraction
 
+// Per-file limits are not a limit on a message. Through 1.6.0 those three were
+// the only ones there were, so forty documents just under the cap — or a folder
+// dropped onto the composer — were all accepted, all extracted, all held in the
+// renderer, and all put into one request. What that produced was the interface
+// freezing while it built the payload, a provider error after the fact, and a
+// bill for the attempt.
+//
+// Eight images because that is what FLUX.2 takes as a reference set, which is
+// the largest legitimate use of several at once.
+export const MAX_ATTACHMENTS = 20;
+export const MAX_TOTAL_IMAGE_BYTES = 8 * MAX_IMAGE_BYTES;
+// ~75k tokens of text, well inside the model's window with room for the reply.
+export const MAX_TOTAL_TEXT_CHARS = 300_000;
+
+/// Decoded size of a `data:` URL, without decoding it.
+function dataUrlBytes(url) {
+  const comma = url.indexOf(",");
+  if (comma === -1) return 0;
+  const b64 = url.length - comma - 1;
+  return Math.floor((b64 * 3) / 4);
+}
+
+/// What a set of staged attachments already comes to. Entries marked `error`
+/// are messages to the user rather than content, and are not counted.
+export function attachmentTotals(items) {
+  let count = 0;
+  let imageBytes = 0;
+  let textChars = 0;
+  for (const a of items || []) {
+    if (!a || a.kind === "error") continue;
+    count += 1;
+    if (a.kind === "image" && a.dataUrl) imageBytes += dataUrlBytes(a.dataUrl);
+    else if (typeof a.content === "string") textChars += a.content.length;
+  }
+  return { count, imageBytes, textChars };
+}
+
+const mb = (n) => Math.round(n / (1024 * 1024));
+
+/// Why `candidate` cannot be added to `items`, or `null` if it can.
+///
+/// Checked before the file is read where the size is known in advance, and
+/// again after extraction for a document, whose text is not proportional to it.
+export function aggregateRefusal(items, candidate) {
+  const t = attachmentTotals(items);
+  if (t.count >= MAX_ATTACHMENTS) {
+    return `not added — a message can carry ${MAX_ATTACHMENTS} attachments at most`;
+  }
+  const image = candidate?.kind === "image" ? (candidate.bytes ?? 0) : 0;
+  if (image && t.imageBytes + image > MAX_TOTAL_IMAGE_BYTES) {
+    return `not added — the images on this message would come to more than ${mb(
+      MAX_TOTAL_IMAGE_BYTES,
+    )} MB`;
+  }
+  const chars = typeof candidate?.content === "string" ? candidate.content.length : 0;
+  if (chars && t.textChars + chars > MAX_TOTAL_TEXT_CHARS) {
+    return `not added — the text on this message would be longer than the model can read`;
+  }
+  return null;
+}
+
 export function readAs(file, how) {
   return new Promise((resolve, reject) => {
     const r = new FileReader();

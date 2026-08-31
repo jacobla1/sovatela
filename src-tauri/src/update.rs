@@ -39,6 +39,51 @@ pub struct UpdateCheck {
 
 pub const DOWNLOAD_PAGE: &str = "https://sovatela.eu/#download";
 
+/// The only host a link out of the update check may point at.
+const PUBLISHER_HOST: &str = "sovatela.eu";
+
+/// The largest `version.json` this app will read. It holds a version string and
+/// a URL; anything approaching this is not that file.
+///
+/// Without a cap the body is whatever the far end sends, and "the far end" here
+/// is a site that could one day be serving something other than what we put
+/// there.
+pub const MAX_MANIFEST_BYTES: usize = 64 * 1024;
+
+/// Constrain the link the published manifest offers, or fall back to the
+/// download page.
+///
+/// `version.json` carried an arbitrary `url` and the interface opened it in the
+/// system browser on a click. The app is the trusted party in that moment — a
+/// user pressing "Open the download page" in software they installed is not
+/// evaluating the address — so a compromised or mis-published manifest could
+/// send them anywhere: an installer that is not ours, a page asking for the
+/// Scaleway key they know this app uses.
+///
+/// Signing the manifest is the real answer and is a separate piece of work.
+/// This is the part that costs nothing: the link may only be somewhere we
+/// publish. `http` is refused as well as another host, and so is a URL carrying
+/// credentials or a non-default port — each is a way to write an address that
+/// reads as ours at a glance.
+pub fn allowed_download_url(url: Option<&str>) -> String {
+    let Some(raw) = url.map(str::trim).filter(|u| !u.is_empty()) else {
+        return DOWNLOAD_PAGE.to_string();
+    };
+    let Ok(parsed) = reqwest::Url::parse(raw) else {
+        return DOWNLOAD_PAGE.to_string();
+    };
+    let host_ok = parsed
+        .host_str()
+        .is_some_and(|h| h.eq_ignore_ascii_case(PUBLISHER_HOST));
+    let plain =
+        parsed.username().is_empty() && parsed.password().is_none() && parsed.port().is_none();
+    if parsed.scheme() == "https" && host_ok && plain {
+        raw.to_string()
+    } else {
+        DOWNLOAD_PAGE.to_string()
+    }
+}
+
 /// Split a version into numeric components, stopping at the first thing that
 /// is not one — so `1.4.0-beta.2` compares as `1.4.0`. A component that will
 /// not parse ends the version rather than counting as zero, because treating
@@ -115,6 +160,45 @@ mod tests {
     fn prerelease_suffix_compares_as_its_release() {
         assert!(is_newer("1.5.0-beta.1", "1.4.0"));
         assert!(!is_newer("1.4.0-beta.1", "1.4.0"));
+    }
+
+    #[test]
+    fn a_link_out_of_the_update_check_can_only_be_ours() {
+        // The app is the trusted party when someone clicks this. A manifest
+        // that has been tampered with must not be able to spend that trust.
+        for ours in [
+            "https://sovatela.eu/#download",
+            "https://sovatela.eu/releases/1.7.0",
+            "https://SOVATELA.EU/#download",
+        ] {
+            assert_eq!(allowed_download_url(Some(ours)), ours, "{ours} is ours");
+        }
+
+        for elsewhere in [
+            "https://sovatela.eu.evil.example/#download",
+            "https://evil.example/sovatela.eu",
+            "https://not-sovatela.eu/#download",
+            // Downgraded: the page that hands out installers over plain HTTP.
+            "http://sovatela.eu/#download",
+            // Reads as ours until the credentials are noticed.
+            "https://sovatela.eu@evil.example/",
+            // Our name, someone else's listener.
+            "https://sovatela.eu:8443/#download",
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "not a url",
+            "",
+            "   ",
+        ] {
+            assert_eq!(
+                allowed_download_url(Some(elsewhere)),
+                DOWNLOAD_PAGE,
+                "{elsewhere} should have fallen back to the download page"
+            );
+        }
+
+        // An older manifest with no url at all.
+        assert_eq!(allowed_download_url(None), DOWNLOAD_PAGE);
     }
 
     #[test]

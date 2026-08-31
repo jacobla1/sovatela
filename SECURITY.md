@@ -202,11 +202,19 @@ bundled components and their licences are enumerated in
 
 **Terminal access is the exception, and it is opt-in.** Setting up
 `claude-glm` under *Settings → Advanced* does something the app otherwise never
-does: it fetches and executes an installer from `astral.sh` to obtain `uv` (if
-you don't already have it), installs the LiteLLM proxy from PyPI, and adds a
-launcher directory to your `PATH`. None of that is pinned by a lockfile or
-enumerated above, and both hosts are US-based — so setup reaches outside Europe
-even though chat traffic afterwards does not. Nothing happens until you press
+does: it downloads `uv` from GitHub and the LiteLLM proxy from PyPI into a
+folder belonging to the app, and adds a launcher directory to your `PATH`. Both
+hosts are US-based, so setup reaches outside Europe even though chat traffic
+afterwards does not.
+
+**Every download is verified against a checksum shipped inside the
+application** — `uv` against a hard-coded digest per platform, and every Python
+package against `requirements.lock`, which records content hashes rather than
+version numbers, installed with `--require-hashes`. Nothing that fails a check is
+unpacked or executed. What that establishes is that the bytes are the ones we
+chose; it says nothing about whether those projects are trustworthy, which we
+cannot verify and do not claim to — see § 7.2 of the technical specification.
+Nothing happens until you press
 the button — and the app asks again, natively, naming what is about to happen,
 before anything is fetched. That confirmation is in the backend rather than the
 interface on purpose: a button in a web view is a check the web view could skip,
@@ -275,7 +283,29 @@ Stated plainly, because a security page that only lists strengths is not useful:
   Europe. Its sovereignty properties are narrower than the app's, and the
   section says so next to the button. It is also unofficial: Anthropic's
   documentation states it doesn't support routing Claude Code to non-Claude
-  models through any gateway.
+  models through any gateway. Its launcher was rewritten after the August 2026
+  review, and each platform's launcher is verified by execution — macOS on a
+  machine, Linux in a container, Windows on a CI runner. **None of that is in a
+  released version**; see the
+  [security note](docs/release/SECURITY-NOTE-2026-08-30-claude-glm.md), which records what
+  was wrong and what to do if you installed it before that.
+- **Single-item deletions, if the renderer is ever compromised.** Deleting a
+  chat, and deleting all chats, projects and memory, confirm natively in the
+  backend, so the dialog cannot be skipped by whatever called the command.
+  Deleting one project, one remembered fact or one document template, removing a
+  stored key, and resetting the usage tally do not: their confirmations are in
+  the interface.
+
+  **These are not reversible.** An earlier version of this section called them
+  so, which was wrong — a project's instructions and files, a remembered fact and
+  the usage history are gone once deleted, with no undo in the app. What is true
+  is narrower: each affects one item rather than the whole store, and a native
+  dialog in front of every one of them would teach people that these dialogs are
+  noise, which would make the two that matter *less* safe.
+
+  So this is an **accepted risk, not a closed finding**: a renderer compromise
+  could destroy settings-level data without asking. The boundary is drawn at
+  scale rather than at recoverability, and that is a judgement worth disputing.
 
 ## Security history
 
@@ -285,6 +315,17 @@ than filed away:
 - **Current residual risks** — [Technical specification §
   7](docs/TECHNICAL-SPEC.md#7-known-technical-debt), and the *Known limitations*
   section of each [release's notes](docs/release/RELEASE-NOTES.md)
+- **Risks accepted rather than fixed**, each with what it would take and why the
+  trade was made — [Technical specification §
+  7.2](docs/TECHNICAL-SPEC.md#72-accepted-risks-from-the-august-2026-review)
+- **Security notes** —
+  [Terminal access (`claude-glm`), 2026-08-30](docs/release/SECURITY-NOTE-2026-08-30-claude-glm.md):
+  the launcher placed the Scaleway key in Claude Code's environment, adopted any
+  listener on `127.0.0.1:4000` as its proxy, and published a stop command that
+  could kill an unrelated process. Found by external review before the feature
+  had reached anyone, so it is recorded as a note rather than issued as an
+  advisory — the reasoning is in the note. Rewritten and re-enabled on all three
+  platforms; an installation made before that is not repaired by updating
 - **Accessibility defects**, stated rather than glossed —
   [Accessibility statement](https://sovatela.eu/accessibility)
 - **Security and robustness reviews** (July 2026) and the mitigation plan that

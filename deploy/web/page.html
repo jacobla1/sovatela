@@ -3,6 +3,21 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- The site runs no JavaScript and loads nothing from anywhere else, so the
+       policy is the strictest one that still renders it: nothing is permitted
+       by default, images only from this origin, and inline styles because the
+       CSS is in the <style> block above rather than a file.
+
+       As a meta tag rather than a response header, because sovatela.eu is on
+       GitHub Pages and Pages cannot set headers. That costs three things a
+       header would give: `frame-ancestors` is ignored in meta form, and
+       `X-Content-Type-Options: nosniff` and a real `Referrer-Policy` header
+       have no meta equivalent at all. The referrer is set below by the one
+       mechanism that does work in markup. See TECHNICAL-SPEC.md § 7. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'" />
+  <!-- An outbound link to Scaleway or GitHub should not carry which page on a
+       privacy tool the reader came from. -->
+  <meta name="referrer" content="no-referrer" />
   <title>{{TITLE}} — Sovatela</title>
   <style>
     :root {

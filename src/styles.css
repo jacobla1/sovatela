@@ -995,6 +995,40 @@ button.primary:disabled {
   background: var(--panel);
 }
 
+/* A chat that could not be written to disk. Sits between the header and the
+   thread, in the error colour rather than the warning one, because the message
+   is that data is at risk right now — not that something might go wrong. It has
+   no dismiss: it clears when a retry succeeds, and nothing else should be able
+   to make it stop saying so. */
+.unsaved-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--error) 40%, transparent);
+  background: color-mix(in srgb, var(--error) 12%, var(--panel));
+  color: var(--text);
+  font-size: var(--fs-sm);
+}
+
+.unsaved-bar .unsaved-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.unsaved-bar strong {
+  color: var(--error);
+}
+
+.unsaved-bar .unsaved-list {
+  opacity: 0.85;
+}
+
+.unsaved-bar button {
+  flex: none;
+}
+
 .chat .title {
   display: flex;
   align-items: center;
@@ -1568,6 +1602,21 @@ button.ghost:hover {
   font-size: var(--fs-sm);
   word-break: break-all;
   background: var(--surface-2, rgba(127, 127, 127, 0.08));
+}
+
+/* A failure the user has to read and act on, rather than a field-level hint.
+   `pre-line` because the backend reports these as a short paragraph with the
+   affected paths on their own lines, and collapsing them into one run makes a
+   list of files unreadable. */
+.warn-text {
+  font-size: var(--fs-sm);
+  color: var(--error);
+  background: color-mix(in srgb, var(--error) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--error) 35%, transparent);
+  border-radius: var(--r-sm);
+  padding: 0.6rem 0.75rem;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
 }
 
 .saved-note {

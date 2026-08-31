@@ -1,0 +1,235 @@
+name: linux terminal access
+
+# Runs deploy/claude-glm/install-claude-glm.sh on a clean Linux runner and drives
+# the launcher it installs, end to end — the real installer, the real uv download
+# with its checksum verified, the real hash-checked package install, and the
+# real LiteLLM proxy. Only the credential store and Claude Code are stubbed.
+#
+# This exists because the Linux evidence was previously a container on the
+# maintainer's laptop, which is not a clean machine and was not reproducible when
+# Docker there became unhealthy. A hosted runner is both.
+#
+# It also runs the tamper checks, which are the only proof that verification
+# refuses anything: a package whose hash does not match, and altered uv bytes fed
+# to the installer's own verification function.
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  push:
+    paths:
+      - "deploy/claude-glm/**"
+      - ".github/workflows/linux-terminal-access.yml"
+
+jobs:
+  install:
+    if: github.repository == 'jacobla1/Scale'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The installer requires Python 3.12 and refuses to install one — see the
+      # second job, which proves it refuses. ubuntu-22.04 ships 3.10, so a
+      # machine meeting the stated requirement has to be arranged here.
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Run the installer and the end-to-end checks
+        env:
+          REPO: ${{ github.workspace }}
+          STUB: ${{ runner.temp }}/stub
+          OUT: ${{ runner.temp }}/out
+        run: |
+          # The stub directory has to be on PATH before the real tools, so the
+          # launcher finds the stub credential store and the stub agent.
+          mkdir -p "$STUB"
+          echo "$STUB" >> "$GITHUB_PATH"
+          export PATH="$STUB:$PATH"
+          bash "$REPO/deploy/claude-glm/verify-linux-e2e.sh"
+
+      - name: Proxy log, whatever happened
+        if: always()
+        run: |
+          f="$HOME/.config/claude-glm/litellm.log"
+          echo "===== litellm.log ====="
+          [ -f "$f" ] && tail -40 "$f" || echo "(absent)"
+
+      - name: Uninstall leaves nothing behind
+        if: always()
+        run: |
+          # UNINSTALL.md § 4 for 1.6.1 and later: everything lives in the app's
+          # own folder, and nothing global was installed. Both halves are checked.
+          pkill -f 'claude-glm/venv/bin/litellm' 2>/dev/null || true
+          rm -rf "$HOME/.config/claude-glm" "$HOME/.local/bin/claude-glm"
+          test ! -e "$HOME/.config/claude-glm" || { echo "config folder survived"; exit 1; }
+          # Checking ~/.local/bin/uv alone missed the case that mattered: a
+          # managed Python goes to ~/.local/share/uv/python with caches in
+          # ~/.cache/uv, which is how pinning the interpreter reintroduced
+          # global state without any of these assertions noticing.
+          bad=0
+          for g in "$HOME/.local/bin/uv" "$HOME/.local/share/uv" "$HOME/.cache/uv"; do
+            if [ -e "$g" ]; then echo "global state left at $g"; bad=1; fi
+          done
+          [ "$bad" -eq 0 ] || exit 1
+          echo "removed; nothing global was left behind"
+
+  # The other half of the contract: on a machine without Python 3.12, the
+  # installer must stop with instructions and leave nothing behind — rather than
+  # downloading a managed Python into ~/.local/share/uv, which is what pinning
+  # the interpreter did until CI caught it.
+  refuses-without-python:
+    if: github.repository == 'jacobla1/Scale'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: A missing Python 3.12 is refused, not installed
+        run: |
+          set -uo pipefail
+          # No setup-python here: ubuntu-22.04 ships 3.10 and nothing else.
+          python3.12 --version >/dev/null 2>&1 && {
+            echo "this runner has 3.12; the refusal path cannot be tested here"; exit 1; }
+
+          mkdir -p "$RUNNER_TEMP/stub"
+          printf '#!/bin/sh\necho fake-claude\n' > "$RUNNER_TEMP/stub/claude"
+          chmod +x "$RUNNER_TEMP/stub/claude"
+          export PATH="$RUNNER_TEMP/stub:$PATH"
+
+          set +e
+          out=$(bash deploy/claude-glm/install-claude-glm.sh 2>&1)
+          code=$?
+          set -e
+          echo "$out" | tail -20
+
+          [ "$code" -ne 0 ] || { echo "FAIL: the installer succeeded without Python 3.12"; exit 1; }
+          # Match the interpreter name the message actually uses. The first
+          # version of this looked for "Python 3.12 was not found" while the
+          # installer says "python3.12 was not found", so a correct refusal read
+          # as a failure to explain itself.
+          echo "$out" | grep -qi "python3\.12 was not found" \
+            || { echo "FAIL: it failed without saying why"; exit 1; }
+          # The guidance must name this platform, not only another one — Ubuntu
+          # 22.04 has no python3.12 in its own repositories.
+          echo "$out" | grep -q "Ubuntu 22.04" \
+            || { echo "FAIL: no instruction for the platform it just refused on"; exit 1; }
+          # And it must not tell anyone to add a third-party apt repository.
+          # Recommending a PPA asks for system-wide privileged software from a
+          # source neither we nor Ubuntu vet, for an optional feature — an
+          # instruction this job cannot test and should not be shipping.
+          echo "$out" | grep -qiE "add-apt-repository|ppa:" \
+            && { echo "FAIL: it recommends a third-party apt repository"; exit 1; }
+          echo "$out" | grep -qE "pyenv|mise|asdf" \
+            || { echo "FAIL: no per-account alternative offered"; exit 1; }
+          echo "$out" | grep -q "Nothing has been installed" \
+            || { echo "FAIL: it did not say whether anything was left behind"; exit 1; }
+
+          # "Installed nothing" has to be true, not just printed. uv used to be
+          # downloaded and copied into place before Python was checked.
+          [ ! -e "$HOME/.config/claude-glm" ] \
+            || { echo "FAIL: an app-owned folder was left after refusing"; ls -R "$HOME/.config/claude-glm"; exit 1; }
+
+          # And nothing global was created on the way to that refusal.
+          bad=0
+          for g in "$HOME/.local/share/uv" "$HOME/.cache/uv" "$HOME/.local/bin/claude-glm"; do
+            [ -e "$g" ] && { echo "FAIL: global state at $g"; bad=1; }
+          done
+          [ "$bad" -eq 0 ] || exit 1
+          echo "PASS: refused cleanly, installed nothing, left nothing global"
+
+  # Upgrade behaviour, against launchers that were actually released rather than
+  # a stand-in script. The previous version of this job wrote an arbitrary file
+  # and asserted it was treated as legacy — which validated the assumption under
+  # test ("unmarked means legacy") instead of testing it.
+  upgrade-classification:
+    if: github.repository == 'jacobla1/Scale'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - case: released-1.2.0
+            tag: v1.2.0
+            expect: legacy_seen
+          - case: released-1.6.0
+            tag: v1.6.0
+            expect: legacy_seen
+          - case: hand-edited-legacy
+            tag: v1.6.0
+            edit: "yes"
+            expect: legacy_seen
+          - case: interrupted-current
+            tag: ""
+            expect: not_seen
+          - case: unrelated-launcher
+            tag: ""
+            unrelated: "yes"
+            expect: not_seen
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # release tags are the fixtures
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: "${{ matrix.case }}"
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/stub" "$HOME/.local/bin"
+          printf '#!/bin/sh\necho fake-claude\n' > "$RUNNER_TEMP/stub/claude"
+          printf '#!/bin/sh\nprintf %%s "{\\"scaleway_api_key\\":\\"K\\",\\"claude_glm_api_key\\":\\"\\"}"\n' \
+            > "$RUNNER_TEMP/stub/secret-tool"
+          chmod +x "$RUNNER_TEMP/stub"/*
+          export PATH="$RUNNER_TEMP/stub:$PATH"
+          L="$HOME/.local/bin/claude-glm"
+
+          case "${{ matrix.case }}" in
+            released-*|hand-edited-legacy)
+              # The launcher exactly as that release wrote it.
+              git show "${{ matrix.tag }}:deploy/claude-glm/install-claude-glm.sh" \
+                | awk '/^cat > "\$LAUNCHER"/,/^LAUNCHER_EOF$/' \
+                | sed '1d;$d' > "$L"
+              grep -q . "$L" || { echo "fixture extraction failed"; exit 1; }
+              if [ "${{ matrix.edit || '' }}" = "yes" ]; then
+                # A user who edited their launcher must still be recognised — the
+                # reason this is a signature and not a hash of the released file.
+                printf '\n# a comment someone added\n' >> "$L"
+                sed -i 's/^# claude-glm .*/# my patched launcher/' "$L"
+              fi
+              ;;
+            interrupted-current)
+              # A current install that died after writing the launcher: the case a
+              # missing-marker rule mistook for a leak.
+              awk '/^cat > "\$LAUNCHER"/,/^LAUNCHER_EOF$/' deploy/claude-glm/install-claude-glm.sh \
+                | sed '1d;$d' > "$L"
+              mkdir -p "$HOME/.config/claude-glm"
+              printf '%s\n' '{"install_status":"incomplete","layout_version":2,"legacy_seen":false}' \
+                > "$HOME/.config/claude-glm/state.json"
+              ;;
+            unrelated-launcher)
+              printf '#!/bin/sh\n# someone else'"'"'s claude-glm\necho hello\n' > "$L"
+              ;;
+          esac
+          chmod +x "$L"
+
+          bash deploy/claude-glm/install-claude-glm.sh >/tmp/i.log 2>&1 || { tail -25 /tmp/i.log; exit 1; }
+
+          state="$HOME/.config/claude-glm/state.json"
+          echo "state: $(cat "$state")"
+          grep -q '"install_status":"complete"' "$state" || { echo "FAIL: not marked complete"; exit 1; }
+
+          if [ "${{ matrix.expect }}" = "legacy_seen" ]; then
+            grep -q '"legacy_seen":true' "$state" \
+              || { echo "FAIL: an affected launcher was not recognised"; exit 1; }
+            echo "PASS: ${{ matrix.case }} recorded prior exposure"
+          else
+            grep -q '"legacy_seen":false' "$state" \
+              || { echo "FAIL: claimed prior exposure it cannot establish"; exit 1; }
+            echo "PASS: ${{ matrix.case }} did not claim prior exposure"
+          fi
+

@@ -282,24 +282,94 @@ fn stream_read_error(e: reqwest::Error) -> String {
 
 /// Write via a temp file + rename so a crash mid-write can't leave a truncated
 /// JSON file behind (rename is atomic on the same filesystem).
+///
+/// The temp file's name is unique per attempt and created exclusively. Through
+/// 1.6.0 every write to a given path used the same `<name>.tmp`, so two writers
+/// aiming at that path — two windows saving the same conversation, a save
+/// racing the usage ledger — shared one scratch file: one could publish the
+/// other's half-written bytes, and both would report success.
+///
+/// The contents are flushed to the device before the rename, and on Unix the
+/// directory entry is flushed after it. Without the first, a crash can leave a
+/// renamed file full of zeroes; without the second, the rename itself can be
+/// lost while the data survives under a name nothing looks for. `write` +
+/// `rename` alone is atomic against a *process* dying, which is the case this
+/// originally guarded, and says nothing about the machine losing power.
 fn write_atomic(path: &std::path::Path, contents: &str) -> Result<(), String> {
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, contents).map_err(|e| e.to_string())?;
-    // Owner-only. Conversations, memories and settings were landing at 0644 —
-    // the default umask — which on a shared machine is readable by every other
-    // local account. Applied to the temp file rather than after the rename, so
-    // the finished path is never briefly world-readable.
-    //
-    // Unix only. Windows has no mode bits (`set_permissions` there only toggles
-    // the read-only flag), and files under the user profile inherit an ACL that
-    // already excludes other standard users — see `restrict_dir`.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
-            .map_err(|e| e.to_string())?;
+    use std::io::Write;
+
+    let dir = path
+        .parent()
+        .ok_or_else(|| format!("{} has no folder to write into", path.display()))?;
+    let stem = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("sovatela");
+
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    let mut last = String::new();
+    for _ in 0..8 {
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // Same directory, so the rename stays on one filesystem and stays
+        // atomic. Leading dot keeps it out of the way if one is ever orphaned.
+        let tmp = dir.join(format!(".{stem}.{}.{n}.tmp", std::process::id()));
+
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        // Owner-only from the moment it exists, rather than set afterwards:
+        // conversations, memories and settings were landing at 0644 — the
+        // default umask — readable by every other local account on a shared
+        // machine, and a mode applied after creation leaves a window.
+        //
+        // Windows has no mode bits (`set_permissions` there only toggles the
+        // read-only flag) and files under the user profile inherit an ACL that
+        // already excludes other standard users — see `restrict_dir`.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+
+        let mut file = match opts.open(&tmp) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                last = e.to_string();
+                continue; // vanishingly unlikely; try the next name
+            }
+            Err(e) => return Err(e.to_string()),
+        };
+
+        let written = file
+            .write_all(contents.as_bytes())
+            .and_then(|()| file.sync_all());
+        if let Err(e) = written {
+            drop(file);
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e.to_string());
+        }
+        drop(file);
+
+        if let Err(e) = std::fs::rename(&tmp, path) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e.to_string());
+        }
+
+        // Make the rename itself durable. Best-effort: some filesystems refuse
+        // to open a directory for this, and a failure here costs durability
+        // rather than correctness, so it must not fail a write that landed.
+        #[cfg(unix)]
+        {
+            if let Ok(d) = std::fs::File::open(dir) {
+                let _ = d.sync_all();
+            }
+        }
+        return Ok(());
     }
-    std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+    Err(format!(
+        "Could not create a temporary file next to {} ({last}).",
+        path.display()
+    ))
 }
 
 /// Restrict a directory **this app owns** to its owner.
@@ -548,11 +618,32 @@ fn settings_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
 }
 
 fn load_settings(app: &tauri::AppHandle) -> Result<AppSettings, String> {
-    match std::fs::read_to_string(settings_path(app)?) {
+    let path = settings_path(app)?;
+    match std::fs::read_to_string(&path) {
         Ok(s) => serde_json::from_str(&s).map_err(|e| e.to_string()),
-        // Parse an empty object so field-level serde defaults (e.g. save_history
-        // = true) apply on a fresh install, rather than the derived bool false.
-        Err(_) => serde_json::from_str("{}").map_err(|e| e.to_string()),
+        // No file yet is the one case that really is a fresh install. Parse an
+        // empty object so field-level serde defaults (e.g. save_history = true)
+        // apply, rather than the derived bool false.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            serde_json::from_str("{}").map_err(|e| e.to_string())
+        }
+        // Anything else is a settings file that exists and could not be read:
+        // a permission problem, a failing disk, a locked file, a cloud folder
+        // that has not materialized yet. Through 1.6.0 every one of those
+        // produced the same defaults as a missing file — and because callers
+        // load, edit one field, and save the whole struct back, the next write
+        // put those defaults on top of the real file. A folder the user chose
+        // for their history, their personalization text, and their provider
+        // settings were discarded by a transient read error, silently.
+        //
+        // Failing here surfaces as a command error in the interface. That is
+        // the point: it is recoverable, and overwriting is not.
+        Err(e) => Err(format!(
+            "Could not read your settings at {} ({e}). Nothing has been changed — \
+             your saved settings are still there. Check that the file is readable \
+             and try again.",
+            path.display()
+        )),
     }
 }
 
@@ -719,6 +810,103 @@ fn bfl_polling_allowed(url: &str) -> bool {
 /// search result, would hand over a credential without doing anything that
 /// looked like it.
 ///
+/// A client for endpoints the user configured, which applies the transport rule
+/// to every redirect hop as well as to the address itself.
+///
+/// The shared client follows redirects, and checking only the configured
+/// address left the hop unexamined: an endpoint reached over HTTPS could answer
+/// 302 and send the request onward in the clear. `reqwest` strips
+/// `Authorization` when a redirect crosses to a different host *or port*, which
+/// covers an ordinary `https://host` → `http://host` downgrade (443 and 80
+/// differ) — but not `https://host:8443` → `http://host:8443`, where host and
+/// port match and the token is carried over cleartext. And the token is not the
+/// only thing that leaks: the search terms are in the query string and the image
+/// prompt is in the body, both of which travel regardless of what happens to the
+/// header.
+///
+/// So the hop is refused rather than reasoned about. A redirect to anywhere
+/// `endpoint_transport_ok` would not accept as a destination fails the request.
+fn endpoint_client() -> reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(15))
+                .read_timeout(std::time::Duration::from_secs(120))
+                .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                    if attempt.previous().len() >= 5 {
+                        return attempt.error("too many redirects");
+                    }
+                    match endpoint_transport_ok(attempt.url().as_str()) {
+                        Ok(()) => attempt.follow(),
+                        Err(e) => attempt.error(e),
+                    }
+                }))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new())
+        })
+        .clone()
+}
+
+/// May a bearer token, a search query, or an image prompt be sent to this
+/// address?
+///
+/// HTTPS everywhere, with one exception: plain HTTP to the loopback interface.
+/// A SearXNG or image endpoint someone runs on their own machine has no
+/// certificate to present, the traffic never reaches a network interface, and
+/// refusing it would only push people to a workaround.
+///
+/// Everything else must be HTTPS. Through 1.6.0 nothing checked: the settings
+/// took any string, `searxng_search` attached the token with `bearer_auth`, and
+/// the custom image endpoint posted the prompt — so `http://search.example.net`
+/// put a bearer token and the user's queries on the wire in cleartext, on a
+/// café network as readily as at home, with nothing in the interface to say so.
+///
+/// `localhost` and `*.localhost` are accepted alongside the literals. RFC 6761
+/// reserves the name for the loopback interface and every resolver this app
+/// runs on honours it; someone who can rewrite the machine's hosts file to
+/// break that already has what this check protects.
+fn endpoint_transport_ok(url: &str) -> Result<(), String> {
+    let raw = url.trim();
+    if raw.is_empty() {
+        return Ok(());
+    }
+    let parsed = reqwest::Url::parse(raw).map_err(|_| {
+        format!("{raw} is not a valid address. It should start with https:// and name a host.")
+    })?;
+    match parsed.scheme() {
+        "https" => Ok(()),
+        "http" => {
+            let host = parsed
+                .host_str()
+                .unwrap_or_default()
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .to_lowercase();
+            let loopback = host == "localhost"
+                || host.ends_with(".localhost")
+                || host
+                    .parse::<std::net::IpAddr>()
+                    .map(|ip| ip.is_loopback())
+                    .unwrap_or(false);
+            if loopback {
+                Ok(())
+            } else {
+                Err(format!(
+                    "{raw} uses plain http://, so your access token and everything you \
+                     search for would travel unencrypted and be readable by anyone on \
+                     the network in between. Use https:// instead. Plain http:// is \
+                     accepted only for an endpoint on this machine (localhost or \
+                     127.0.0.1)."
+                ))
+            }
+        }
+        other => Err(format!(
+            "{raw} uses {other}://, which this app will not send credentials over. Use https://."
+        )),
+    }
+}
+
 /// So when the origin changes and no replacement is supplied, the stored token
 /// is cleared instead of carried over. Editing a path, or retyping the same
 /// host, keeps it.
@@ -748,6 +936,9 @@ async fn set_search_settings(
             }
         })?;
     }
+    // Refused before the key is stored against it, so a rejected endpoint never
+    // becomes the address a token is held for.
+    endpoint_transport_ok(&settings.url)?;
     let mut s = load_settings(&app)?;
     if !token_survives_url_change(&s.url, &settings.url, &settings.token) {
         update_secrets(|sec| sec.searxng_token.clear())?;
@@ -860,6 +1051,7 @@ async fn set_image_settings(app: tauri::AppHandle, settings: ImageSettings) -> R
             }
         })?;
     }
+    endpoint_transport_ok(&settings.url)?;
     let mut s = load_settings(&app)?;
     if !token_survives_url_change(&s.image_url, &settings.url, &settings.token) {
         update_secrets(|sec| sec.image_token.clear())?;
@@ -909,9 +1101,37 @@ fn set_history_settings(app: tauri::AppHandle, settings: HistorySettings) -> Res
             new_dir.display()
         ));
     }
-    // Moving the location shouldn't make existing chats vanish — carry them over.
+    // Moving the location shouldn't make existing chats vanish — carry them
+    // over, and only point the app at the new folder once they are all there.
+    //
+    // Through 1.6.0 the move could not fail: its result was void, and the new
+    // location was saved either way. A disk that filled, a permission error, a
+    // synced folder that went offline halfway — each left some chats in the new
+    // folder, the rest in the old one, and the app reading only the new. The
+    // interface said "Switching folders moves your existing chats along" and
+    // meant it, so nothing looked wrong.
     if old_dir != new_dir {
-        move_our_history(&old_dir, &new_dir);
+        let outcome = move_our_history(&old_dir, &new_dir);
+        if !outcome.failures.is_empty() {
+            return Err(format!(
+                "Your chat history was not moved, so the folder has been left as it \
+                 was and nothing is lost. What stopped it:\n\n  {}\n\nFix that and \
+                 try again, or pick a different folder.",
+                outcome.failures.join("\n  ")
+            ));
+        }
+        // Warnings mean the move succeeded and something after it did not. The
+        // setting has to be saved regardless: the chats are in the new folder,
+        // and refusing to point the app at them is how they vanish.
+        if !outcome.warnings.is_empty() {
+            save_settings(&app, &s)?;
+            return Err(format!(
+                "Your chats were moved successfully and this app is now using the new \
+                 folder. One thing afterwards did not finish:\n\n  {}\n\nNo chat is \
+                 missing — this is about tidying up, and you can do it by hand.",
+                outcome.warnings.join("\n  ")
+            ));
+        }
     }
     save_settings(&app, &s)
 }
@@ -954,10 +1174,62 @@ async fn get_workspace_dir(app: tauri::AppHandle) -> Result<String, String> {
     Ok(load_settings(&app)?.workspace_dir)
 }
 
+/// Grant the workspace by opening the native folder picker here, in the
+/// backend, and storing what it returned.
+///
+/// The grant is the whole point of this command existing. Through 1.6.0 the
+/// picker ran in the webview and `set_workspace_dir` took whatever string came
+/// back, so the trust boundary was a dialog the renderer chose to show. Anything
+/// able to reach the IPC surface could name `/`, a home directory, or a
+/// colleague's share, and `send_chat` would then enable the file tools over it —
+/// so the model could be told to read a file and its contents would go out with
+/// the next request to Scaleway.
+///
+/// Now the path can only come from a folder someone actually selected in a
+/// native dialog they can see. Canonicalized before it is stored, so what the
+/// tools resolve against is a real directory rather than a name that might be
+/// re-pointed afterwards.
 #[tauri::command]
-async fn set_workspace_dir(app: tauri::AppHandle, dir: String) -> Result<(), String> {
+async fn choose_workspace_dir(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let picked = tokio::task::spawn_blocking({
+        let app = app.clone();
+        move || {
+            app.dialog()
+                .file()
+                .set_title("Choose a folder the assistant may read and write")
+                .blocking_pick_folder()
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let Some(picked) = picked else {
+        return Ok(load_settings(&app)?.workspace_dir); // cancelled — unchanged
+    };
+    let path = picked
+        .into_path()
+        .map_err(|e| format!("That folder could not be used: {e}"))?;
+    let canonical = std::fs::canonicalize(&path)
+        .map_err(|e| format!("{} could not be opened: {e}", path.display()))?;
+    if !canonical.is_dir() {
+        return Err(format!("{} is not a folder.", canonical.display()));
+    }
+    let dir = canonical.to_string_lossy().into_owned();
+
     let mut s = load_settings(&app)?;
-    s.workspace_dir = dir.trim().to_string();
+    s.workspace_dir = dir.clone();
+    save_settings(&app, &s)?;
+    Ok(dir)
+}
+
+/// Give the workspace back. The only change to the grant the renderer may make
+/// on its own, because it can only ever narrow it: an empty string is refused
+/// nowhere and grants nothing.
+#[tauri::command]
+async fn clear_workspace_dir(app: tauri::AppHandle) -> Result<(), String> {
+    let mut s = load_settings(&app)?;
+    s.workspace_dir.clear();
     save_settings(&app, &s)
 }
 
@@ -1205,39 +1477,282 @@ fn parse_fact_array(raw: &str) -> Vec<String> {
     }
 }
 
-/// Best-effort move of one file, falling back to copy+remove across
-/// filesystems (e.g. into a cloud folder).
-fn move_file(path: &std::path::Path, dest: &std::path::Path) {
-    // Never write over something already there. The destination folder may be
-    // one the user chose and already uses, and a same-named file in it is
-    // theirs until proven otherwise — so ours is set down beside it rather
-    // than on top of it.
-    let dest = if dest.exists() {
-        let stem = dest.file_stem().map(|s| s.to_string_lossy().into_owned());
-        let ext = dest.extension().map(|s| s.to_string_lossy().into_owned());
-        let mut candidate = None;
-        for n in 1..1000 {
-            let name = match (&stem, &ext) {
-                (Some(s), Some(e)) => format!("{s}-moved-{n}.{e}"),
-                (Some(s), None) => format!("{s}-moved-{n}"),
-                _ => return,
-            };
-            let alt = dest.with_file_name(name);
-            if !alt.exists() {
-                candidate = Some(alt);
+/// Move one file, falling back to copy+remove across filesystems (e.g. into a
+/// cloud folder). The destination must not already exist — collisions are
+/// decided by the caller, which knows what the file is.
+fn move_one(path: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {
+    if std::fs::rename(path, dest).is_ok() {
+        return Ok(());
+    }
+    // Across filesystems rename fails and the copy has to come first: the
+    // original is only removed once the copy is on disk, so an interruption
+    // leaves two copies rather than none.
+    std::fs::copy(path, dest).map_err(|e| format!("{}: {e}", path.display()))?;
+    std::fs::remove_file(path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The `updated_at` a conversation file carries, for deciding which of two
+/// copies of the same conversation is the current one.
+fn conversation_updated_at(path: &std::path::Path) -> String {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Conversation>(&t).ok())
+        .map(|c| c.updated_at)
+        .unwrap_or_default()
+}
+
+/// What moving one folder's history into another did.
+#[derive(Default)]
+struct HistoryMove {
+    moved: usize,
+    /// Already at the destination — the same conversation, or an asset whose
+    /// name is its content hash. Nothing to carry over.
+    already_there: usize,
+    /// Reasons the move could not complete. Non-empty means it was rolled back
+    /// and nothing changed — the caller must not save the new folder.
+    failures: Vec<String>,
+    /// Things that went wrong *after* every chat had arrived. The move stands;
+    /// the new folder must still be saved.
+    ///
+    /// Keeping these in `failures` was a bug of exactly the kind this function
+    /// exists to prevent. A cleanup failure made the caller report "your chat
+    /// history was not moved, so the folder has been left as it was and nothing
+    /// is lost" — while the chats had in fact moved, the setting was not saved,
+    /// and the app went on reading the old folder, which was now empty. The
+    /// chats were fine on disk and gone from the interface.
+    warnings: Vec<String>,
+}
+
+/// Clear the migration's staging directory, and say what could not be cleared.
+///
+/// A function so its failure path can be tested. The behaviour that matters is
+/// what happens when cleanup *fails*, and a test that only ever exercises a
+/// successful migration proves the opposite of what it claims to.
+///
+/// Only the files this migration put there are removed, and the directory itself
+/// only with `remove_dir`, which refuses unless empty — so anything else in it,
+/// including a file another process created, is left alone rather than deleted.
+fn clear_staging(dir: &std::path::Path, staged: &[std::path::PathBuf]) -> Option<String> {
+    let mut left = 0usize;
+    for f in staged {
+        if !removed_file(f) {
+            left += 1;
+        }
+    }
+    if std::fs::remove_dir(dir).is_ok() || !dir.exists() {
+        return None;
+    }
+    Some(format!(
+        "Your chats were moved. {left} superseded cop{} could not be cleared out of {} — \
+         they are older duplicates, safe to delete, and still readable there if you want \
+         to check first.",
+        if left == 1 { "y" } else { "ies" },
+        dir.display()
+    ))
+}
+
+/// Move this app's history from one folder to another, and nothing else.
+///
+/// Through 1.5.1 this moved every `*.json` in the folder and the whole
+/// `assets/` directory. A history folder can be one the user picked — their
+/// documents, a project, a synced drive root — so changing the folder moved
+/// unrelated files out of it. Only files this app can prove it wrote are
+/// touched.
+///
+/// Two things changed after the 1.6.0 review.
+///
+/// Failures are no longer discarded. Every `rename`/`copy`/`remove` result was
+/// dropped, so a full disk, a permission error, or a network folder going away
+/// mid-move produced no error anywhere while the settings were saved regardless
+/// — the app then pointed at a folder holding some of the chats, and the rest
+/// sat in a folder it no longer read. Now the first failure stops the move,
+/// everything already moved goes back, and the caller keeps the old folder.
+///
+/// And a name collision is no longer resolved by inventing a filename. A
+/// conversation is claimed only when its filename is the id inside it
+/// (`conversation_id_of`), so setting ours down as `id-moved-1.json` produced a
+/// file that loading — which resolves by internal id — would never look for. It
+/// was not moved so much as hidden. Ids are UUIDs, so a collision means the
+/// same conversation is already there: the newer copy wins and the other is
+/// dropped. Anything at the destination we cannot prove is that conversation is
+/// left untouched and reported.
+fn move_our_history(from: &std::path::Path, to: &std::path::Path) -> HistoryMove {
+    let mut out = HistoryMove::default();
+    let (files, ids) = owned_history_files(from);
+    let assets = owned_asset_files(from, &ids);
+
+    // Undo log: every (destination, origin) actually moved, newest last.
+    let mut done: Vec<(std::path::PathBuf, std::path::PathBuf)> = Vec::new();
+
+    // Where the losing copy of a collision waits until the whole move succeeds.
+    //
+    // Two defects here, one after the other, both found by review. First the
+    // losing copy was deleted outright and the deletion was not in the undo log,
+    // so a later failure lost it. Then the staging directory was named
+    // `.sovatela-migrate-<pid>` inside the destination and created with
+    // `create_dir_all` — a predictable name, in a folder the user chose and may
+    // share, adopted if it already existed and later removed *recursively*. A
+    // stale directory from an interrupted migration, or one planted there, would
+    // have been swallowed and deleted with everything in it. The fix for a
+    // data-loss bug had created a worse one.
+    //
+    // So: an unpredictable name, created exclusively so an existing directory is
+    // never adopted, and never `remove_dir_all`. Only the files this migration
+    // put there are removed, and the directory only with `remove_dir`, which
+    // refuses unless it is already empty.
+    //
+    // The first version of this deleted it outright, and the deletion was not in
+    // the undo log — so a failure on a later file rolled the moves back and left
+    // the deleted copy gone. "Rolls back everything it moved" was true and
+    // beside the point: the deletion was not a move. Nothing is destroyed while
+    // the move is still in progress now; the staging directory is removed only
+    // once every file has arrived.
+    let mut staging: Option<std::path::PathBuf> = None;
+    let mut staged_files: Vec<std::path::PathBuf> = Vec::new();
+
+    let to_assets = assets_dir_of(to);
+    if !assets.is_empty() {
+        if let Err(e) = std::fs::create_dir_all(&to_assets) {
+            out.failures
+                .push(format!("could not create {} ({e})", to_assets.display()));
+            return out;
+        }
+    }
+
+    // index.json is deliberately not carried over. It is a cache that
+    // `list_conversations` reconciles against the files actually present, so
+    // the destination rebuilds its own; moving ours would either clobber the
+    // destination's or collide with it for no gain. The source copy is removed
+    // at the end instead, so no stale index is left behind naming chats that
+    // are no longer in that folder.
+    let index = from.join(CONV_INDEX_FILE);
+    let our_index = files.contains(&index);
+
+    let plan = files
+        .iter()
+        .filter(|p| **p != index)
+        .map(|p| (p.clone(), to.join(p.file_name().unwrap_or_default())))
+        .chain(
+            assets
+                .iter()
+                .map(|p| (p.clone(), to_assets.join(p.file_name().unwrap_or_default()))),
+        );
+
+    for (src, dest) in plan {
+        if dest.exists() {
+            let is_asset = src.parent() == Some(assets_dir_of(from).as_path());
+            // An asset's name carries the hash of its contents, so a name that
+            // is taken holds the same bytes.
+            let same = is_asset
+                || match (conversation_id_of(&src), conversation_id_of(&dest)) {
+                    (Some(a), Some(b)) => a == b,
+                    _ => false,
+                };
+            if !same {
+                out.failures.push(format!(
+                    "{} is already there and is not ours to replace",
+                    dest.display()
+                ));
+                break;
+            }
+            // The same conversation in both folders. Keep the newer one, and
+            // set the other aside rather than deleting it — recorded in the undo
+            // log like any other move, so a later failure puts it back.
+            if staging.is_none() {
+                match private_dir_in(to, ".sovatela-migrate") {
+                    Ok(dir) => staging = Some(dir),
+                    Err(e) => {
+                        out.failures.push(format!(
+                            "could not create a staging folder in {} ({e})",
+                            to.display()
+                        ));
+                        break;
+                    }
+                }
+            }
+            let stage_dir = staging.clone().unwrap_or_default();
+            let loser =
+                if !is_asset && conversation_updated_at(&src) > conversation_updated_at(&dest) {
+                    dest.clone()
+                } else {
+                    src.clone()
+                };
+            let keep = stage_dir.join(format!(
+                "{}-{}",
+                staged_files.len(),
+                loser.file_name().unwrap_or_default().to_string_lossy()
+            ));
+            if let Err(e) = move_one(&loser, &keep) {
+                out.failures.push(e);
+                break;
+            }
+            done.push((keep.clone(), loser.clone()));
+            staged_files.push(keep);
+            if loser == src {
+                out.already_there += 1;
+                continue;
+            }
+        }
+        match move_one(&src, &dest) {
+            Ok(()) => {
+                done.push((dest, src));
+                out.moved += 1;
+            }
+            Err(e) => {
+                out.failures.push(e);
                 break;
             }
         }
-        match candidate {
-            Some(alt) => alt,
-            None => return,
-        }
-    } else {
-        dest.to_path_buf()
-    };
-    if std::fs::rename(path, &dest).is_err() && std::fs::copy(path, &dest).is_ok() {
-        let _ = std::fs::remove_file(path);
     }
+
+    if !out.failures.is_empty() {
+        // Put back what was already moved, newest first. Best-effort by
+        // necessity — if the reason the move failed also blocks the way back,
+        // say so rather than leaving the caller to believe nothing happened.
+        let mut stuck = 0usize;
+        for (dest, src) in done.iter().rev() {
+            if move_one(dest, src).is_err() {
+                stuck += 1;
+            }
+        }
+        if stuck > 0 {
+            out.failures.push(format!(
+                "{stuck} file(s) had already been moved to {} and could not be put back",
+                to.display()
+            ));
+        }
+        // Empty if the rollback restored everything; kept, and named in the
+        // error, if it did not — better a stray directory than a lost chat.
+        if let Some(dir) = &staging {
+            let _ = std::fs::remove_dir(dir);
+            if dir.exists() {
+                out.failures.push(format!(
+                    "copies that could not be restored are in {}",
+                    dir.display()
+                ));
+            }
+        }
+        out.moved = 0;
+        return out;
+    }
+
+    // Every file arrived. Only now is the losing copy of a collision actually
+    // discarded — until this point it was recoverable.
+    if let Some(dir) = &staging {
+        if let Some(warning) = clear_staging(dir, &staged_files) {
+            out.warnings.push(warning);
+        }
+    }
+    // The source index is a cache naming chats that are no longer in that
+    // folder; leaving it behind would have the old folder describe conversations
+    // it does not hold.
+    if our_index {
+        let _ = std::fs::remove_file(&index);
+    }
+    if !assets.is_empty() {
+        let _ = std::fs::remove_dir(assets_dir_of(from)); // only removes if now empty
+    }
+    out
 }
 
 /// Identify a file this app wrote, by reading it rather than by trusting its
@@ -1324,35 +1839,6 @@ fn owned_asset_files(dir: &std::path::Path, ids: &[String]) -> Vec<std::path::Pa
         }
     }
     out
-}
-
-/// Move this app's history from one folder to another, and nothing else.
-///
-/// Through 1.5.1 this moved every `*.json` in the folder and the whole
-/// `assets/` directory. A history folder can be one the user picked — their
-/// documents, a project, a synced drive root — so changing the folder moved
-/// unrelated files out of it. Only files this app can prove it wrote are
-/// touched now.
-fn move_our_history(from: &std::path::Path, to: &std::path::Path) {
-    let (files, ids) = owned_history_files(from);
-    for path in &files {
-        if let Some(name) = path.file_name() {
-            move_file(path, &to.join(name));
-        }
-    }
-    let assets = owned_asset_files(from, &ids);
-    if !assets.is_empty() {
-        let to_assets = assets_dir_of(to);
-        if std::fs::create_dir_all(&to_assets).is_ok() {
-            for path in &assets {
-                if let Some(name) = path.file_name() {
-                    move_file(path, &to_assets.join(name));
-                }
-            }
-        }
-        let from_assets = assets_dir_of(from);
-        let _ = std::fs::remove_dir(&from_assets); // only removes if now empty
-    }
 }
 
 /// Download an image URL and return it as a base64 data URL, so it survives the
@@ -1484,10 +1970,12 @@ async fn fetch_as_data_url(url: &str, trusted_origin: Option<&str>) -> Result<St
             }
             bytes.extend_from_slice(&chunk);
         }
-        return Ok(format!(
-            "data:{content_type};base64,{}",
-            BASE64_STANDARD.encode(&bytes)
-        ));
+        // The header claimed an image; the bytes have to be one, and they say
+        // which. A server answering `image/png` over HTML is as much of a
+        // problem as one that says nothing, and only the body distinguishes
+        // them — so the data URL handed to the interface is written from what
+        // arrived rather than from what was advertised.
+        return image_data_url(&bytes, "The generated image");
     }
     Err("the generated image redirected too many times".into())
 }
@@ -1693,6 +2181,66 @@ async fn bfl_generate(
 const OVH_IMAGE_URL: &str =
     "https://stable-diffusion-xl.endpoints.kepler.ai.cloud.ovh.net/api/text2image";
 
+/// Which image format these bytes actually are, read from the bytes rather than
+/// from what the server said about them.
+///
+/// A provider is not a trusted source for this. OVHcloud's generation path used
+/// to label an absent or non-image `Content-Type` as `image/jpeg` and embed the
+/// body anyway, so whatever came back — an error page, HTML, nothing at all —
+/// went into the conversation as a picture. A header can also be wrong in the
+/// other direction: `image/png` on a body that is not one. The bytes settle it.
+fn sniff_image_mime(bytes: &[u8]) -> Option<&'static str> {
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n";
+    if bytes.starts_with(PNG) {
+        return Some("image/png");
+    }
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some("image/jpeg");
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some("image/gif");
+    }
+    // RIFF....WEBP
+    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        return Some("image/webp");
+    }
+    // An SVG is markup, and markup in an <img> is a script vector. Deliberately
+    // not accepted, so a provider cannot return one where a raster is expected.
+    None
+}
+
+/// Read a response body into memory against a hard cap, refusing rather than
+/// buffering whatever is sent.
+///
+/// `bytes()` and `json()` read to the end of the stream. The size is chosen by
+/// the far end, and the far end here is a provider or an endpoint the user
+/// configured — neither of which this process should let decide how much of its
+/// memory to take.
+async fn read_capped(resp: reqwest::Response, max: usize, what: &str) -> Result<Vec<u8>, String> {
+    let mut resp = resp;
+    let mut out: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        if out.len() + chunk.len() > max {
+            return Err(format!(
+                "{what} is larger than {} MB, so it was not loaded.",
+                max / (1024 * 1024)
+            ));
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
+}
+
+/// Turn bytes a provider returned into a data URL, or refuse them.
+fn image_data_url(bytes: &[u8], what: &str) -> Result<String, String> {
+    let mime = sniff_image_mime(bytes)
+        .ok_or_else(|| format!("{what} did not come back as an image this app can display."))?;
+    Ok(format!(
+        "data:{mime};base64,{}",
+        BASE64_STANDARD.encode(bytes)
+    ))
+}
+
 /// Native OVHcloud SDXL generation. Bearer-authed, JSON prompt in, raw image
 /// bytes out — which we embed as a data URL.
 async fn ovh_generate(
@@ -1717,27 +2265,24 @@ async fn ovh_generate(
         let text = resp.text().await.unwrap_or_default();
         return Err(format!("OVHcloud returned {status}: {text}"));
     }
-    let content_type = resp
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .filter(|t| t.starts_with("image/"))
-        .unwrap_or("image/jpeg")
-        .to_string();
-    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
-    Ok(format!(
-        "data:{content_type};base64,{}",
-        BASE64_STANDARD.encode(&bytes)
-    ))
+    // No `Content-Type` default, and no `bytes()`. Through 1.6.0 an absent or
+    // non-image content type was called `image/jpeg` and the entire body was
+    // read into memory, so an endpoint answering with an error page — or with
+    // gigabytes — produced either a broken "image" in the conversation or an
+    // out-of-memory kill. The type comes from the bytes and the read is capped.
+    let bytes = read_capped(resp, MAX_IMAGE_BYTES, "The generated image").await?;
+    image_data_url(&bytes, "OVHcloud's reply")
 }
 
 /// Generate from an OpenAI-images-style endpoint (LiteLLM, a GPU server, etc.).
 /// Tolerantly extracts the result and returns an embedded data URL.
-async fn custom_image_generate(
-    client: &reqwest::Client,
-    s: &AppSettings,
-    prompt: &str,
-) -> Result<String, String> {
+///
+/// Takes no client, for the reason `searxng_search` does not.
+async fn custom_image_generate(s: &AppSettings, prompt: &str) -> Result<String, String> {
+    // As in `searxng_search`: the stored setting is checked again at the point
+    // the prompt and the token actually leave the machine.
+    endpoint_transport_ok(&s.image_url)?;
+    let client = endpoint_client();
     let mut body = serde_json::json!({
         "prompt": prompt,
         "n": 1,
@@ -1760,7 +2305,13 @@ async fn custom_image_generate(
         let text = resp.text().await.unwrap_or_default();
         return Err(format!("Image endpoint returned {status}: {text}"));
     }
-    let v: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    // `json()` reads to the end of the stream, and how long that is belongs to
+    // the endpoint. The body is a small JSON document holding at most one
+    // base64 image, so it is capped at the image limit plus what base64 costs.
+    const MAX_IMAGE_JSON_BYTES: usize = MAX_IMAGE_BYTES * 4 / 3 + 64 * 1024;
+    let body_bytes = read_capped(resp, MAX_IMAGE_JSON_BYTES, "The endpoint's reply").await?;
+    let v: serde_json::Value =
+        serde_json::from_slice(&body_bytes).map_err(|e| format!("Image endpoint: {e}"))?;
     // Endpoints disagree about where they put the image, so take the first
     // field that actually carries one. This was written as a loop whose every
     // branch returned, so only the first *present* field was ever considered —
@@ -1781,13 +2332,28 @@ async fn custom_image_generate(
     let Some(candidate) = candidate else {
         return Err("Image endpoint returned an unrecognized response.".into());
     };
-    if candidate.starts_with("data:") {
-        return Ok(candidate.to_string());
-    }
     if candidate.starts_with("http") {
         return fetch_as_data_url(candidate, Some(&s.image_url)).await;
     }
-    Ok(format!("data:image/png;base64,{candidate}"))
+    // Everything else is base64, either inside a data URL the endpoint wrote or
+    // bare. Both used to be passed through untouched — the data URL verbatim,
+    // whatever it claimed to be, and the bare form labelled `image/png` without
+    // anything having looked at it. Decode it, cap it, and let the bytes say
+    // what it is; the data URL the interface receives is one this app wrote.
+    let b64 = candidate
+        .split_once(";base64,")
+        .map(|(_, rest)| rest)
+        .unwrap_or(candidate);
+    if b64.len() > MAX_IMAGE_BYTES * 4 / 3 + 1024 {
+        return Err(format!(
+            "The generated image is larger than {} MB.",
+            MAX_IMAGE_BYTES / (1024 * 1024)
+        ));
+    }
+    let bytes = BASE64_STANDARD
+        .decode(b64.as_bytes())
+        .map_err(|_| "The image endpoint's reply could not be read as an image.".to_string())?;
+    image_data_url(&bytes, "The image endpoint's reply")
 }
 
 // ---------- Usage & cost tally ----------
@@ -1819,8 +2385,10 @@ async fn update_pricing() -> Result<pricing::PricingInfo, String> {
     if !resp.status().is_success() {
         return Err(format!("The price list returned {}.", resp.status()));
     }
-    let text = resp.text().await.map_err(|e| e.to_string())?;
-    let table: pricing::PriceTable = serde_json::from_str(&text)
+    // The same cap as the version manifest, for the same reason: the size of
+    // this body is chosen by the far end.
+    let body = read_capped(resp, pricing::MAX_PRICING_BYTES, "The price list").await?;
+    let table: pricing::PriceTable = serde_json::from_slice(&body)
         .map_err(|e| format!("The fetched price list was not readable: {e}"))?;
     pricing::set_active(table)
 }
@@ -1844,15 +2412,16 @@ async fn check_for_update() -> Result<update::UpdateCheck, String> {
     if !resp.status().is_success() {
         return Err(format!("sovatela.eu answered {}.", resp.status()));
     }
-    let text = resp.text().await.map_err(|e| e.to_string())?;
-    let published: update::Published = serde_json::from_str(&text)
+    let body = read_capped(resp, update::MAX_MANIFEST_BYTES, "The version file").await?;
+    let published: update::Published = serde_json::from_slice(&body)
         .map_err(|e| format!("The version file was not readable: {e}"))?;
     Ok(update::UpdateCheck {
         update_available: update::is_newer(&published.version, &current),
         latest: published.version,
-        url: published
-            .url
-            .unwrap_or_else(|| update::DOWNLOAD_PAGE.to_string()),
+        // Never the manifest's url unmodified: the interface opens this in the
+        // system browser on a click, and the user is trusting the app rather
+        // than reading the address.
+        url: update::allowed_download_url(published.url.as_deref()),
         current,
     })
 }
@@ -1903,7 +2472,7 @@ async fn generate_image(
         if !references.is_empty() {
             return Err(REFERENCE_UNSUPPORTED.into());
         }
-        let image = custom_image_generate(&client, &s, &prompt).await?;
+        let image = custom_image_generate(&s, &prompt).await?;
         usage::record_image("custom", "custom", 1);
         let model = if s.image_model.trim().is_empty() {
             "Custom endpoint".to_string()
@@ -2584,12 +3153,15 @@ async fn linkup_search(client: &reqwest::Client, key: &str, query: &str) -> Resu
 }
 
 /// Query a self-hosted SearXNG instance and format the top results for the model.
-async fn searxng_search(
-    client: &reqwest::Client,
-    base: &str,
-    token: &str,
-    query: &str,
-) -> Result<String, String> {
+///
+/// Takes no client: the transport rule is part of this function's contract, not
+/// the caller's, and the shared client would follow a redirect out of it.
+async fn searxng_search(base: &str, token: &str, query: &str) -> Result<String, String> {
+    // Checked again here, not only where the setting is saved: a settings.json
+    // written by an older build — or edited by hand — reaches this function
+    // without ever passing through `set_search_settings`.
+    endpoint_transport_ok(base)?;
+    let client = endpoint_client();
     let url = format!("{}/search", base.trim_end_matches('/'));
     let mut req = client.get(&url).query(&[("q", query), ("format", "json")]);
     if !token.is_empty() {
@@ -3757,7 +4329,7 @@ async fn test_search(app: tauri::AppHandle) -> Result<String, String> {
     let out = match &backend {
         SearchBackend::Linkup(key) => linkup_search(&client, key, query).await?,
         SearchBackend::Staan(key) => staan_search(&client, key, query).await?,
-        SearchBackend::Searxng(url, token) => searxng_search(&client, url, token, query).await?,
+        SearchBackend::Searxng(url, token) => searxng_search(url, token, query).await?,
     };
     let first = out
         .lines()
@@ -4159,10 +4731,9 @@ async fn execute_tool<R: tauri::Runtime>(
             let (provider, result) = match backend {
                 SearchBackend::Linkup(k) => ("linkup", linkup_search(ctx.client, k, &query).await),
                 SearchBackend::Staan(k) => ("staan", staan_search(ctx.client, k, &query).await),
-                SearchBackend::Searxng(url, token) => (
-                    "searxng",
-                    searxng_search(ctx.client, url, token, &query).await,
-                ),
+                SearchBackend::Searxng(url, token) => {
+                    ("searxng", searxng_search(url, token, &query).await)
+                }
             };
             match result {
                 Ok(text) => {
@@ -5853,7 +6424,13 @@ fn adopt_legacy_history(chosen: &std::path::Path, dir: &std::path::Path) {
     if chosen == dir {
         return;
     }
-    move_our_history(chosen, dir);
+    // The one caller that tolerates a failed move. This runs while resolving a
+    // path — on the way to answering almost any other command — so returning an
+    // error here would take the app down rather than the operation the user
+    // asked for. A move that fails rolls itself back, which leaves the old
+    // layout intact and adoption to be retried on the next run; the chats stay
+    // readable in the meantime because 1.5.1 files are found where they are.
+    let _ = move_our_history(chosen, dir);
 }
 
 /// The effective history folder for a given settings snapshot: `Sovatela/`
@@ -6159,20 +6736,85 @@ async fn load_conversation(app: tauri::AppHandle, id: String) -> Result<Conversa
 
 #[tauri::command]
 async fn delete_conversation(app: tauri::AppHandle, id: String) -> Result<(), String> {
-    // Also drop any cached compaction recap for this conversation.
+    // The title comes off disk rather than from the caller, so the dialog names
+    // the chat that is actually about to go.
+    let title = std::fs::read_to_string(conversation_path(&app, &id)?)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Conversation>(&t).ok())
+        .map(|c| c.title)
+        .filter(|t| !t.trim().is_empty())
+        .unwrap_or_else(|| "Untitled".to_string());
+
+    let approved = tokio::task::spawn_blocking({
+        let app = app.clone();
+        move || {
+            confirm_destructive(
+                &app,
+                &format!("Delete \u{201c}{title}\u{201d}?"),
+                "This chat and its images are removed from this device. \
+                 This cannot be undone.",
+                "Delete",
+            )
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    if !approved {
+        return Err(CANCELLED.into());
+    }
+
+    // The conversation itself goes first, and nothing else is touched until it
+    // has. Through 1.6.0 the order was the other way round: the images and the
+    // sidebar entry were removed, and only then was the chat file — so a
+    // removal that failed there left a conversation that still opened, with its
+    // pictures gone and no entry in the list. Deleting what the chat refers to
+    // before knowing the chat can go turns one failure into a damaged chat.
+    match std::fs::remove_file(conversation_path(&app, &id)?) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.to_string()),
+    }
+    // Now the things that only exist to serve it: a cached compaction recap,
+    // its externalized image assets, and its sidebar index entry.
     if let Ok(p) = compaction_path(&app, &id) {
         let _ = std::fs::remove_file(p);
     }
-    // And its externalized image assets + its sidebar index entry.
     if let (Ok(dir), Ok(safe)) = (conversations_dir(&app), sanitize_id(&id)) {
         delete_assets_of(&dir, &safe);
         remove_from_conv_index(&dir, &id);
     }
-    match std::fs::remove_file(conversation_path(&app, &id)?) {
-        Ok(_) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e.to_string()),
+    Ok(())
+}
+
+/// Open the bundled third-party notices in the system's default viewer.
+///
+/// THIRD-PARTY-LICENSES.md said from 1.4.0 that "a complete, machine-generated
+/// per-package manifest should accompany any formal binary release", and none
+/// did: the packages inspected for 1.6.0 held the binary, a desktop entry and
+/// icons. The manifest is now a bundle resource, so it travels with the binary
+/// — and this makes it reachable from inside the app, which is the only place
+/// most people would think to look.
+#[tauri::command]
+async fn open_third_party_notices(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::path::BaseDirectory;
+    // The generated inventory first; the licence texts as the fallback, so a
+    // build made before the manifest existed still opens something true.
+    for name in ["THIRD-PARTY-MANIFEST.md", "THIRD-PARTY-LICENSES.md"] {
+        if let Ok(path) = app.path().resolve(name, BaseDirectory::Resource) {
+            if path.exists() {
+                return tauri_plugin_opener::open_path(
+                    path.to_string_lossy().to_string(),
+                    None::<&str>,
+                )
+                .map_err(|e| e.to_string());
+            }
+        }
     }
+    Err(
+        "The third-party notices are not present in this build. They are published at \
+         https://github.com/jacobla1/sovatela/blob/main/THIRD-PARTY-LICENSES.md"
+            .into(),
+    )
 }
 
 /// Open the folder where chat history is stored in the system file manager,
@@ -6185,6 +6827,52 @@ async fn reveal_history_dir(app: tauri::AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Remove a file and report whether it is actually gone afterwards.
+///
+/// `remove_file` returning `Ok` is not proof on its own. On Windows a file another
+/// process still holds open is unlinked but stays visible until the last handle
+/// closes; a sync client can put a copy back moments later. Callers here are
+/// telling the user whether their data is gone, so the answer has to come from
+/// looking, not from the return value.
+fn removed_file(path: &std::path::Path) -> bool {
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        _ => !path.exists(),
+    }
+}
+
+/// The same, for a directory removed recursively.
+fn removed_dir(path: &std::path::Path) -> bool {
+    match std::fs::remove_dir_all(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        _ => !path.exists(),
+    }
+}
+
+/// What a deletion could not remove, phrased for someone deciding whether the
+/// machine is safe to pass on.
+fn deletion_report(left: &[std::path::PathBuf]) -> String {
+    const SHOWN: usize = 5;
+    let mut msg = format!(
+        "{} item{} could not be deleted and {} still on this device:\n\n",
+        left.len(),
+        if left.len() == 1 { "" } else { "s" },
+        if left.len() == 1 { "is" } else { "are" }
+    );
+    for path in left.iter().take(SHOWN) {
+        msg.push_str(&format!("  {}\n", path.display()));
+    }
+    if left.len() > SHOWN {
+        msg.push_str(&format!("  …and {} more\n", left.len() - SHOWN));
+    }
+    msg.push_str(
+        "\nEverything else was deleted. This usually means a file is open in \
+         another program, or is on a synced folder that is offline. Close anything \
+         using it and run the deletion again.",
+    );
+    msg
+}
+
 /// Erase all locally stored content: conversations (with their image assets
 /// and compaction recaps), projects, remembered facts, and the about-you /
 /// custom-instructions personalization. Keys and provider settings are kept —
@@ -6192,6 +6880,25 @@ async fn reveal_history_dir(app: tauri::AppHandle) -> Result<(), String> {
 /// wrote: the history folder may be a user-chosen folder with other files.
 #[tauri::command]
 async fn delete_all_data(app: tauri::AppHandle) -> Result<(), String> {
+    let approved = tokio::task::spawn_blocking({
+        let app = app.clone();
+        move || {
+            confirm_destructive(
+                &app,
+                "Delete all chats, projects & memory?",
+                "This permanently deletes all chats (and their images), projects, \
+                 remembered facts, and your personalization text from this device. \
+                 Your API keys and provider settings are kept.\n\nThis cannot be undone.",
+                "Delete everything",
+            )
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    if !approved {
+        return Err(CANCELLED.into());
+    }
+
     let dir = conversations_dir(&app)?;
     // Refuse a folder this app has not claimed. The marker is written when the
     // folder is chosen or first written to; if it is absent, either the user
@@ -6213,28 +6920,68 @@ async fn delete_all_data(app: tauri::AppHandle) -> Result<(), String> {
     // `*.json` in the folder and then `remove_dir_all` on `assets/` — in a
     // folder the user chose, which could be their documents or a synced drive
     // root. Both are now identified by content, not by extension.
+    //
+    // Every removal is checked and anything still present is reported. Through
+    // 1.6.0 each of these was a discarded `let _ =`, and the command returned
+    // Ok as long as the final settings write succeeded — so a chat that could
+    // not be deleted was reported to the user as deleted. On a device being
+    // sold, returned, or handed to someone else, that is the failure that
+    // matters most, and it was the one the interface could not show.
+    let mut left: Vec<std::path::PathBuf> = Vec::new();
+
     let (files, ids) = owned_history_files(&dir);
     for path in files {
-        let _ = std::fs::remove_file(path);
+        if !removed_file(&path) {
+            left.push(path);
+        }
     }
     for path in owned_asset_files(&dir, &ids) {
-        let _ = std::fs::remove_file(path);
+        if !removed_file(&path) {
+            left.push(path);
+        }
     }
-    // Only if it is now empty; never recursively.
+    // Only if it is now empty; never recursively. Not reported: the folder is
+    // left behind when it still holds someone else's files, which is correct.
     let _ = std::fs::remove_dir(assets_dir_of(&dir));
+    // Nor is the marker — it carries no content of the user's, and losing it
+    // only means the folder has to be chosen again.
     let _ = std::fs::remove_file(dir.join(HISTORY_MARKER));
 
     let config = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    let _ = std::fs::remove_dir_all(config.join("compactions"));
-    let _ = std::fs::remove_dir_all(config.join("projects"));
+    for sub in ["compactions", "projects"] {
+        let path = config.join(sub);
+        if !removed_dir(&path) {
+            left.push(path);
+        }
+    }
     if let Ok(p) = memories_path(&app) {
-        let _ = std::fs::remove_file(p);
+        if !removed_file(&p) {
+            left.push(p);
+        }
     }
 
-    let mut s = load_settings(&app)?;
-    s.about_you.clear();
-    s.custom_instructions.clear();
-    save_settings(&app, &s)
+    // The personalization text lives in settings.json, so it is cleared rather
+    // than deleted. A failure here leaves about-you and custom instructions on
+    // disk, which is exactly the kind of leftover this command exists to
+    // prevent — so it is reported alongside the files.
+    let cleared = load_settings(&app).and_then(|mut s| {
+        s.about_you.clear();
+        s.custom_instructions.clear();
+        save_settings(&app, &s)
+    });
+
+    match (left.is_empty(), cleared) {
+        (true, Ok(())) => Ok(()),
+        (true, Err(e)) => Err(format!(
+            "Your chats, projects and remembered facts were deleted, but the \
+             personalization text could not be cleared: {e}"
+        )),
+        (false, Ok(())) => Err(deletion_report(&left)),
+        (false, Err(e)) => Err(format!(
+            "{}\n\nThe personalization text could not be cleared either: {e}",
+            deletion_report(&left)
+        )),
+    }
 }
 
 // ---------- Projects (named containers: instructions + files + grouped chats) ----------
@@ -6287,12 +7034,90 @@ fn project_path<R: tauri::Runtime>(
     Ok(projects_dir(app)?.join(format!("{safe}.json")))
 }
 
+/// The largest project file that will be read into memory.
+///
+/// Generous against `MAX_PROJECT_CHARS`, because JSON escaping and multi-byte
+/// text both inflate the encoded size well beyond the character budget. The
+/// point is not to enforce the budget here — `project_refusal` does that — but
+/// to refuse a pathological file before `read_to_string` allocates it.
+const MAX_PROJECT_FILE_BYTES: u64 = 8 * 1024 * 1024;
+
 fn load_project<R: tauri::Runtime>(app: &tauri::AppHandle<R>, id: &str) -> Result<Project, String> {
-    let s = std::fs::read_to_string(project_path(app, id)?).map_err(|e| e.to_string())?;
+    let path = project_path(app, id)?;
+    // Checked before reading, not after. A project written by an older version
+    // or by hand is not bounded by anything this app did, and the first thing
+    // that touches it should not be an unbounded allocation.
+    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    if size > MAX_PROJECT_FILE_BYTES {
+        return Err(format!(
+            "This project's file is {} MB, larger than the {} MB this app will open. \
+             Edit it outside the app, or delete it.",
+            size / (1024 * 1024),
+            MAX_PROJECT_FILE_BYTES / (1024 * 1024)
+        ));
+    }
+    let s = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
     serde_json::from_str(&s).map_err(|e| e.to_string())
 }
 
 /// Assemble a project's instructions and files into a system-prompt fragment.
+/// What a project may carry, enforced here rather than only in the interface.
+///
+/// `src/lib/files.js` applies the same budget when files are added, which is
+/// where a person finds out. It is not where the limit can be relied upon: a
+/// project written by an older version, edited by hand, or supplied through a
+/// direct IPC call never passes through that code, and every project file is
+/// placed into the prompt of every chat in the project. A limit that lives only
+/// on the side that can be bypassed is a hint, not a limit.
+const MAX_PROJECT_FILES: usize = 20;
+/// ~75k tokens of reference material, well inside the model's window.
+const MAX_PROJECT_CHARS: usize = 300_000;
+/// Instructions are prose a person typed, so this is generous — it exists to
+/// stop a pathological value, not to shape normal use.
+const MAX_PROJECT_INSTRUCTION_CHARS: usize = 20_000;
+/// The budget for the *assembled* context: instructions, file contents, and all
+/// the framing between them. Necessarily larger than `MAX_PROJECT_CHARS`, which
+/// covers contents alone, and it is this one that decides what reaches the
+/// provider.
+const MAX_PROJECT_CONTEXT_CHARS: usize = MAX_PROJECT_CHARS + MAX_PROJECT_INSTRUCTION_CHARS + 20_000;
+
+/// Why this project cannot be stored, or None.
+fn project_refusal(project: &Project) -> Option<String> {
+    if project.instructions.chars().count() > MAX_PROJECT_INSTRUCTION_CHARS {
+        return Some(format!(
+            "The project instructions are longer than {MAX_PROJECT_INSTRUCTION_CHARS} characters."
+        ));
+    }
+    let kept = project
+        .files
+        .iter()
+        .filter(|f| !f.content.trim().is_empty());
+    let count = kept.clone().count();
+    if count > MAX_PROJECT_FILES {
+        return Some(format!(
+            "A project can hold {MAX_PROJECT_FILES} files at most; this one has {count}."
+        ));
+    }
+    if project.name.chars().count() > 200 {
+        return Some("The project name is too long.".into());
+    }
+    if let Some(f) = project.files.iter().find(|f| f.name.chars().count() > 200) {
+        // `chars().take`, not a byte slice: `&s[..40]` panics if byte 40 lands
+        // inside a multibyte character, and a file name is exactly where one
+        // turns up. An error path that panics is worse than the error.
+        let shown: String = f.name.chars().take(40).collect();
+        return Some(format!("A project file name is too long: {shown}…"));
+    }
+    let chars: usize = kept.map(|f| f.content.chars().count()).sum();
+    if chars > MAX_PROJECT_CHARS {
+        return Some(format!(
+            "The project's files come to {chars} characters, which is more than the \
+             {MAX_PROJECT_CHARS} that fit alongside a conversation."
+        ));
+    }
+    None
+}
+
 fn build_project_context<R: tauri::Runtime>(app: &tauri::AppHandle<R>, id: &str) -> Option<String> {
     let proj = load_project(app, id).ok()?;
     let instr = proj.instructions.trim();
@@ -6318,21 +7143,62 @@ fn build_project_context<R: tauri::Runtime>(app: &tauri::AppHandle<R>, id: &str)
             "The following project files are provided as reference material. \
              Use them when relevant:\n",
         );
+        // Bounded again on the way into the prompt. A project stored by an
+        // older version predates `project_refusal` and would otherwise be sent
+        // in full however large it is; refusing to save it later does not
+        // shrink what is already on disk.
+        let mut used = 0usize;
+        let mut dropped = 0usize;
         for f in files {
+            let len = f.content.chars().count();
+            if used + len > MAX_PROJECT_CHARS || dropped > 0 {
+                dropped += 1;
+                continue;
+            }
+            used += len;
             p.push_str(&format!("\n--- {} ---\n{}\n", f.name, f.content));
+        }
+        if dropped > 0 {
+            p.push_str(&format!(
+                "\n[{dropped} further project file(s) were left out: the project's \
+                 reference material is larger than fits alongside a conversation. \
+                 Remove some in the project editor.]\n"
+            ));
         }
     }
     if p.is_empty() {
-        None
-    } else {
-        Some(p)
+        return None;
     }
+    // One last bound over the whole thing — headings, separators, file names,
+    // instructions and the truncation notice included. Bounding file contents
+    // alone left everything framing them outside the budget, and a legacy
+    // project can carry a large instructions block and hundreds of long file
+    // names without a single oversized file.
+    //
+    // Cut on a character boundary: `p` is a String, so slicing at a byte index
+    // inside a multi-byte character would panic.
+    if p.chars().count() > MAX_PROJECT_CONTEXT_CHARS {
+        // Room for the notice is reserved out of the budget rather than added on
+        // top of it. Taking the full budget and then appending meant the result
+        // exceeded the limit this is here to enforce — by exactly the length of
+        // the sentence saying the limit had been enforced.
+        const NOTICE: &str = "\n\n[This project's reference material was cut short: it is \
+             larger than fits alongside a conversation. Remove some of it in the project \
+             editor so the model sees all of what remains.]\n";
+        let room = MAX_PROJECT_CONTEXT_CHARS.saturating_sub(NOTICE.chars().count());
+        let cut: String = p.chars().take(room).collect();
+        return Some(format!("{cut}{NOTICE}"));
+    }
+    Some(p)
 }
 
 /// Upsert a project (create or update). The frontend generates the id and
 /// timestamps, mirroring how conversations are saved.
 #[tauri::command]
 async fn save_project(app: tauri::AppHandle, project: Project) -> Result<(), String> {
+    if let Some(why) = project_refusal(&project) {
+        return Err(why);
+    }
     let path = project_path(&app, &project.id)?;
     let json = serde_json::to_string_pretty(&project).map_err(|e| e.to_string())?;
     write_atomic(&path, &json)
@@ -6345,6 +7211,14 @@ async fn list_projects(app: tauri::AppHandle) -> Result<Vec<ProjectMeta>, String
     for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
         let path = entry.map_err(|e| e.to_string())?.path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        // The same size limit `load_project` applies. Listing opened every
+        // project file with no cap, so a single oversized file — legacy, or hand
+        // written — was read into memory just to render the sidebar. A project
+        // too large to open is skipped here rather than allocated; opening it
+        // reports why.
+        if std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) > MAX_PROJECT_FILE_BYTES {
             continue;
         }
         if let Ok(s) = std::fs::read_to_string(&path) {
@@ -8080,6 +8954,71 @@ mod tests {
     }
 
     #[test]
+    fn what_a_provider_returns_is_an_image_only_if_the_bytes_are() {
+        // OVHcloud's path called an absent or non-image content type
+        // `image/jpeg` and embedded the body regardless, so an error page or an
+        // HTML redirect notice went into the conversation as a picture.
+        assert_eq!(
+            sniff_image_mime(b"\x89PNG\r\n\x1a\nrest"),
+            Some("image/png")
+        );
+        assert_eq!(
+            sniff_image_mime(&[0xFF, 0xD8, 0xFF, 0xE0]),
+            Some("image/jpeg")
+        );
+        assert_eq!(sniff_image_mime(b"GIF89a...."), Some("image/gif"));
+        let mut webp = b"RIFF\x00\x00\x00\x00WEBP".to_vec();
+        webp.extend_from_slice(b"VP8 ");
+        assert_eq!(sniff_image_mime(&webp), Some("image/webp"));
+
+        for not_an_image in [
+            &b"<!DOCTYPE html><html>error</html>"[..],
+            &b"{\"error\":\"quota exceeded\"}"[..],
+            &b""[..],
+            &b"RIFF\x00\x00\x00\x00WAVE"[..],
+            // Markup in an <img> is a script vector; an SVG is deliberately not
+            // something a provider can hand back where a raster is expected.
+            &b"<svg xmlns=\"http://www.w3.org/2000/svg\"><script/></svg>"[..],
+        ] {
+            assert_eq!(sniff_image_mime(not_an_image), None);
+        }
+
+        // The data URL is written from the bytes, never from the header.
+        let url = image_data_url(b"\x89PNG\r\n\x1a\nrest", "test").unwrap();
+        assert!(url.starts_with("data:image/png;base64,"));
+        assert!(image_data_url(b"<html>", "test").is_err());
+    }
+
+    #[test]
+    fn provider_bodies_are_read_against_a_cap() {
+        // `bytes()` and `json()` read to the end of a stream whose length the
+        // far end chooses. Every image path reads in bounded chunks instead.
+        let src = lib_source();
+        for f in [
+            "\nasync fn ovh_generate",
+            "\nasync fn custom_image_generate",
+            "\nasync fn fetch_as_data_url",
+        ] {
+            let at = src.find(f).unwrap_or_else(|| panic!("{f} is gone"));
+            let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
+            assert!(
+                body.contains("read_capped") || body.contains("MAX_IMAGE_BYTES"),
+                "{f} reads a provider response without a cap"
+            );
+            // `text()` on an error path is fine — it is the success path that
+            // must not buffer whatever arrives.
+            assert!(
+                !body.contains("resp.bytes().await"),
+                "{f} buffers the whole body again"
+            );
+            assert!(
+                !body.contains("resp.json().await"),
+                "{f} parses an unbounded body again"
+            );
+        }
+    }
+
+    #[test]
     fn reference_payload_strips_data_url_and_guards_size() {
         let png = BASE64_STANDARD.encode(b"\x89PNG\r\n\x1a\n");
         assert_eq!(
@@ -8304,6 +9243,209 @@ mod tests {
             "http://box.local/search",
             ""
         ));
+    }
+
+    #[test]
+    fn concurrent_writes_to_one_path_never_publish_each_others_bytes() {
+        // Every write to a given path used the same `<name>.tmp`. Two writers
+        // aiming at that path shared one scratch file, so one could rename the
+        // other's half-written contents into place and both report success.
+        let dir = temp_dir("atomic-race");
+        let path = dir.join("conversation.json");
+        let a = format!("{{\"who\":\"a\",\"pad\":\"{}\"}}", "a".repeat(200_000));
+        let b = format!("{{\"who\":\"b\",\"pad\":\"{}\"}}", "b".repeat(200_000));
+
+        let mut handles = Vec::new();
+        for _ in 0..6 {
+            for text in [a.clone(), b.clone()] {
+                let path = path.clone();
+                handles.push(std::thread::spawn(move || {
+                    write_atomic(&path, &text).unwrap();
+                }));
+            }
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // Whichever won, the file has to be exactly one of the two — not a
+        // splice of both, and not a truncated prefix.
+        let got = std::fs::read_to_string(&path).unwrap();
+        assert!(got == a || got == b, "a write published a partial file");
+
+        // And nothing is left lying next to it.
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temp files left behind: {leftovers:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_written_file_is_never_briefly_readable_by_other_accounts() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("atomic-mode");
+        let path = dir.join("secrets.json");
+        write_atomic(&path, "{}").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "written at {mode:o}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_write_reaches_the_device_before_the_rename() {
+        // A rename is atomic against a process dying and says nothing about the
+        // machine losing power: without the flush, the published name can point
+        // at unwritten blocks.
+        let src = lib_source();
+        let at = src.find("\nfn write_atomic").unwrap();
+        let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
+        let synced = body
+            .find("sync_all")
+            .expect("the contents are never flushed");
+        let renamed = body
+            .find("fs::rename")
+            .expect("write_atomic no longer renames");
+        assert!(synced < renamed, "the rename happens before the flush");
+        assert!(
+            !body.contains("with_extension(\"tmp\")"),
+            "every write to a path shares one temp name again"
+        );
+    }
+
+    #[test]
+    fn a_conversation_is_removed_before_the_things_that_serve_it() {
+        // The order was images and index entry first, then the chat. A failure
+        // at the last step left a conversation that still opened, with its
+        // pictures gone and no entry in the sidebar.
+        let src = lib_source();
+        let at = src.find("\nasync fn delete_conversation").unwrap();
+        let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
+        let chat = body
+            .find("conversation_path(&app, &id)")
+            .expect("the conversation file is no longer removed");
+        for after in [
+            "delete_assets_of",
+            "remove_from_conv_index",
+            "compaction_path",
+        ] {
+            let at = body
+                .find(after)
+                .unwrap_or_else(|| panic!("{after} is gone from delete_conversation"));
+            assert!(
+                chat < at,
+                "{after} runs before the conversation is known to be gone"
+            );
+        }
+    }
+
+    #[test]
+    fn an_authenticated_endpoint_must_be_https_or_on_this_machine() {
+        // Cleartext to anywhere but this machine puts the bearer token and the
+        // user's search queries on the wire. Nothing checked before 1.6.1.
+        for ok in [
+            "https://search.example.net",
+            "https://search.example.net:8443/search",
+            "http://127.0.0.1:8888",
+            "http://[::1]:8888/search",
+            "http://localhost:8888",
+            "http://searx.localhost:8888",
+            "", // not configured
+            "   ",
+        ] {
+            assert!(endpoint_transport_ok(ok).is_ok(), "{ok} should be allowed");
+        }
+
+        for bad in [
+            "http://search.example.net",
+            "http://search.example.net:8888/search",
+            // A private address is still not this machine: on a shared network
+            // the traffic crosses an interface someone else can read.
+            "http://192.168.1.50:8888",
+            "http://10.0.0.5",
+            // A name that merely contains the loopback name.
+            "http://localhost.evil.example",
+            "http://127.0.0.1.evil.example",
+            "ftp://search.example.net",
+            "not a url at all",
+        ] {
+            assert!(
+                endpoint_transport_ok(bad).is_err(),
+                "{bad} should be refused"
+            );
+        }
+
+        // The refusal says why, in terms the person who typed it can act on.
+        let msg = endpoint_transport_ok("http://search.example.net").unwrap_err();
+        assert!(msg.contains("https://"), "{msg}");
+        assert!(msg.contains("unencrypted"), "{msg}");
+    }
+
+    #[test]
+    fn the_check_is_at_the_point_the_request_leaves_too() {
+        // Saving the setting is not the only way to reach these functions: a
+        // settings.json written by an older build, or edited by hand, arrives
+        // with whatever it likes.
+        let src = lib_source();
+        for f in [
+            "\nasync fn searxng_search",
+            "\nasync fn custom_image_generate",
+        ] {
+            let at = src.find(f).unwrap_or_else(|| panic!("{f} is gone"));
+            let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
+            let checked = body
+                .find("endpoint_transport_ok")
+                .unwrap_or_else(|| panic!("{f} no longer checks its address"));
+            let sent = body
+                .find("bearer_auth")
+                .or_else(|| body.find(".send()"))
+                .unwrap_or_else(|| panic!("{f} no longer sends anything"));
+            assert!(checked < sent, "{f} checks after it has already sent");
+        }
+    }
+
+    #[test]
+    fn the_workspace_grant_cannot_be_named_by_the_renderer() {
+        // The picker is the boundary. While it ran in the webview and the
+        // backend took the string it produced, anything that could reach the
+        // IPC surface could grant itself `/` — and send_chat would enable the
+        // file tools over it.
+        let src = lib_source();
+        // Built at runtime: written as a literal it would match this line.
+        let gone = format!("fn {}", "set_workspace_dir");
+        assert!(
+            !src.contains(&gone),
+            "a command that takes a workspace path from the renderer is back"
+        );
+        let at = src
+            .find("\nasync fn choose_workspace_dir")
+            .expect("choose_workspace_dir is gone");
+        let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
+        assert!(
+            body.contains("blocking_pick_folder"),
+            "the folder is no longer chosen in a native dialog"
+        );
+        assert!(
+            body.contains("canonicalize"),
+            "the chosen folder is stored without being resolved"
+        );
+        // The only other way the setting changes clears it.
+        let at = src
+            .find("\nasync fn clear_workspace_dir")
+            .expect("clear_workspace_dir is gone");
+        let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
+        assert!(body.contains("workspace_dir.clear()"));
+        assert!(
+            !body.contains("dir:") && !body.contains("String)"),
+            "clearing the workspace takes an argument again"
+        );
     }
 
     #[test]
@@ -8613,6 +9755,20 @@ mod tests {
         .unwrap();
     }
 
+    /// The same, with a chosen `updated_at`, for deciding which of two copies
+    /// of one conversation is the current one.
+    fn write_conversation_at(dir: &std::path::Path, id: &str, updated_at: &str, body: &str) {
+        std::fs::write(
+            dir.join(format!("{id}.json")),
+            serde_json::json!({
+                "id": id, "title": "a chat", "updated_at": updated_at,
+                "messages": [{ "role": "user", "text": body }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
     /// The files a real folder might already hold. None are ours.
     fn plant_bystanders(dir: &std::path::Path) {
         std::fs::write(dir.join("package.json"), r#"{"name":"their-app"}"#).unwrap();
@@ -8677,6 +9833,67 @@ mod tests {
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    #[test]
+    fn the_two_irreversible_deletions_ask_in_rust() {
+        // Both confirmations were in Svelte. They were real native dialogs, but
+        // the renderer decided whether to show one, which puts the check on the
+        // side of the boundary a compromised renderer controls.
+        let src = lib_source();
+        for f in [
+            "\nasync fn delete_all_data",
+            "\nasync fn delete_conversation",
+        ] {
+            let at = src.find(f).unwrap_or_else(|| panic!("{f} is gone"));
+            let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
+            let asked = body
+                .find("confirm_destructive")
+                .unwrap_or_else(|| panic!("{f} deletes without asking in Rust"));
+            // Whatever it removes first, it must ask before it.
+            let acts = ["remove_file", "removed_file", "removed_dir"]
+                .iter()
+                .filter_map(|n| body.find(n))
+                .min()
+                .unwrap_or_else(|| panic!("{f} no longer removes anything"));
+            assert!(asked < acts, "{f} asks after it has already deleted");
+            assert!(
+                body.contains("return Err(CANCELLED.into());"),
+                "{f} does not report a declined dialog as cancelled"
+            );
+        }
+
+        // And the interface no longer asks a second time for the same decision.
+        let chat = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/lib/Chat.svelte"),
+        )
+        .unwrap();
+        assert!(
+            !chat.contains("plugin-dialog"),
+            "Chat.svelte asks again for a decision the backend now owns"
+        );
+    }
+
+    #[test]
+    fn the_reversible_commands_deliberately_do_not() {
+        // A native dialog in front of every settings-level action teaches people
+        // that these dialogs are noise, which makes the two that matter less
+        // safe. The line is drawn at what cannot be recovered — and it is drawn
+        // on purpose, so it is asserted rather than left to drift.
+        let src = lib_source();
+        for f in [
+            "\nfn reset_usage",
+            "\nasync fn delete_memory",
+            "\nasync fn delete_project",
+        ] {
+            let Some(at) = src.find(f) else { continue };
+            let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
+            assert!(
+                !body.contains("confirm_destructive"),
+                "{f} now asks natively — if that is intended, SECURITY.md's \
+                 written-down acceptance has to change with it"
+            );
+        }
+    }
+
     #[test]
     fn the_installer_asks_in_rust_and_writes_where_only_we_can() {
         // The interface has a button, but the command is the boundary: a
@@ -8898,14 +10115,14 @@ mod tests {
     }
 
     #[test]
-    fn moving_never_writes_over_a_file_already_there() {
+    fn moving_never_writes_over_a_file_that_is_not_ours() {
         let from = history_root("collide-from");
         let to = history_root("collide-to");
         write_conversation(&from, "conv-one");
         // Something of the user's already sitting at the destination name.
         std::fs::write(to.join("conv-one.json"), "THEIRS").unwrap();
 
-        move_our_history(&from, &to);
+        let out = move_our_history(&from, &to);
 
         assert_eq!(
             std::fs::read_to_string(to.join("conv-one.json")).unwrap(),
@@ -8913,8 +10130,559 @@ mod tests {
             "an existing file at the destination was overwritten"
         );
         assert!(
-            to.join("conv-one-moved-1.json").exists(),
-            "ours should have been set down beside it"
+            !out.failures.is_empty(),
+            "a destination we cannot replace has to be reported, not worked around"
+        );
+        assert!(
+            from.join("conv-one.json").exists(),
+            "ours stays where it is when the move cannot complete"
+        );
+        assert_eq!(out.moved, 0);
+        let _ = std::fs::remove_dir_all(&from);
+        let _ = std::fs::remove_dir_all(&to);
+    }
+
+    #[test]
+    fn a_collision_with_the_same_conversation_keeps_the_newer_copy() {
+        // Ids are UUIDs, so a name collision between two of our folders means
+        // the same conversation is in both — most often a folder switched away
+        // from and back. Through 1.6.0 the incoming copy was set down as
+        // `conv-one-moved-1.json`, and because loading resolves a conversation
+        // by the id *inside* the file, nothing ever looked for that name again.
+        let from = history_root("same-conv-from");
+        let to = history_root("same-conv-to");
+        write_conversation_at(&from, "conv-one", "2026-08-30T00:00:00Z", "the newer text");
+        write_conversation_at(&to, "conv-one", "2026-08-25T00:00:00Z", "the older text");
+
+        let out = move_our_history(&from, &to);
+
+        assert!(out.failures.is_empty(), "{:?}", out.failures);
+        assert!(
+            !to.join("conv-one-moved-1.json").exists(),
+            "a copy under a name nothing resolves is not a move"
+        );
+        let kept = std::fs::read_to_string(to.join("conv-one.json")).unwrap();
+        assert!(kept.contains("the newer text"), "the older copy won");
+        assert!(!from.join("conv-one.json").exists());
+        // And the file is still named for the id it carries, which is the only
+        // reason it can be opened again.
+        assert_eq!(
+            conversation_id_of(&to.join("conv-one.json")).as_deref(),
+            Some("conv-one")
+        );
+        let _ = std::fs::remove_dir_all(&from);
+        let _ = std::fs::remove_dir_all(&to);
+    }
+
+    #[test]
+    fn an_older_copy_at_the_destination_is_not_dragged_backwards() {
+        let from = history_root("same-conv-old-from");
+        let to = history_root("same-conv-old-to");
+        write_conversation_at(&from, "conv-one", "2026-08-20T00:00:00Z", "the older text");
+        write_conversation_at(&to, "conv-one", "2026-08-30T00:00:00Z", "the newer text");
+
+        let out = move_our_history(&from, &to);
+
+        assert!(out.failures.is_empty(), "{:?}", out.failures);
+        assert_eq!(out.already_there, 1);
+        let kept = std::fs::read_to_string(to.join("conv-one.json")).unwrap();
+        assert!(kept.contains("the newer text"));
+        assert!(!from.join("conv-one.json").exists());
+        let _ = std::fs::remove_dir_all(&from);
+        let _ = std::fs::remove_dir_all(&to);
+    }
+
+    fn project_with(files: usize, chars_each: usize) -> Project {
+        Project {
+            id: "p".into(),
+            name: "P".into(),
+            instructions: String::new(),
+            files: (0..files)
+                .map(|i| ProjectFile {
+                    name: format!("f{i}.txt"),
+                    content: "x".repeat(chars_each),
+                })
+                .collect(),
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_project_is_bounded_in_rust_not_only_in_the_interface() {
+        // The limits lived only in files.js, which is where a person finds out.
+        // A project written by an older version, edited by hand, or supplied
+        // through a direct IPC call never passes through that code — and every
+        // project file goes into the prompt of every chat in the project.
+        assert!(project_refusal(&project_with(5, 1_000)).is_none());
+        assert!(project_refusal(&project_with(MAX_PROJECT_FILES, 100)).is_none());
+
+        let too_many = project_refusal(&project_with(MAX_PROJECT_FILES + 1, 10)).unwrap();
+        assert!(too_many.contains("files at most"), "{too_many}");
+
+        let too_big = project_refusal(&project_with(4, MAX_PROJECT_CHARS)).unwrap();
+        assert!(too_big.contains("characters"), "{too_big}");
+
+        let mut wordy = project_with(1, 10);
+        wordy.instructions = "i".repeat(MAX_PROJECT_INSTRUCTION_CHARS + 1);
+        assert!(project_refusal(&wordy).unwrap().contains("instructions"));
+
+        // Names are bounded too. Bounding contents alone left every other field
+        // free, and a legacy project can carry hundreds of long file names.
+        let mut long_name = project_with(1, 10);
+        long_name.name = "n".repeat(500);
+        assert!(project_refusal(&long_name).unwrap().contains("name"));
+        let mut long_file = project_with(1, 10);
+        long_file.files[0].name = "f".repeat(500);
+        assert!(project_refusal(&long_file).unwrap().contains("file name"));
+
+        // Empty files do not count against the budget — they carry nothing into
+        // the prompt, and refusing a project for them would be arbitrary.
+        let mut blanks = project_with(2, 10);
+        for _ in 0..50 {
+            blanks.files.push(ProjectFile {
+                name: "blank.txt".into(),
+                content: "   ".into(),
+            });
+        }
+        assert!(project_refusal(&blanks).is_none());
+    }
+
+    #[test]
+    fn the_assembled_context_is_bounded_including_its_framing() {
+        // The bound covered file contents and nothing else — not the
+        // instructions, the project name, the file names, or the separators
+        // between them. A project written before `project_refusal` existed, or
+        // by hand, could still assemble a context far larger than the budget.
+        //
+        // Exercised through the same slicing the builder uses, on multi-byte
+        // text: cutting a String at a byte index inside a character panics, and
+        // a truncation path that panics is worse than the overrun it prevents.
+        let multibyte = "æøå日本語".repeat(50_000);
+        assert!(multibyte.chars().count() > MAX_PROJECT_CONTEXT_CHARS / 4);
+        let cut: String = multibyte.chars().take(MAX_PROJECT_CONTEXT_CHARS).collect();
+        assert!(cut.chars().count() <= MAX_PROJECT_CONTEXT_CHARS);
+        assert!(cut.is_char_boundary(cut.len()));
+
+        // The whole-context budget has to leave room for the framing on top of
+        // the contents budget, or a project that passes `project_refusal` would
+        // be truncated on every send. A compile-time assertion, so changing the
+        // constants into an impossible relationship fails the build rather than
+        // a test run.
+        const _: () =
+            assert!(MAX_PROJECT_CONTEXT_CHARS > MAX_PROJECT_CHARS + MAX_PROJECT_INSTRUCTION_CHARS);
+
+        let src = lib_source();
+        let at = src.find("\nfn build_project_context").unwrap();
+        let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
+        assert!(
+            body.contains("MAX_PROJECT_CONTEXT_CHARS"),
+            "the assembled context is unbounded again"
+        );
+        // And the file that produces it is refused before it is read.
+        let at = src.find("\nfn load_project").unwrap();
+        let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
+        assert!(body.contains("MAX_PROJECT_FILE_BYTES"));
+        assert!(
+            body.find("metadata").unwrap() < body.find("read_to_string").unwrap(),
+            "the file is read before its size is checked"
+        );
+    }
+
+    fn state_json(status: &str, version: u32, legacy: bool) -> String {
+        format!(
+            r#"{{"install_status":"{status}","layout_version":{version},"legacy_seen":{legacy}}}"#
+        )
+    }
+
+    #[test]
+    fn install_history_survives_an_upgrade_and_unknown_survives_a_retry() {
+        use ClaudeGlmLayout::*;
+        let root = temp_dir("layout");
+        let cfg = root.join(".config").join("claude-glm");
+        std::fs::create_dir_all(&cfg).unwrap();
+        let state = cfg.join(CLAUDE_GLM_STATE_FILE);
+        let layout = |launcher: bool| claude_glm_layout(Some(cfg.as_path()), launcher);
+
+        assert_eq!(layout(false), NotInstalled);
+
+        // A launcher with no state document is not a claim that a key leaked.
+        assert_eq!(layout(true), IncompleteOrUnknown);
+
+        // An install that died between writing the launcher and finishing.
+        std::fs::write(&state, state_json("incomplete", 2, false)).unwrap();
+        assert_eq!(layout(true), IncompleteOrUnknown);
+
+        // **The retry.** Re-running setup over that interrupted install must not
+        // conclude the key was exposed — which is what a missing-marker rule did,
+        // and what this state exists to prevent.
+        std::fs::write(&state, state_json("incomplete", 2, false)).unwrap();
+        assert_eq!(
+            layout(true),
+            IncompleteOrUnknown,
+            "an interrupted current install was reclassified as confirmed legacy"
+        );
+
+        // An affected launcher was actually identified.
+        std::fs::write(&state, state_json("incomplete", 2, true)).unwrap();
+        assert_eq!(layout(true), Legacy);
+
+        // Finished, with the history kept: replacing a launcher does not rotate
+        // a key that was already exposed.
+        std::fs::write(&state, state_json("complete", 2, true)).unwrap();
+        assert_eq!(layout(true), UpgradedFromLegacy);
+
+        // A machine that never ran an affected launcher.
+        std::fs::write(&state, state_json("complete", 2, false)).unwrap();
+        assert_eq!(layout(true), FreshCurrent);
+
+        // An older or unrecognised layout version is not current.
+        std::fs::write(&state, state_json("complete", 1, false)).unwrap();
+        assert_eq!(layout(true), IncompleteOrUnknown);
+
+        // Corrupt state is unknown, not legacy and not current.
+        std::fs::write(&state, "{not json").unwrap();
+        assert_eq!(layout(true), IncompleteOrUnknown);
+
+        // A coincidental ~/venv remains irrelevant.
+        std::fs::create_dir_all(root.join("venv")).unwrap();
+        assert_eq!(layout(true), IncompleteOrUnknown);
+        assert_eq!(claude_glm_layout(None, true), IncompleteOrUnknown);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_affected_launcher_is_identified_by_what_it_does() {
+        // Not by a missing marker, and not by a hash of a released file — a hash
+        // fails on any hand-edit, and a missing marker is also what an
+        // interrupted current install looks like. Every launcher from 1.2.0 to
+        // 1.6.0 exports the key into its own environment and runs the proxy on a
+        // fixed port; the current one does neither.
+        //
+        // Checked against the launchers actually shipped, extracted from the
+        // installers at their release tags by the test below, so this cannot
+        // pass against a reimplementation of the check.
+        let installer = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../deploy/claude-glm/install-claude-glm.sh"),
+        )
+        .unwrap();
+        let fun = installer
+            .find("launcher_leaks_the_key()")
+            .expect("the signature check is gone from the installer");
+        let body = &installer[fun..fun + installer[fun..].find("\n}\n").unwrap()];
+        assert!(
+            body.contains("'^export[[:space:]]+SCW_SECRET_KEY'"),
+            "the check no longer looks for the exported key"
+        );
+        assert!(
+            body.contains("4000"),
+            "the check no longer looks for the fixed port"
+        );
+
+        // And the current launcher must not match its own signature.
+        let start = installer
+            .find("cat > \"$LAUNCHER\" <<'LAUNCHER_EOF'")
+            .unwrap();
+        let end = installer[start..].find("\nLAUNCHER_EOF\n").unwrap() + start;
+        let current = &installer[start..end];
+        assert!(
+            !current
+                .lines()
+                .any(|l| l.starts_with("export SCW_SECRET_KEY")),
+            "the current launcher exports the key at top level, which its own \
+             signature check would then read as a leak"
+        );
+        assert!(
+            !current.contains("--port 4000"),
+            "the current launcher uses the fixed port"
+        );
+    }
+
+    #[test]
+    fn every_installer_writes_the_state_the_app_reads() {
+        for f in [
+            "../deploy/claude-glm/install-claude-glm.command",
+            "../deploy/claude-glm/install-claude-glm.sh",
+            "../deploy/claude-glm/install-claude-glm.ps1",
+        ] {
+            let src =
+                std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(f))
+                    .unwrap();
+            assert!(
+                src.contains(CLAUDE_GLM_STATE_FILE),
+                "{f} writes no state document"
+            );
+            for key in ["install_status", "layout_version", "legacy_seen"] {
+                assert!(
+                    src.contains(key),
+                    "{f} omits {key} from the state it writes"
+                );
+            }
+            // Atomic: a temp file moved into place, never written in situ.
+            let atomic = if f.ends_with(".ps1") {
+                src.contains("Move-Item -LiteralPath $tmp")
+            } else {
+                src.contains("mv -f \"$tmp\" \"$STATE_FILE\"")
+            };
+            assert!(atomic, "{f} does not write its state atomically");
+            // Recorded before the launcher is replaced.
+            let seen = src.find("5a. What was here before").unwrap();
+            let launcher = src.find("# ---- 5. The claude-glm launcher").unwrap();
+            assert!(
+                seen < launcher,
+                "{f} replaces the launcher before inspecting it"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cleanup_failure_does_not_make_the_moved_chats_disappear() {
+        // The bug this guards was introduced by the fix for the previous one.
+        // Reporting a cleanup failure through `failures` made the caller treat a
+        // completed migration as a rolled-back one: it told the user "your chat
+        // history was not moved... nothing is lost", did not save the new
+        // folder, and left the app reading the old one — which was by then
+        // empty. Every chat was safe on disk and gone from the interface.
+        //
+        // Simulated by holding the staging directory open with a file the
+        // migration did not create, so `remove_dir` cannot succeed.
+        let from = history_root("warn-from");
+        let to = history_root("warn-to");
+        write_conversation_at(&from, "conv-a", "2026-08-30T00:00:00Z", "newer");
+        write_conversation_at(&to, "conv-a", "2026-08-20T00:00:00Z", "older");
+        write_conversation(&from, "conv-b");
+
+        let out = move_our_history(&from, &to);
+
+        assert!(
+            out.failures.is_empty(),
+            "a completed move reported a fatal failure: {:?}",
+            out.failures
+        );
+        // Both chats are at the destination and openable.
+        for id in ["conv-a", "conv-b"] {
+            let p = to.join(format!("{id}.json"));
+            assert!(p.exists(), "{id} is not in the new folder");
+            assert_eq!(conversation_id_of(&p).as_deref(), Some(id));
+        }
+        assert!(!from.join("conv-b.json").exists());
+
+        // The failing path itself, which the first version of this test did not
+        // touch: it asserted on a *successful* migration and on source ordering,
+        // so it would have passed just as happily with the bug still in place.
+        //
+        // `clear_staging` cannot remove a directory holding something it did not
+        // put there — `remove_dir` refuses a non-empty directory — which is the
+        // same shape as a locked file or a sync client holding one open.
+        let stage = temp_dir("clear-staging");
+        let ours = stage.join("0-conv-a.json");
+        std::fs::write(&ours, b"a superseded duplicate").unwrap();
+        std::fs::write(stage.join("someone-elses.txt"), b"not ours").unwrap();
+
+        let warning = clear_staging(&stage, std::slice::from_ref(&ours))
+            .expect("a directory that cannot be removed must produce a warning");
+        assert!(warning.contains("could not be cleared"), "{warning}");
+        assert!(
+            warning.contains(&stage.display().to_string()),
+            "the path is not named"
+        );
+        assert!(
+            !ours.exists(),
+            "our own staged file should still have been removed"
+        );
+        assert!(
+            stage.join("someone-elses.txt").exists(),
+            "a file the migration did not create was deleted"
+        );
+
+        // And the clean case is silent.
+        std::fs::remove_file(stage.join("someone-elses.txt")).unwrap();
+        assert!(
+            clear_staging(&stage, &[]).is_none(),
+            "a clean cleanup warned anyway"
+        );
+        let _ = std::fs::remove_dir_all(&stage);
+
+        // And the type distinguishes the two cases at all, which is the fix.
+        let src = lib_source();
+        let at = src.find("\nstruct HistoryMove").unwrap();
+        let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
+        assert!(
+            body.contains("warnings"),
+            "warnings and failures are one field again"
+        );
+
+        // The caller saves the new folder on a warning, and refuses on a failure.
+        let at = src.find("\nfn set_history_settings").unwrap();
+        let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
+        let warn = body
+            .find("outcome.warnings")
+            .expect("warnings are ignored by the caller");
+        let saved = body[warn..]
+            .find("save_settings")
+            .expect("a warning does not save the folder");
+        let refused = body[warn..].find("return Err").unwrap();
+        assert!(saved < refused, "the warning path reports before it saves");
+
+        let _ = std::fs::remove_dir_all(&from);
+        let _ = std::fs::remove_dir_all(&to);
+    }
+
+    #[test]
+    fn migration_never_adopts_or_deletes_a_directory_it_did_not_create() {
+        // The defect the previous fix introduced: staging was
+        // `.sovatela-migrate-<pid>` inside the destination, created with
+        // create_dir_all — so a directory already at that name was adopted, and
+        // a successful migration then removed it recursively, with whatever was
+        // inside it. The destination is a folder the user picked and may share.
+        let from = history_root("adopt-from");
+        let to = history_root("adopt-to");
+
+        // A directory that looks like ours, holding something of the user's.
+        // The old name was predictable, so this is what could be planted.
+        let planted = to.join(format!(".sovatela-migrate-{}", std::process::id()));
+        std::fs::create_dir_all(&planted).unwrap();
+        std::fs::write(planted.join("payroll.json"), b"someone's data").unwrap();
+
+        // Force a collision so staging is actually used.
+        write_conversation_at(&from, "conv-a", "2026-08-30T00:00:00Z", "newer");
+        write_conversation_at(&to, "conv-a", "2026-08-20T00:00:00Z", "older");
+
+        let out = move_our_history(&from, &to);
+        assert!(out.failures.is_empty(), "{:?}", out.failures);
+
+        assert!(
+            planted.join("payroll.json").exists(),
+            "a directory the migration did not create was adopted and deleted"
+        );
+        assert_eq!(
+            std::fs::read(planted.join("payroll.json")).unwrap(),
+            b"someone's data"
+        );
+
+        // Its own staging is gone, and it was never the planted one.
+        let leftovers: Vec<_> = std::fs::read_dir(&to)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(".sovatela-migrate") && !planted.ends_with(n))
+            .collect();
+        assert!(leftovers.is_empty(), "staging left behind: {leftovers:?}");
+
+        let _ = std::fs::remove_dir_all(&from);
+        let _ = std::fs::remove_dir_all(&to);
+    }
+
+    #[test]
+    fn staging_is_created_exclusively_and_unpredictably() {
+        let dir = temp_dir("staging-excl");
+        let a = private_dir_in(&dir, ".t").unwrap();
+        let b = private_dir_in(&dir, ".t").unwrap();
+        assert_ne!(a, b, "two staging directories collided");
+        // Creation must fail on a name already taken rather than adopt it.
+        let src = lib_source();
+        let at = src.find("\nfn private_dir_in").unwrap();
+        let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
+        assert!(
+            body.contains("create_dir(&dir)"),
+            "adopts an existing directory"
+        );
+        // The call, not the comment that explains why it is not the other one.
+        assert!(!body.contains("fs::create_dir_all("));
+        // And the migration must never recursively remove its staging root.
+        let at = src.find("\nfn move_our_history").unwrap();
+        let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
+        assert!(
+            !body.contains("fs::remove_dir_all("),
+            "the migration recursively removes a directory again"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_collision_resolved_then_a_failure_restores_both_copies() {
+        // The gap the reviewer found: resolving a duplicate deleted the losing
+        // copy immediately, and that deletion was not in the undo log. A failure
+        // on a later file rolled the moves back and left the deleted copy gone —
+        // so "rolls back everything it moved" was true, and beside the point.
+        let from = history_root("stage-from");
+        let to = history_root("stage-to");
+
+        // conv-a collides; the source is newer, so the destination copy loses.
+        write_conversation_at(&from, "conv-a", "2026-08-30T00:00:00Z", "newer source");
+        write_conversation_at(&to, "conv-a", "2026-08-20T00:00:00Z", "older destination");
+        // conv-b collides the other way: the destination is newer, source loses.
+        write_conversation_at(&from, "conv-b", "2026-08-20T00:00:00Z", "older source");
+        write_conversation_at(&to, "conv-b", "2026-08-30T00:00:00Z", "newer destination");
+        // conv-z fails, after both collisions have been resolved.
+        write_conversation(&from, "conv-z");
+        std::fs::write(to.join("conv-z.json"), "THEIRS").unwrap();
+
+        let out = move_our_history(&from, &to);
+        assert!(!out.failures.is_empty(), "the move should have failed");
+        assert_eq!(out.moved, 0);
+
+        // Every copy that existed before the move exists after it, with its
+        // original contents, on the side it started.
+        let read = |p: std::path::PathBuf| std::fs::read_to_string(p).unwrap();
+        assert!(read(from.join("conv-a.json")).contains("newer source"));
+        assert!(
+            read(to.join("conv-a.json")).contains("older destination"),
+            "the losing destination copy was destroyed and not restored"
+        );
+        assert!(
+            read(from.join("conv-b.json")).contains("older source"),
+            "the losing source copy was destroyed and not restored"
+        );
+        assert!(read(to.join("conv-b.json")).contains("newer destination"));
+        assert_eq!(read(to.join("conv-z.json")), "THEIRS");
+
+        // And nothing is left lying in the destination.
+        let strays: Vec<_> = std::fs::read_dir(&to)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(".sovatela-migrate"))
+            .collect();
+        assert!(strays.is_empty(), "staging left behind: {strays:?}");
+
+        let _ = std::fs::remove_dir_all(&from);
+        let _ = std::fs::remove_dir_all(&to);
+    }
+
+    #[test]
+    fn a_move_that_cannot_finish_puts_everything_back() {
+        // The failure the review reproduced: something stops the move partway
+        // through. Every file has to end up where it started, because the
+        // caller is about to decide whether to point the app at the new folder.
+        let from = history_root("rollback-from");
+        let to = history_root("rollback-to");
+        for id in ["conv-a", "conv-b", "conv-c"] {
+            write_conversation(&from, id);
+        }
+        // A file at one destination name that is not ours stops the move at
+        // whichever conversation reaches it — the others have already moved.
+        std::fs::write(to.join("conv-b.json"), "THEIRS").unwrap();
+
+        let out = move_our_history(&from, &to);
+
+        assert!(!out.failures.is_empty());
+        assert_eq!(out.moved, 0, "a rolled-back move moved nothing");
+        for id in ["conv-a", "conv-b", "conv-c"] {
+            assert!(
+                from.join(format!("{id}.json")).exists(),
+                "{id} was left in the new folder after a failed move"
+            );
+            assert!(
+                !to.join(format!("{id}.json")).exists() || id == "conv-b",
+                "{id} should not still be at the destination"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(to.join("conv-b.json")).unwrap(),
+            "THEIRS"
         );
         let _ = std::fs::remove_dir_all(&from);
         let _ = std::fs::remove_dir_all(&to);
@@ -8934,17 +10702,26 @@ mod tests {
         .unwrap();
         std::fs::write(from.join("assets/conv-one-9f2b"), b"our image").unwrap();
 
-        move_our_history(&from, &to);
+        let out = move_our_history(&from, &to);
 
+        assert!(out.failures.is_empty(), "{:?}", out.failures);
         bystanders_intact(&from);
         assert!(to.join("conv-one.json").exists());
         assert!(to.join("conv-two.json").exists());
-        assert!(to.join("index.json").exists());
         assert!(to.join("assets/conv-one-9f2b").exists());
         assert!(
             !from.join("conv-one.json").exists(),
             "ours should have moved"
         );
+        // index.json is a cache list_conversations rebuilds from the files
+        // present, so it is dropped rather than carried: moving it would either
+        // clobber the destination's own or collide with it, and leaving ours
+        // behind would name chats that are no longer in that folder.
+        assert!(
+            !to.join("index.json").exists(),
+            "the cache was carried over"
+        );
+        assert!(!from.join("index.json").exists(), "a stale index was left");
         let _ = std::fs::remove_dir_all(&from);
         let _ = std::fs::remove_dir_all(&to);
     }
@@ -9688,8 +11465,7 @@ mod tests {
     async fn integ_searxng_search_returns_results() {
         let url = key_or_skip!("SEARXNG_URL");
         let token = std::env::var("SEARXNG_TOKEN").unwrap_or_default();
-        let client = http_client();
-        let out = searxng_search(&client, url.trim(), token.trim(), "European Union")
+        let out = searxng_search(url.trim(), token.trim(), "European Union")
             .await
             .expect("SearXNG search failed");
         assert!(!out.trim().is_empty(), "empty SearXNG response");
@@ -10336,6 +12112,117 @@ mod tests {
         assert_eq!(out.len(), 1);
     }
 
+    // ---------- Configured endpoints do not follow a redirect out of HTTPS ----
+    //
+    // The first version of this fix checked the address the user typed and
+    // nothing else, while the shared client followed redirects. `reqwest` drops
+    // `Authorization` across a host-or-port change, which happens to cover a
+    // plain `https://host` → `http://host` downgrade — but not a same-port one,
+    // and never covers the search terms in the query string or the image prompt
+    // in the body. Those travel whatever happens to the header.
+
+    // wiremock is a non-Windows dev-dependency: tauri's test harness will not
+    // start a test binary in headless Windows CI, so the whole group is
+    // compiled out there. The behaviour under test is OS-independent.
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn a_search_endpoint_cannot_redirect_the_query_into_cleartext() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let redirector = MockServer::start().await;
+        // A loopback address is a legitimate destination — a self-hosted
+        // SearXNG is exactly why plain HTTP is allowed there at all. What is
+        // being tested is where it sends the request *next*.
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .respond_with(
+                ResponseTemplate::new(302)
+                    .insert_header("location", "http://search.example.net/search"),
+            )
+            .mount(&redirector)
+            .await;
+
+        let out = searxng_search(&redirector.uri(), "a-secret-token", "european union").await;
+
+        // Refused at the policy, so nothing is sent and the host is never even
+        // resolved. This is the hop `reqwest` would have followed: it strips
+        // `Authorization` across a host change, but the search terms are in the
+        // query string and would have gone in the clear regardless.
+        let err = out.expect_err("the redirect out of loopback was followed");
+        assert!(
+            err.contains("http") || err.to_lowercase().contains("redirect"),
+            "unhelpful refusal: {err}"
+        );
+    }
+
+    // wiremock is a non-Windows dev-dependency: tauri's test harness will not
+    // start a test binary in headless Windows CI, so the whole group is
+    // compiled out there. The behaviour under test is OS-independent.
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn a_redirect_that_stays_somewhere_allowed_still_works() {
+        // The rule must not break an endpoint that redirects within itself —
+        // a trailing-slash normalisation, or a reverse proxy in front of a
+        // self-hosted instance.
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let real = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/elsewhere"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"results":[{"title":"A result","url":"https://example.org","content":"text"}]}"#,
+            ))
+            .mount(&real)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .respond_with(
+                ResponseTemplate::new(302)
+                    .insert_header("location", format!("{}/elsewhere", real.uri()).as_str()),
+            )
+            .mount(&real)
+            .await;
+
+        let out = searxng_search(&real.uri(), "", "european union").await;
+        assert!(out.is_ok(), "a permitted redirect was refused: {out:?}");
+        assert!(out.unwrap().contains("A result"));
+    }
+
+    #[test]
+    fn the_redirect_rule_is_the_same_rule_as_the_destination_rule() {
+        // One function decides both, so a change to what may be typed cannot
+        // leave what may be redirected to behind.
+        let src = lib_source();
+        let at = src
+            .find("\nfn endpoint_client")
+            .expect("endpoint_client is gone");
+        let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
+        assert!(
+            body.contains("endpoint_transport_ok"),
+            "the redirect policy no longer applies the transport rule"
+        );
+        assert!(
+            body.contains("attempt.error"),
+            "a refused hop no longer fails"
+        );
+
+        // And the two callers use it rather than the shared client, which
+        // follows redirects anywhere.
+        for f in [
+            "\nasync fn searxng_search",
+            "\nasync fn custom_image_generate",
+        ] {
+            let at = src.find(f).unwrap_or_else(|| panic!("{f} is gone"));
+            let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
+            assert!(
+                body.contains("endpoint_client()"),
+                "{f} uses a client that will follow a redirect out of HTTPS"
+            );
+        }
+    }
+
     // ---------- send_chat scenario tests (wiremock stands in for Scaleway) ----------
     //
     // These drive `run_chat` — the whole engine behind the send_chat command —
@@ -10437,7 +12324,7 @@ mod tests {
         let elsewhere = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/secret"))
-            .respond_with(ResponseTemplate::new(200).set_body_raw(b"private".to_vec(), "image/png"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(png_bytes(), "image/png"))
             .mount(&elsewhere)
             .await;
 
@@ -10468,7 +12355,7 @@ mod tests {
         // exemption exists so a local endpoint works at all.
         Mock::given(method("GET"))
             .and(path("/own.png"))
-            .respond_with(ResponseTemplate::new(200).set_body_raw(b"mine".to_vec(), "image/png"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(png_bytes(), "image/png"))
             .mount(&endpoint)
             .await;
         let ok = fetch_as_data_url(
@@ -10478,6 +12365,15 @@ mod tests {
         .await
         .expect("a local endpoint serving its own image must still work");
         assert!(ok.starts_with("data:image/png;base64,"));
+    }
+
+    /// The first bytes of a real PNG, for mocks that have to survive
+    /// `sniff_image_mime`. A body labelled `image/png` is no longer taken as
+    /// one, which is the point of these fixtures being real.
+    fn png_bytes() -> Vec<u8> {
+        let mut v = b"\x89PNG\r\n\x1a\n".to_vec();
+        v.extend_from_slice(b"the rest does not have to be a valid PNG");
+        v
     }
 
     // ---- One resolution per hop -------------------------------------------
@@ -11191,6 +13087,12 @@ mod tests {
 
 /// The platform's installer script, embedded at build time. Source of truth is
 /// the file; editing it requires a rebuild.
+/// The content-pinned dependency set, written beside the installer so it can
+/// install with `--require-hashes`. Embedded rather than downloaded: a lock
+/// fetched at install time is one more thing an attacker could substitute, and
+/// it would defeat the point of hashing the packages it names.
+const CLAUDE_GLM_LOCK: &str = include_str!("../../deploy/claude-glm/requirements.lock");
+
 #[cfg(target_os = "macos")]
 const CLAUDE_GLM_INSTALLER: &str =
     include_str!("../../deploy/claude-glm/install-claude-glm.command");
@@ -11202,6 +13104,16 @@ const CLAUDE_GLM_INSTALLER: &str = include_str!("../../deploy/claude-glm/install
 #[derive(serde::Serialize, Default)]
 struct ClaudeGlmStatus {
     supported: bool, // false off macOS/Linux/Windows — panel shows a note
+    /// What is on disk, and what this machine's history is — see
+    /// [`ClaudeGlmLayout`]. The interface renders different guidance for each,
+    /// because they want genuinely different advice: telling someone with a
+    /// fresh current install to run `uv tool uninstall litellm` removes software
+    /// they installed for their own work.
+    layout: ClaudeGlmLayout,
+    /// May it be installed here? The interface shows the section on this alone,
+    /// so the decision lives in one place rather than in a constant on each
+    /// side of the IPC boundary that has to be kept in step by hand.
+    available: bool,
     claude_installed: bool,
     launcher_installed: bool,
     proxy_running: bool,
@@ -11240,6 +13152,51 @@ fn claude_glm_has(cmd: &str) -> bool {
 
 /// The user's home directory (HOME on Unix, USERPROFILE on Windows).
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+/// May terminal access (claude-glm) be installed on this platform?
+///
+/// The launcher was rewritten after the 1.6.0 review: the Scaleway key now
+/// reaches the proxy and nothing else, and the proxy is always this session's
+/// own child on a port chosen when the session starts, never an adopted
+/// listener. `deploy/claude-glm/verify-launcher.sh` runs the launcher the
+/// installer embeds against a stub keychain, proxy and agent and asserts what
+/// each could see.
+///
+/// **macOS, Linux and Windows** — each because something ran the launcher there.
+///
+/// macOS was verified on a real machine: installed, used in a session, with the
+/// key confirmed present in the proxy's environment and absent from Claude
+/// Code's, and the port held by the launcher's own child.
+///
+/// Linux was verified in a container by `verify-linux-docker.sh`, which runs the
+/// real installer and the real LiteLLM — only the credential store and the agent
+/// are stubbed — and then has the stub agent do what a hostile command in an
+/// agent session would: record its own environment and go looking for the key in
+/// the proxy's, through /proc. It finds it there and not in its own.
+///
+/// Windows was verified on a `windows-latest` runner by
+/// `.github/workflows/windows-terminal-access.yml`, which installs from the real
+/// `.ps1`, drives the launcher it writes, and then asserts what the agent could
+/// see: neither key seeded into Credential Manager, nor one planted in the
+/// calling shell, nor any of nine provider-secret variables. A hostile listener
+/// planted on 4000 beforehand was never contacted.
+///
+/// That job is the reason Windows is here, and it earned it — the first run
+/// failed. Its launcher is the one that differs in mechanism, and the identity
+/// check compared the listening socket's owner against the pid `Start-Process`
+/// returned. On Windows that pid is the console-script shim; python.exe is what
+/// binds. The check refused our own proxy on every run.
+///
+/// Shipping an installer nobody has executed is how three of the findings this
+/// rewrite fixes arrived. Each of the three platforms is enabled because
+/// something ran it, and each of the three checks is committed and repeatable.
+fn terminal_access_available() -> bool {
+    cfg!(any(
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "windows"
+    ))
+}
+
 fn claude_glm_home() -> Option<std::path::PathBuf> {
     let var = if cfg!(target_os = "windows") {
         "USERPROFILE"
@@ -11251,6 +13208,100 @@ fn claude_glm_home() -> Option<std::path::PathBuf> {
 
 /// Where each platform's installer puts the launcher.
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+/// The claude-glm configuration directory, which is not the home directory.
+fn claude_glm_config_dir() -> Option<std::path::PathBuf> {
+    let home = claude_glm_home()?;
+    #[cfg(target_os = "windows")]
+    return Some(home.join(".claude-glm"));
+    #[cfg(not(target_os = "windows"))]
+    return Some(home.join(".config").join("claude-glm"));
+}
+
+/// One document describing an installation, written atomically by the installer.
+///
+/// Two independent marker files could disagree, and did: `layout` recorded what
+/// was on disk and `upgraded-from` recorded what had been seen, and an install
+/// interrupted between writing the launcher and writing the marker looked, on a
+/// re-run, exactly like a legacy install. Re-running setup then permanently
+/// recorded "your key was exposed" about a machine where it may never have been.
+#[derive(serde::Deserialize)]
+struct ClaudeGlmState {
+    #[serde(default)]
+    install_status: String,
+    #[serde(default)]
+    layout_version: u32,
+    #[serde(default)]
+    legacy_seen: bool,
+}
+
+const CLAUDE_GLM_STATE_FILE: &str = "state.json";
+/// The layout that keeps uv, the proxy and its cache inside the app's own
+/// directory, and never puts the Scaleway key in the agent's environment.
+const CLAUDE_GLM_LAYOUT_CURRENT: u32 = 2;
+
+/// What we know about a claude-glm installation.
+///
+/// Two things that were previously one. *Layout* is what is on disk now;
+/// *history* is whether this machine ever ran an affected launcher. Collapsing
+/// them meant upgrading from 1.6.0 produced a machine the app called clean —
+/// suppressing the key-rotation and global-cleanup guidance for exactly the
+/// people the security note exists for.
+#[derive(serde::Serialize, PartialEq, Eq, Debug, Clone, Copy, Default)]
+#[serde(rename_all = "snake_case")]
+enum ClaudeGlmLayout {
+    /// No launcher on disk.
+    #[default]
+    NotInstalled,
+    /// Installed by 1.6.1 or later, and never by anything earlier.
+    FreshCurrent,
+    /// Current layout, but this machine ran an affected launcher before. The
+    /// exposure already happened; rotation and cleanup still apply.
+    UpgradedFromLegacy,
+    /// An affected launcher, identified by what it does rather than by a missing
+    /// marker: every launcher from 1.2.0 to 1.6.0 exports the Scaleway key into
+    /// its own environment and runs the proxy on a fixed port 4000.
+    Legacy,
+    /// A launcher whose provenance is not established — an interrupted install,
+    /// or one this app did not write.
+    ///
+    /// Deliberately not folded into `Legacy`. Being cautious is right; saying
+    /// "your key was exposed and we installed global LiteLLM" to someone whose
+    /// install merely died halfway asserts two things that may be false, and
+    /// sends them to remove software that may not be ours.
+    IncompleteOrUnknown,
+}
+
+fn claude_glm_layout(
+    config_dir: Option<&std::path::Path>,
+    launcher_installed: bool,
+) -> ClaudeGlmLayout {
+    use ClaudeGlmLayout::*;
+    if !launcher_installed {
+        return NotInstalled;
+    }
+    let Some(dir) = config_dir else {
+        return IncompleteOrUnknown;
+    };
+    let state: Option<ClaudeGlmState> = std::fs::read_to_string(dir.join(CLAUDE_GLM_STATE_FILE))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok());
+    let Some(state) = state else {
+        // A launcher with no state document at all: either from before this
+        // app wrote one, or not ours. Not a claim that the key was exposed.
+        return IncompleteOrUnknown;
+    };
+    let complete =
+        state.install_status == "complete" && state.layout_version == CLAUDE_GLM_LAYOUT_CURRENT;
+    match (complete, state.legacy_seen) {
+        (true, true) => UpgradedFromLegacy,
+        (true, false) => FreshCurrent,
+        // An unfinished install that has seen an affected launcher: the exposure
+        // is established even though the layout is not.
+        (false, true) => Legacy,
+        (false, false) => IncompleteOrUnknown,
+    }
+}
+
 fn claude_glm_launcher_path() -> Option<std::path::PathBuf> {
     let home = claude_glm_home()?;
     #[cfg(target_os = "macos")]
@@ -11265,14 +13316,18 @@ fn claude_glm_launcher_path() -> Option<std::path::PathBuf> {
 /// already running.
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 fn claude_glm_proxy_running() -> bool {
-    "127.0.0.1:4000"
-        .parse()
-        .ok()
-        .map(|addr| {
-            std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(300))
-                .is_ok()
-        })
-        .unwrap_or(false)
+    // Always false, and the field is kept only so an older interface build does
+    // not break on its absence.
+    //
+    // This used to connect to 127.0.0.1:4000 and report whatever answered as
+    // "proxy running". The launcher stopped using a fixed port — each session
+    // takes a free one and stops the proxy when it ends — so the probe could
+    // only ever be wrong in both directions: silent about a proxy that is
+    // running, and confident about anything else that happened to hold 4000.
+    // Reporting a fixed port as this feature's is also the assumption the
+    // impersonation finding rested on, which is reason enough not to keep it
+    // anywhere.
+    false
 }
 
 /// Read-only readiness snapshot for the Settings panel.
@@ -11281,14 +13336,22 @@ async fn claude_glm_status() -> Result<ClaudeGlmStatus, String> {
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     {
         let key_stored = get_api_key()?.is_some();
-        tokio::task::spawn_blocking(move || ClaudeGlmStatus {
-            supported: true,
-            claude_installed: claude_glm_has("claude"),
-            launcher_installed: claude_glm_launcher_path()
+        tokio::task::spawn_blocking(move || {
+            let launcher = claude_glm_launcher_path()
                 .map(|p| p.exists())
-                .unwrap_or(false),
-            proxy_running: claude_glm_proxy_running(),
-            key_stored,
+                .unwrap_or(false);
+            // 1.6.1 and later keep uv and the proxy inside the app's own config
+            // folder. A launcher with no venv beside it predates that.
+            let layout = claude_glm_layout(claude_glm_config_dir().as_deref(), launcher);
+            ClaudeGlmStatus {
+                supported: true,
+                layout,
+                available: terminal_access_available(),
+                claude_installed: claude_glm_has("claude"),
+                launcher_installed: launcher,
+                proxy_running: claude_glm_proxy_running(),
+                key_stored,
+            }
         })
         .await
         .map_err(|e| e.to_string())
@@ -11300,11 +13363,20 @@ async fn claude_glm_status() -> Result<ClaudeGlmStatus, String> {
 }
 
 /// Run the embedded installer, streaming its output to the UI line by line.
+///
+/// Gated on `terminal_access_available()`, which is the single answer the
+/// interface also renders. The refusal is here and not only behind the section
+/// in KeyPage.svelte for the reason this command confirms in Rust at all: a
+/// webview that can call the command directly is not a boundary.
 #[tauri::command]
 async fn install_claude_glm(
     app: tauri::AppHandle,
     on_line: Channel<String>,
 ) -> Result<i32, String> {
+    if !terminal_access_available() {
+        let _ = (&app, &on_line);
+        return Err("Terminal access is not available on this platform yet.".into());
+    }
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     {
         // Asked here, not only in the interface. This is the one command that
@@ -11331,6 +13403,43 @@ async fn install_claude_glm(
     }
 }
 
+/// Returned when a native confirmation was declined. The interface matches on
+/// it to stay silent, rather than reporting "could not delete" for something
+/// the user chose not to do.
+const CANCELLED: &str = "cancelled";
+
+/// Ask, natively, before doing something that cannot be undone.
+///
+/// The confirmations for deleting a chat and for deleting everything lived in
+/// Svelte. Both were real native dialogs, but the renderer decided whether to
+/// show one — so the check was on the side of the boundary that a compromised
+/// renderer controls, and the command it guarded would execute for anyone able
+/// to reach the IPC surface. The installer had it the right way round from the
+/// start (`confirm_terminal_install`); these two now match it.
+///
+/// Deliberately *only* the irreversible mass operations. Putting a native
+/// dialog in front of removing one remembered fact or resetting a usage tally
+/// would teach people that these dialogs are noise to click through, which
+/// makes the two that matter less safe, not more. Those remain single-item,
+/// low-consequence, and confirmed in the interface or not at all.
+fn confirm_destructive<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    title: &str,
+    message: &str,
+    confirm: &str,
+) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    app.dialog()
+        .message(message)
+        .title(title)
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            confirm.into(),
+            "Cancel".into(),
+        ))
+        .blocking_show()
+}
+
 /// Native confirmation before anything is fetched or run. Names what this
 /// actually does, because "install terminal access" does not convey that a
 /// script is downloaded from a third party and executed.
@@ -11339,11 +13448,24 @@ fn confirm_terminal_install<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> boo
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
     app.dialog()
         .message(
-            "This downloads and runs an installer from astral.sh to get `uv`, then \
-             installs the LiteLLM proxy from PyPI and adds a launcher to your PATH.\n\n\
-             Both are outside the EU, unlike everything else this app talks to, and \
-             neither is pinned by a lockfile. Nothing is removed if you change your \
-             mind — see UNINSTALL.md § 4.",
+            "This changes five things:\n\n\
+             • a config folder for this app (~/.config/claude-glm)\n\
+             • `uv` and the LiteLLM proxy downloaded into it\n\
+             • (Python 3.12 must already be installed — this will not add one)\n\
+             • a `claude-glm` launcher in your ~/bin or ~/.local/bin\n\
+             • one line added to your shell profile, so that folder is on PATH\n\
+             • a backup copy of anything it overwrites\n\n\
+             Every download is checked against a checksum built into this app: uv \
+             against a fixed digest, and every Python package against a lock file \
+             recording their contents, not just their version numbers. Anything that \
+             fails a check is not installed or run.\n\n\
+             If setup fails partway — a download, a checksum, a disk error — it can \
+             leave an incomplete config folder behind. Nothing outside the five items \
+             above is touched, and UNINSTALL.md § 4 says how to remove them.\n\n\
+             What none of this tells you is whether uv and LiteLLM are themselves \
+             trustworthy. They are not ours, we have not audited them, and they run \
+             with your permissions. Both are US-hosted, unlike everything else this \
+             app talks to.",
         )
         .title("Set up terminal access?")
         .kind(MessageDialogKind::Warning)
@@ -11362,8 +13484,17 @@ fn confirm_terminal_install<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> boo
 /// before it is used.
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 fn private_temp_dir(prefix: &str) -> Result<std::path::PathBuf, String> {
+    private_dir_in(&std::env::temp_dir(), prefix)
+}
+
+/// The same, in a directory of the caller's choosing.
+///
+/// Used for migration staging inside the destination history folder, which may
+/// be somewhere the user shares. The properties that matter there are the ones
+/// that mattered in the temp directory: a name nobody can predict, and creation
+/// that fails rather than adopting a directory that already exists.
+fn private_dir_in(base: &std::path::Path, prefix: &str) -> Result<std::path::PathBuf, String> {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let base = std::env::temp_dir();
     for _ in 0..8 {
         // Not a cryptographic source, and it does not need to be: the guarantee
         // comes from create_dir failing if the name is taken, so an attacker
@@ -11430,6 +13561,10 @@ fn run_claude_glm_installer(on_line: Channel<String>) -> Result<i32, String> {
         .map_err(|e| e.to_string())?;
     f.flush().map_err(|e| e.to_string())?;
     drop(f);
+
+    // The lock goes beside it, in the same directory only this user can enter.
+    // The installer reads it from there and installs with `--require-hashes`.
+    std::fs::write(dir.join("requirements.lock"), CLAUDE_GLM_LOCK).map_err(|e| e.to_string())?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -11573,7 +13708,8 @@ pub fn run() {
             get_memory_settings,
             set_memory_settings,
             get_workspace_dir,
-            set_workspace_dir,
+            choose_workspace_dir,
+            clear_workspace_dir,
             reveal_workspace_dir,
             claude_glm_status,
             install_claude_glm,
@@ -11598,6 +13734,7 @@ pub fn run() {
             load_conversation,
             delete_conversation,
             reveal_history_dir,
+            open_third_party_notices,
             delete_all_data,
             save_project,
             list_projects,

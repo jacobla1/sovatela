@@ -106,9 +106,21 @@ pub struct UsageSummary {
     pub this_month: MonthUsage,
     pub all_time: MonthUsage,
     pub pricing: pricing::PricingInfo,
+    /// Why the last attempt to persist the ledger failed, if it did.
+    ///
+    /// A failed write still must not disrupt the request that triggered it — a
+    /// chat should not fail because a tally could not be saved — but through
+    /// 1.6.0 the result was discarded outright, so the figures could silently
+    /// stop advancing on disk while the panel went on reporting them as
+    /// recorded. Surfacing it here lets the panel say the totals are behind
+    /// without any of it reaching the request path.
+    pub persist_error: Option<String>,
 }
 
 static LEDGER: Mutex<Option<Ledger>> = Mutex::new(None);
+
+/// The last persistence failure, cleared by the next write that lands.
+static PERSIST_ERROR: Mutex<Option<String>> = Mutex::new(None);
 
 fn ledger_path() -> Option<std::path::PathBuf> {
     Some(crate::app_dir()?.join("usage.json"))
@@ -130,9 +142,15 @@ fn with_ledger(f: impl FnOnce(&mut Ledger)) {
     }
     let ledger = guard.as_mut().unwrap();
     f(ledger);
-    if let (Some(path), Ok(json)) = (ledger_path(), serde_json::to_string_pretty(ledger)) {
-        let _ = crate::write_atomic(&path, &json);
-    }
+    let outcome = match (ledger_path(), serde_json::to_string_pretty(ledger)) {
+        (Some(path), Ok(json)) => crate::write_atomic(&path, &json).err(),
+        (None, _) => Some("the application folder could not be located".to_string()),
+        (_, Err(e)) => Some(e.to_string()),
+    };
+    // Recorded, never returned: the caller is a chat, image or search request
+    // that has already happened, and failing it now would be worse than a tally
+    // that is behind.
+    *PERSIST_ERROR.lock().unwrap() = outcome;
 }
 
 /// The application identifier used before the GLM Chat → Sovatela rename.
@@ -278,6 +296,7 @@ pub fn summary() -> UsageSummary {
         this_month,
         all_time,
         pricing: pricing::PricingInfo::from(&pricing::active()),
+        persist_error: PERSIST_ERROR.lock().unwrap().clone(),
     }
 }
 

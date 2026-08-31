@@ -108,6 +108,11 @@ const PAGES = [
     { hold: "TERMS.md: outline for legal review, per its own banner" }],
   ["security", "SECURITY.md", "Security", {}],
   ["accessibility", "docs/ACCESSIBILITY.md", "Accessibility statement", {}],
+  // The terminal-access security note. Published so the banner on the download
+  // page has somewhere to point, and so anyone arriving from a search or an
+  // advisory finds the canonical text rather than a repository file.
+  ["security-note-claude-glm", "docs/release/SECURITY-NOTE-2026-08-30-claude-glm.md",
+    "Security note — terminal access", {}],
 ];
 
 const LABELS = {
@@ -394,10 +399,57 @@ writeFileSync(join(dist, "SHA256SUMS.txt"), sums.join("\n") + "\n");
 // this cannot advertise a version the download page does not actually offer.
 // A hand-edited file would be forgotten exactly once and then tell every user
 // an update exists that they cannot download.
+// Where "Check for updates" sends people, and it must not move.
+//
+// Every released 1.5.0-1.6.0 build opens whatever this says, behind a button its
+// own UI labels "Open the download page" — a label in a shipped binary that we
+// cannot change. So this has to be the download page, carrying the terminal
+// access notice above the downloads, rather than a policy page the label would
+// misdescribe. Versions before 1.5.0 have no update check at all and cannot be
+// reached this way; they need the public advisory.
+//
+// Changing this URL in a future release silently removes the route for every
+// copy still on 1.5.0-1.6.0, so it is a constant with a test rather than a
+// string in a literal.
+const UPDATE_LANDING = "https://sovatela.eu/#terminal-access-security";
+
 writeFileSync(
   join(dist, "version.json"),
-  JSON.stringify({ version: RELEASE, url: "https://sovatela.eu/#download" }, null, 2) + "\n",
+  JSON.stringify({ version: RELEASE, url: UPDATE_LANDING }, null, 2) + "\n",
 );
+
+// ---------- the update landing page must exist, and say what it must ---------
+//
+// A manifest URL pointing at a page that does not exist, or at one that has lost
+// the notice, silently breaks the only route to every installed 1.5.0-1.6.0
+// copy. This project has shipped a policy link to a 404 before; the same class
+// of defect here costs a security disclosure rather than a page view.
+{
+  const landingPath = join(dist, "index.html");
+  const landing = readFileSync(landingPath, "utf8");
+  const anchor = UPDATE_LANDING.split("#")[1];
+  const problems = [];
+  if (!landing.includes(`id="${anchor}"`)) {
+    problems.push(`index.html has no element with id="${anchor}"`);
+  }
+  if (!landing.includes("security-note-claude-glm")) {
+    problems.push("the notice on the download page does not link to the full security note");
+  }
+  if (!published.has("security-note-claude-glm")) {
+    problems.push("the security note is not among the published pages");
+  }
+  // The advertised release must actually be downloadable from that same page,
+  // or the button lands somewhere that cannot do what it offers.
+  if (!landing.includes(RELEASE)) {
+    problems.push(`the landing page does not offer ${RELEASE}`);
+  }
+  if (problems.length) {
+    console.error("Update landing page is not usable:");
+    for (const p of problems) console.error(`  - ${p}`);
+    process.exit(1);
+  }
+  console.log(`update landing: ${UPDATE_LANDING} -> ok`);
+}
 
 // The step artwork carries the wording of the setup strip, not just its
 // pictures, so a missing file is a missing paragraph above the fold — this

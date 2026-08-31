@@ -1,3 +1,32 @@
+# Release notes — Sovatela 1.6.1
+
+Release date: unreleased · [All releases](https://github.com/jacobla1/sovatela/releases)
+
+A safety and correctness release following an external review of 1.6.0.
+
+**If you set up terminal access (`claude-glm`) on any earlier version, read the
+[security note](SECURITY-NOTE-2026-08-30-claude-glm.md) first.** Its launcher put
+your Scaleway key into Claude Code's environment, where every command Claude ran
+could read it. Installing 1.6.1 does **not** repair a launcher already on your
+machine — nothing here updates itself. Change your Scaleway key and remove or
+reinstall the launcher.
+
+## Fixed in 1.6.1
+
+- **Terminal access**: the key now reaches the proxy and nothing else; the proxy
+  is this session's own child on a port chosen per session, verified as ours
+  before anything authenticated is sent.
+- **Chats that cannot be saved say so**, and can be retried.
+- **"Deleted" is shown only when the deletion is verified.**
+- **Moving the history folder is all-or-nothing** and rolls back on failure.
+- **A settings file that cannot be read no longer overwrites your settings.**
+- Provider responses, attachments and projects are bounded.
+- Privacy and Quick Start now describe what the app actually does.
+
+Known limitations and accepted risks: `docs/TECHNICAL-SPEC.md` § 7.
+
+---
+
 # Release notes — Sovatela 1.6.0
 
 Release date: 2026-08-29 · [All releases](https://github.com/jacobla1/sovatela/releases)

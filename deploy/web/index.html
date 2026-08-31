@@ -3,8 +3,23 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- The site runs no JavaScript and loads nothing from anywhere else, so the
+       policy is the strictest one that still renders it: nothing is permitted
+       by default, images only from this origin, and inline styles because the
+       CSS is in the <style> block above rather than a file.
+
+       As a meta tag rather than a response header, because sovatela.eu is on
+       GitHub Pages and Pages cannot set headers. That costs three things a
+       header would give: `frame-ancestors` is ignored in meta form, and
+       `X-Content-Type-Options: nosniff` and a real `Referrer-Policy` header
+       have no meta equivalent at all. The referrer is set below by the one
+       mechanism that does work in markup. See TECHNICAL-SPEC.md § 7. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'" />
+  <!-- An outbound link to Scaleway or GitHub should not carry which page on a
+       privacy tool the reader came from. -->
+  <meta name="referrer" content="no-referrer" />
   <title>Sovatela — download</title>
-  <meta name="description" content="Sovatela — a private desktop app for AI chat, running GLM-5.2 in Europe on Scaleway. Bring your own key; it stays on your device." />
+  <meta name="description" content="Sovatela — a private desktop app for AI chat, running GLM-5.2 in Europe on Scaleway. Bring your own key; it is stored only on your device and sent only to your provider." />
   <style>
     :root {
       --bg: #f7f8fb;
@@ -138,6 +153,13 @@
     }
     .notice strong { color: var(--text); font-weight: 600; }
 
+    .notice { border: 1px solid var(--accent); border-left-width: 4px; border-radius: 8px;
+              padding: 20px 22px; margin: 0 0 28px; background: var(--card); }
+    .notice h2 { font-size: 1.05rem; margin: 0 0 10px; color: var(--accent); }
+    .notice p { margin: 0 0 10px; }
+    .notice ol { margin: 0 0 10px; padding-left: 20px; }
+    .notice li { margin: 6px 0; }
+    .notice code { font-size: .9em; }
     .downloads { display: flex; flex-direction: column; gap: 14px; }
     .dl {
       display: flex; align-items: center; gap: 16px;
@@ -185,7 +207,7 @@
     <header>
       <img class="mark" src="assets/app-icon.jpg" width="112" height="112" alt="Sovatela app icon" />
       <h1>Sovatela</h1>
-      <p class="tagline">A desktop app for <strong>AI chat</strong> — private, and EU-sovereign. It runs <strong>GLM-5.2</strong> in Europe on Scaleway, and your keys stay on your device.</p>
+      <p class="tagline">A desktop app for <strong>AI chat</strong> — private, and EU-sovereign. It runs <strong>GLM-5.2</strong> in Europe on Scaleway, and your keys are stored only on your device — sent to your provider to authenticate you, and to nobody else.</p>
     </header>
 
     <ol class="steps">
@@ -210,6 +232,35 @@
       few cents a day for ordinary chat. Sovatela never handles payment and takes
       no cut, and the app shows a running cost estimate on your device.
     </p>
+
+    <!-- Terminal access security notice.
+         Above the downloads on purpose: version.json sends every 1.5.0-1.6.0
+         "Check for updates" here, and that link is labelled "Open the download
+         page" by a shipped binary we cannot change - so this has to be the
+         download page with the notice on it, not a policy page the label would
+         be lying about. -->
+    <aside class="notice" id="terminal-access-security">
+      <h2>If you set up terminal access (<code>claude-glm</code>), please read this</h2>
+      <p>
+        Every released version from <strong>1.2.0 to 1.6.0</strong> had a defect in the
+        <code>claude-glm</code> launcher: it put your Scaleway API key into Claude Code's
+        environment, where any command Claude ran could read it. Installing a newer version of
+        Sovatela does <strong>not</strong> repair a launcher already on your machine.
+      </p>
+      <ol>
+        <li><strong>Change your Scaleway API key</strong> in the
+          <a href="https://console.scaleway.com/iam/api-keys">IAM console</a>, and put the new one
+          into Sovatela — not because it is known to have leaked, but because nobody can tell
+          whether it did.</li>
+        <li><strong>Remove or reinstall the launcher.</strong> Reinstalling replaces it; removing it
+          is <code>rm -rf ~/.config/claude-glm ~/bin/claude-glm</code> on macOS.</li>
+        <li><strong>Check your Scaleway usage</strong> for the period you used it.</li>
+      </ol>
+      <p>
+        If you never used <em>Settings → Advanced → Terminal access</em>, none of this applies to
+        you. <a href="/security-note-claude-glm/">Read the full security note →</a>
+      </p>
+    </aside>
 
     <main class="downloads" id="downloads">
       <!-- macOS (universal: Apple Silicon + Intel) -->

@@ -26,6 +26,13 @@ use std::sync::Mutex;
 pub const REMOTE_PRICING_URL: &str =
     "https://raw.githubusercontent.com/jacobla1/sovatela/main/pricing/pricing.json";
 
+/// The largest price list this app will read.
+///
+/// The bundled table is a few kilobytes and the published one tracks it. The
+/// body was read to the end of the stream, and how long that is belongs to
+/// whatever is serving it.
+pub const MAX_PRICING_BYTES: usize = 256 * 1024;
+
 /// Prices bundled with the build, so cost estimation works before any fetch.
 pub const EMBEDDED_PRICING: &str = include_str!("../../pricing/pricing.json");
 
@@ -183,7 +190,107 @@ pub fn active() -> PriceTable {
 /// Persist a fetched table as the override and refresh the cache. Only accepts
 /// a table at least as recent as what's already in effect, so a stale remote
 /// file can't downgrade prices.
+/// Currency codes this app knows how to display. A fetched table naming
+/// anything else is describing money in units the interface cannot label.
+const KNOWN_CURRENCIES: &[&str] = &["EUR", "USD", "GBP", "DKK", "SEK", "NOK", "CHF", "PLN"];
+
+/// The largest per-million-token or per-unit rate that is a price rather than a
+/// typo. Real figures are single-digit; this is three orders of magnitude clear
+/// of them and still catches a misplaced decimal or a value in the wrong unit.
+const MAX_PLAUSIBLE_RATE: f64 = 10_000.0;
+
+fn check_rate(what: &str, value: f64) -> Result<(), String> {
+    if !value.is_finite() {
+        return Err(format!("{what} is not a number."));
+    }
+    if value < 0.0 {
+        return Err(format!("{what} is negative ({value})."));
+    }
+    if value > MAX_PLAUSIBLE_RATE {
+        return Err(format!("{what} is implausibly large ({value})."));
+    }
+    Ok(())
+}
+
+fn check_currency(what: &str, code: &str) -> Result<(), String> {
+    if KNOWN_CURRENCIES.contains(&code.trim().to_uppercase().as_str()) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{what} names a currency this app cannot display ({code})."
+        ))
+    }
+}
+
+/// Is this a link a user could safely be sent to for "where this price came
+/// from"? The interface renders these as links, so the same reasoning applies
+/// as to the update manifest's download URL: HTTPS, a real host, and nothing
+/// that reads as one address while being another.
+fn check_source(what: &str, url: &str) -> Result<(), String> {
+    let raw = url.trim();
+    if raw.is_empty() {
+        return Ok(()); // a provider with no published price page
+    }
+    let bad = |why: &str| Err(format!("the source link for {what} {why} ({raw})."));
+    let Ok(parsed) = reqwest::Url::parse(raw) else {
+        return bad("is not a valid address");
+    };
+    if parsed.scheme() != "https" {
+        return bad("is not https");
+    }
+    // `is_none_or` is stable since 1.82; this crate's MSRV is 1.77.2.
+    if !parsed.host_str().is_some_and(|h| !h.is_empty()) {
+        return bad("names no host");
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return bad("carries credentials, which is how one address is made to read as another");
+    }
+    Ok(())
+}
+
+/// Refuse a fetched table that is not describing money.
+///
+/// The body was parsed and adopted on the strength of its shape alone: serde
+/// accepts `NaN`, a negative rate, `1e308`, a currency of `"🙂"`, and a source
+/// link of `javascript:…` without complaint. A cost estimate is the number a
+/// user decides whether to keep going on, and a source link is something the
+/// app invites them to click — so both are checked before the table replaces
+/// one that was correct.
+///
+/// The embedded table is exempt: it ships with the binary and is covered by a
+/// test, so a failure there is a build-time problem rather than a runtime one.
+pub fn validate(table: &PriceTable) -> Result<(), String> {
+    check_currency("the table's display currency", &table.display_currency)?;
+
+    for (code, rate) in &table.fx {
+        check_currency("an exchange-rate entry", code)?;
+        check_rate(&format!("the exchange rate for {code}"), *rate)?;
+        if *rate == 0.0 {
+            return Err(format!("the exchange rate for {code} is zero."));
+        }
+    }
+    for (model, r) in &table.ai {
+        check_rate(&format!("the input rate for {model}"), r.input_per_mtok)?;
+        check_rate(&format!("the output rate for {model}"), r.output_per_mtok)?;
+        check_currency(&format!("the rate for {model}"), &r.currency)?;
+    }
+    for (label, group) in [
+        ("image model", &table.image),
+        ("search provider", &table.search),
+    ] {
+        for (name, r) in group {
+            check_rate(&format!("the rate for {label} {name}"), r.per_unit)?;
+            check_currency(&format!("the rate for {label} {name}"), &r.currency)?;
+        }
+    }
+    for (provider, url) in &table.sources {
+        check_source(provider, url)?;
+    }
+    Ok(())
+}
+
 pub fn set_active(table: PriceTable) -> Result<PricingInfo, String> {
+    validate(&table)?;
     let current = active();
     if table.collected < current.collected {
         return Err(format!(
@@ -202,6 +309,89 @@ pub fn set_active(table: PriceTable) -> Result<PricingInfo, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse(json: &str) -> PriceTable {
+        serde_json::from_str(json).expect("test table should parse")
+    }
+
+    #[test]
+    fn the_bundled_table_is_valid_by_its_own_rules() {
+        // If this fails the build is shipping prices the app would refuse to
+        // accept over the network, which is a contradiction worth catching here
+        // rather than in someone's settings panel.
+        validate(&embedded()).expect("the embedded price table is invalid");
+    }
+
+    #[test]
+    fn a_fetched_table_that_is_not_describing_money_is_refused() {
+        // serde accepts every one of these. The cost estimate is the number a
+        // user decides whether to keep going on.
+        let base = r#"{"version":"t","collected":"2026-08-30","display_currency":"EUR","#;
+
+        let cases: &[(&str, &str)] = &[
+            (
+                "a negative rate",
+                r#""ai":{"default":{"input_per_mtok":-1.0,"output_per_mtok":1.0}}}"#,
+            ),
+            (
+                "an implausible rate",
+                r#""ai":{"default":{"input_per_mtok":99999999.0,"output_per_mtok":1.0}}}"#,
+            ),
+            (
+                "an unknown currency",
+                r#""ai":{"default":{"input_per_mtok":1.0,"output_per_mtok":1.0,"currency":"XYZ"}}}"#,
+            ),
+            (
+                "a negative per-image rate",
+                r#""image":{"default":{"per_unit":-0.05}}}"#,
+            ),
+            (
+                "a negative per-search rate",
+                r#""search":{"linkup":{"per_unit":-0.005}}}"#,
+            ),
+            ("a zero exchange rate", r#""fx":{"USD":0.0}}"#),
+            ("a negative exchange rate", r#""fx":{"USD":-0.9}}"#),
+            (
+                "a script source link",
+                r#""sources":{"scaleway":"javascript:alert(1)"}}"#,
+            ),
+            (
+                "a cleartext source link",
+                r#""sources":{"scaleway":"http://prices.example/x"}}"#,
+            ),
+            (
+                "a source link carrying credentials",
+                r#""sources":{"scaleway":"https://scaleway.com@evil.example/"}}"#,
+            ),
+        ];
+        for (what, tail) in cases {
+            let table = parse(&format!("{base}{tail}"));
+            assert!(
+                validate(&table).is_err(),
+                "{what} was accepted as a price table"
+            );
+        }
+
+        // Not driven through JSON: serde_json refuses `NaN`, `Infinity` and an
+        // out-of-range literal before validation ever sees them, so a non-finite
+        // rate cannot arrive over the network today. The check stays because
+        // `validate` is public and the guarantee belongs to it rather than to
+        // whichever parser happens to call it.
+        let mut nan = parse(&format!(
+            "{base}{}",
+            r#""ai":{"default":{"input_per_mtok":1.0,"output_per_mtok":1.0}}}"#
+        ));
+        nan.ai.get_mut("default").unwrap().input_per_mtok = f64::NAN;
+        assert!(validate(&nan).is_err(), "a NaN rate was accepted");
+
+        // And a table that is fine stays fine, including an empty source link
+        // for a provider with no published price page.
+        let ok = parse(&format!(
+            "{base}{}",
+            r#""fx":{"USD":0.92},"sources":{"scaleway":"https://www.scaleway.com/en/pricing/","ovh":""},"ai":{"default":{"input_per_mtok":0.6,"output_per_mtok":2.2,"currency":"EUR"}},"image":{"default":{"per_unit":0.04}},"search":{"linkup":{"per_unit":0.005}}}"#
+        ));
+        validate(&ok).expect("a correct table was refused");
+    }
 
     #[test]
     fn bundled_pricing_parses_and_has_defaults() {

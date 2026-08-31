@@ -4,6 +4,7 @@
   import {
     MAX_TEXT_BYTES,
     MAX_DOC_BYTES,
+    aggregateRefusal,
     readAs,
     looksBinary,
     isExtractableDocument,
@@ -47,6 +48,13 @@
         error = "Project files are text or documents for now — images aren't supported here yet.";
         continue;
       }
+      // Every project file is put into the prompt of every chat in the project,
+      // so the aggregate matters more here than for a single message.
+      const tooMany = aggregateRefusal(files, { kind: "text" });
+      if (tooMany) {
+        error = `${f.name} was ${tooMany}.`;
+        continue;
+      }
       try {
         if (isTemplateDocument(f)) {
           error = templateDocumentHint(f);
@@ -57,6 +65,11 @@
             continue;
           }
           const content = await extractDocument(f);
+          const tooLong = aggregateRefusal(files, { kind: "text", content });
+          if (tooLong) {
+            error = `${f.name} was ${tooLong}.`;
+            continue;
+          }
           files.push({ name: f.name, content });
         } else if (isLegacyDocument(f)) {
           error = legacyDocumentHint(f);
@@ -69,6 +82,11 @@
           // Reject binary garbage rather than feeding it into every project chat.
           if (looksBinary(content)) {
             error = `${f.name} isn't a readable text file.`;
+            continue;
+          }
+          const tooLong = aggregateRefusal(files, { kind: "text", content });
+          if (tooLong) {
+            error = `${f.name} was ${tooLong}.`;
             continue;
           }
           files.push({ name: f.name, content });

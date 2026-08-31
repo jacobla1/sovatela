@@ -224,10 +224,49 @@ Sovatela nor deleting that folder removes them:
 > key, so it will fail to authenticate rather than recover, and unsaved work in
 > that session is lost.
 
+### First, stop the proxy — if one is running
+
+From 1.6.1 the proxy is a child of your `claude-glm` session and stops when that
+session ends, on a port chosen per session. There is normally nothing to stop
+and no PID file to read.
+
+**A launcher installed before 1.6.1 is different**: it ran a long-lived proxy on
+port 4000 and recorded its process id in `litellm.pid`. If you have one of
+those — or if a crash left a proxy behind — stop it by *what it is*, never by
+the recorded number.
+
+Through 1.6.0 this page told you to run `kill "$(cat …/litellm.pid)"`. **Do not
+use that command**, here or anywhere you have it saved. A PID file records the
+number a process had when it started, and the operating system reuses those
+numbers: if the proxy exited without cleaning up — a crash, a reboot — that
+number now belongs to whatever started next. Your editor, your database, a
+build. The command would have killed it without asking.
+
+**macOS and Linux**
+
+```sh
+pkill -f 'claude-glm/venv/bin/litellm' || pkill -f 'claude-glm/litellm.yaml'
+```
+
+The pattern is the proxy's own configuration path, which only this app's proxy
+runs with — so a recycled process id cannot match it.
+
+**Windows**
+
+```powershell
+Get-CimInstance Win32_Process |
+  Where-Object { $_.CommandLine -like '*claude-glm*litellm*' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId }
+```
+
+Do not use `Stop-Process -Name litellm`: it stops *every* LiteLLM on the
+machine, including one you run for something else.
+
+Once it has stopped, remove the files.
+
 **macOS**
 
 ```sh
-kill "$(cat ~/.config/claude-glm/litellm.pid)" 2>/dev/null
 rm -rf ~/.config/claude-glm
 rm -f ~/bin/claude-glm
 ```
@@ -247,7 +286,6 @@ above and you don't want `~/bin` on your `PATH` at all.
 **Linux**
 
 ```sh
-kill "$(cat ~/.config/claude-glm/litellm.pid)" 2>/dev/null
 rm -rf ~/.config/claude-glm
 rm -f ~/.local/bin/claude-glm
 ```
@@ -258,7 +296,7 @@ anyway, so remove it only if it was not there before.
 
 **Windows**
 
-Stop the proxy in Task Manager, then:
+After stopping the proxy as above:
 
 ```powershell
 Remove-Item -Recurse -Force "$env:USERPROFILE\.claude-glm"
@@ -271,31 +309,44 @@ Variables* if you don't want it.
 
 **All platforms — the tools the installer brought with it**
 
-Setting up terminal access installed two things that are not part of Sovatela
-and that nothing above removes, because you may be using them for other work:
+This depends entirely on which version set terminal access up. Read the heading
+that applies to you; the other one describes a layout you do not have.
+
+### If you set it up on 1.6.1 or later
+
+**Nothing else to do.** Both `uv` and the LiteLLM proxy were installed *inside*
+`~/.config/claude-glm` (`%USERPROFILE%\.claude-glm` on Windows) and were removed
+with that folder above. Sovatela never installed anything globally, and never
+touched a `uv` you had already.
+
+Do not run `uv tool uninstall`, `brew uninstall uv`, or delete `~/.local/bin/uv`
+as part of removing Sovatela. If those exist on your machine, they are yours.
+
+### If you set it up before 1.6.1
+
+Those versions installed into shared locations, which they should not have.
+Both commands below can remove software you use for other things, so **check
+ownership first and only then run them**:
 
 ```sh
-uv tool uninstall litellm    # the proxy itself
+uv tool list          # is litellm there, and did you put it there?
+uv tool uninstall litellm
 ```
 
-and `uv`, the Python tool installer, which the setup installed if you did not
-already have it. Where it went depends on how it was installed, so check before
-removing anything:
+`uv` itself is the harder call: the pre-1.6.1 installer used Homebrew when it was
+available, so on many machines the `uv` you have predates Sovatela or is shared
+with other work. There is no way for us to tell from here.
 
 ```sh
-command -v uv        # macOS / Linux
+command -v uv         # macOS / Linux — where did it come from?
+where uv              # Windows
 ```
 
-- `/opt/homebrew/bin/uv` or `/usr/local/bin/uv` — Homebrew, which the macOS
-  installer prefers when it is available: `brew uninstall uv`
-- `~/.local/bin/uv` — the `astral.sh` installer:
-  `rm -rf ~/.local/bin/uv ~/.local/bin/uvx ~/.local/share/uv`
-
-On Windows, `where uv`, then delete what it reports along with
-`%USERPROFILE%\.local\share\uv`.
-
-Only do this if nothing else on your machine uses `uv` — it is a general Python
-tool, and you may well have had it before Sovatela.
+Remove it **only** if you are certain nothing else uses it — `brew uninstall uv`
+for a Homebrew install, or `rm -rf ~/.local/bin/uv ~/.local/bin/uvx
+~/.local/share/uv` for one the `astral.sh` installer placed. If you are unsure,
+leave it. An unused Python tool costs you a few megabytes; removing one another
+project depends on breaks that project.
 
 ---
 

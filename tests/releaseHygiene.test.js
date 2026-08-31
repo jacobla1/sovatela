@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 const repo = resolve(import.meta.dirname, "..");
@@ -94,9 +94,39 @@ describe("every file that states the version agrees", () => {
     expect(title).toBe(pkg.version);
   });
 
-  it("the accessibility statement", () => {
+  // Conditional, because `deploy/publish-source.mjs` withholds this file from
+  // the public mirror on purpose and repoints links at sovatela.eu/accessibility.
+  // Requiring it unconditionally made the *published* source fail its own suite
+  // — which is how an external audit found it — while passing in the working
+  // repo, where the file exists. A withheld document is not a missing one, and
+  // the fix is not to write a replacement into the mirror: that would publish
+  // something deliberately withheld, in a lossier form than the original.
+  it("the accessibility statement, where it is present", () => {
+    const path = join(repo, "docs/ACCESSIBILITY.md");
+    if (!existsSync(path)) return; // the public mirror: withheld by design
     const applies = read("docs/ACCESSIBILITY.md").match(/Applies to: Sovatela v(\S+)/)?.[1];
     expect(applies).toBe(pkg.version);
+  });
+
+  // TERMS.md said "Applies to: Sovatela v1.2.0" while 1.6.0 was publicly
+  // distributed to consumers. Nothing checked it, because the version guards
+  // covered the documents that ship and this one does not.
+  it("the terms of use", () => {
+    const terms = read("docs/TERMS.md");
+    const applies = terms.match(/Applies to: Sovatela v(\S+)/)?.[1];
+    expect(applies).toBe(pkg.version);
+  });
+
+  // The one open finding no code closes, and therefore the one that rots. The
+  // date is the thing being asserted: a review with no date is a backlog entry.
+  it("the terms carry a review date and an owner", () => {
+    const terms = read("docs/TERMS.md");
+    const due = terms.match(/\*\*Review due by: (\d{4}-\d{2}-\d{2})\.\*\*/)?.[1];
+    expect(due, "TERMS.md no longer states when its review is due").toBeTruthy();
+    expect(terms).toMatch(/\*\*Owner:\*\*/);
+    // And what happens if the date passes is written down, so the decision is
+    // one someone makes rather than one that is made by default.
+    expect(terms).toMatch(/If that date passes/);
   });
 
   it("the technical specification", () => {

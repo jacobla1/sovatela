@@ -30,23 +30,6 @@
 
   const isSettings = $derived(mode === "settings");
 
-  // Terminal access (claude-glm) — built, disclosed, and held for 1.2.0.
-  //
-  // The section and its two caveats are complete and reviewed (PR #10). It is
-  // off in 1.1.1 for one reason only: none of it has ever shipped under test,
-  // and it installs software onto three platforms. QA-CHECKLIST.md § "Terminal
-  // access" is the gate — run it, then flip this to true for 1.2.0 and promote
-  // the CHANGELOG entry out of Unreleased.
-  //
-  // Why it was hidden originally, unchanged: running Claude Code against a
-  // non-Anthropic model sits outside what Anthropic supports — their gateway
-  // documentation says so in as many words ("doesn't support routing Claude
-  // Code to non-Claude models through any gateway"). That is a support
-  // statement, not a prohibition, and the section now carries that caveat in
-  // the UI rather than only in deploy/claude-glm/README.md. Keep both caveats
-  // attached to this section if it ever moves.
-  const SHOW_TERMINAL_ACCESS = true;
-
   // Read from the bundle rather than package.json, so the number shown is the
   // one the user actually installed and cannot drift from it. Degrades to a
   // dash rather than breaking the panel if the call is ever unavailable.
@@ -319,6 +302,30 @@
 
   // ----- Terminal access (claude-glm: Claude Code on GLM-5.2) -----
   let cgStatus = $state(null); // readiness snapshot from the backend
+
+  // Terminal access (claude-glm) — shown when the backend says it may be
+  // installed here, and not otherwise.
+  //
+  // Its launcher was rewritten after the 1.6.0 review: the old one exported the Scaleway
+  // key into its own environment, where Claude Code and every command it ran
+  // inherited it, and it adopted whatever was already listening on
+  // 127.0.0.1:4000 as its proxy. Both are fixed, and the fix is checked by
+  // running the launcher against a stub keychain, proxy and agent
+  // (deploy/claude-glm/verify-launcher.sh).
+  //
+  // There is deliberately no constant here to keep in step with the backend's.
+  // The previous version had one on each side, and a test whose whole job was
+  // noticing when they disagreed. `claude_glm_status.available` is the single
+  // answer; `install_claude_glm` refuses on the same condition, so the section
+  // being visible and the command being permitted cannot come apart.
+  const terminalAvailable = $derived(!!cgStatus?.available);
+
+  // Why it is unofficial, unchanged: running Claude Code against a non-Anthropic
+  // model sits outside what Anthropic supports — their gateway documentation
+  // says so in as many words ("doesn't support routing Claude Code to
+  // non-Claude models through any gateway"). That is a support statement, not a
+  // prohibition, and the section carries that caveat in the UI rather than only
+  // in deploy/claude-glm/README.md. Keep it attached if this section moves.
   let cgInstalling = $state(false);
   let cgLog = $state("");
 
@@ -438,7 +445,15 @@
   let historyDir = $state(""); // empty = default app folder
   let historySaved = $state(false);
 
+  // A failed or partial history move is exactly the thing a user must be told
+  // about, and it was going to console.error — where nobody sees it. Worse, the
+  // panel went on showing the folder the user had picked while the backend had
+  // kept the old one, so the interface disagreed with reality about where the
+  // chats were.
+  let historyError = $state("");
+
   async function saveHistorySettings() {
+    historyError = "";
     try {
       await invoke("set_history_settings", {
         settings: { save_history: saveHistory, dir: historyDir.trim() },
@@ -446,7 +461,19 @@
       historySaved = true;
       setTimeout(() => (historySaved = false), 2000);
     } catch (e) {
-      console.error("Could not save history settings:", e);
+      historyError = String(e?.message ?? e);
+      // Re-read what the backend actually kept. On a refusal it kept the old
+      // folder, and leaving the new one on screen would tell the user their
+      // chats had moved when they had not.
+      try {
+        const s = await invoke("get_history_settings");
+        if (s) {
+          saveHistory = s.save_history;
+          historyDir = s.dir || "";
+        }
+      } catch {
+        // If even reading back fails, the message above is what the user has.
+      }
     }
   }
 
@@ -481,27 +508,31 @@
   let workspaceDir = $state("");
   let workspaceSaved = $state(false);
 
+  // The picker runs in Rust, and the folder it returns is the grant.
+  //
+  // It used to run here and hand the path to `set_workspace_dir`, which took
+  // any string — so the dialog the user saw was a courtesy, not the boundary.
+  // Nothing in this file decides what the assistant may read any more.
+  let workspaceError = $state("");
+
   async function chooseWorkspaceFolder() {
+    workspaceError = "";
     try {
-      const picked = await openDialog({
-        directory: true,
-        multiple: false,
-        title: "Choose a folder the assistant may read and write",
-      });
-      if (typeof picked === "string" && picked) {
-        workspaceDir = picked;
-        await invoke("set_workspace_dir", { dir: workspaceDir });
+      const picked = await invoke("choose_workspace_dir");
+      if (picked && picked !== workspaceDir) {
         workspaceSaved = true;
         setTimeout(() => (workspaceSaved = false), 2000);
       }
+      workspaceDir = picked || "";
     } catch (e) {
-      console.error("Could not pick a workspace folder:", e);
+      workspaceError = String(e?.message ?? e);
     }
   }
 
   async function clearWorkspaceFolder() {
+    workspaceError = "";
     workspaceDir = "";
-    await invoke("set_workspace_dir", { dir: "" }).catch((e) =>
+    await invoke("clear_workspace_dir").catch((e) =>
       console.error("Could not clear workspace:", e),
     );
   }
@@ -567,17 +598,34 @@
     }
   }
 
+  // ----- Third-party notices (about section) -----
+  // Bundled with the binary as an application resource, so the list travels
+  // with the build rather than only with the source.
+  let noticesError = $state("");
+
+  async function openNotices() {
+    noticesError = "";
+    try {
+      await invoke("open_third_party_notices");
+    } catch (e) {
+      noticesError = String(e?.message ?? e);
+    }
+  }
+
   // ----- Delete all data (privacy section) -----
   let wiped = $state(false);
+  // What the backend could not remove. Shown instead of "Deleted ✓", never
+  // beside it: until 1.6.0 the command discarded every removal error and
+  // returned success as long as it could finish, so a chat still sitting on
+  // disk was reported as deleted. Someone wiping a machine before passing it on
+  // has to be told when that did not work.
+  let wipeError = $state("");
 
   async function deleteAllData() {
-    const ok = await ask(
-      "This permanently deletes all chats (and their images), projects, " +
-        "remembered facts, and your personalization text from this device. " +
-        "Your API keys and provider settings are kept.\n\nThis cannot be undone.",
-      { title: "Delete all chats, projects & memory?", kind: "warning" },
-    );
-    if (!ok) return;
+    // The confirmation is in Rust, inside `delete_all_data` — see the comment
+    // on `confirm_destructive`. Asking here as well would show two dialogs for
+    // one decision, which is how people learn to dismiss them unread.
+    wipeError = "";
     try {
       await invoke("delete_all_data");
       memories = [];
@@ -586,7 +634,23 @@
       wiped = true;
       setTimeout(() => (wiped = false), 3000);
     } catch (e) {
-      console.error("Could not delete data:", e);
+      // Partial deletion: some of it is gone, so the panel is refreshed from
+      // the backend rather than assumed either way.
+      wiped = false;
+      const reason = String(e?.message ?? e);
+      // Declining the native dialog is not a failure and has nothing to say.
+      if (reason === "cancelled") return;
+      wipeError = reason;
+      invoke("list_memories")
+        .then((m) => (memories = m || []))
+        .catch(() => {});
+      invoke("get_memory_settings")
+        .then((s) => {
+          if (!s) return;
+          aboutYou = s.about_you || "";
+          customInstructions = s.custom_instructions || "";
+        })
+        .catch(() => {});
     }
   }
 
@@ -649,10 +713,10 @@
     invoke("get_workspace_dir")
       .then((d) => (workspaceDir = d || ""))
       .catch(() => {});
-    if (SHOW_TERMINAL_ACCESS) {
-      refreshClaudeGlm();
-      refreshTerminalKey();
-    }
+    // Always: the uninstall step below needs to know whether a launcher from an
+    // earlier version is on disk even where the section itself is hidden.
+    refreshClaudeGlm();
+    refreshTerminalKey();
     invoke("get_memory_settings")
       .then((s) => {
         if (!s) return;
@@ -1404,6 +1468,17 @@
     {/if}
     {#if workspaceSaved}<span class="saved-note">Saved ✓</span>{/if}
   </div>
+  <p class="hint">
+    <strong>Choose a folder only you can write to.</strong> A folder another
+    account on this computer can write, or one a sync client rewrites while the
+    app is using it, can have a directory swapped underneath a write in progress
+    — which can place a file outside the folder you granted. Confining writes
+    against that is not something this app can currently guarantee; it is
+    recorded in the technical specification rather than glossed over.
+  </p>
+  {#if workspaceError}
+    <p class="warn-text" role="alert">{workspaceError}</p>
+  {/if}
 {/snippet}
 
 {#snippet terminalSection()}
@@ -1486,16 +1561,20 @@
     follow the local proxy to Scaleway, but Claude Code is an agent: it runs
     commands, installs packages, fetches pages and talks to MCP servers, and
     those can reach hosts outside Europe. For a hard boundary, allow only
-    <code>127.0.0.1:4000</code> and <code>api.scaleway.ai:443</code> during a
+    loopback and <code>api.scaleway.ai:443</code> during a
     GLM session.
   </p>
 
   <p class="hint">
-    <strong>What the setup installs.</strong> It downloads and runs the
-    installer from <code>astral.sh</code> to get <strong>uv</strong> if you
-    don't already have it, uses that to install the <strong>LiteLLM</strong>
-    proxy, writes a <code>claude-glm</code> launcher, and adds its folder to
-    your <code>PATH</code>. Astral and PyPI are US-hosted, so setup itself
+    <strong>What the setup installs.</strong> It downloads <strong>uv</strong>
+    from GitHub and the <strong>LiteLLM</strong> proxy from PyPI into a folder
+    belonging to this app, writes a <code>claude-glm</code> launcher, and adds
+    its folder to your <code>PATH</code>. <strong>Every download is checked
+    against a checksum built into the app</strong> — uv against a fixed digest,
+    and each Python package against a lock file recording its contents rather
+    than just its version. Nothing that fails a check is installed or run. What
+    that cannot tell you is whether uv and LiteLLM are themselves trustworthy:
+    they are not ours and we have not audited them. Both are US-hosted, so setup
     reaches outside Europe even though the chat traffic afterwards does not.
     Nothing is installed until you press the button, and
     <em>Uninstalling &amp; your data</em> (under History &amp; privacy) lists how
@@ -1544,7 +1623,6 @@
         <span>
           <code>claude-glm</code>
           {cgStatus?.launcher_installed ? "installed" : "not installed yet"}
-          {#if cgStatus?.proxy_running}· proxy running{/if}
         </span>
       </div>
     </div>
@@ -1646,6 +1724,9 @@
       {/if}
       {#if historySaved}<span class="saved-note">Saved ✓</span>{/if}
     </div>
+    {#if historyError}
+      <p class="warn-text" role="alert">{historyError}</p>
+    {/if}
   {:else}
     <p class="hint">
       Recording is off. New chats won't be saved and won't appear in the sidebar.
@@ -1656,6 +1737,19 @@
 {/snippet}
 
 {#snippet usageSection()}
+  <!-- The tally could not be written. It is still correct for this session — it
+       is kept in memory — but it is behind on disk, so the figures will drop
+       back to the last successful write when the app restarts. Saying so is the
+       whole point: through 1.6.0 the write result was discarded and the panel
+       reported the totals as recorded either way. -->
+  {#if usage?.persist_error}
+    <p class="warn-text" role="alert">
+      These totals could not be saved to disk ({usage.persist_error}). They are
+      right for this session, but will go back to the last saved figures when
+      the app restarts.
+    </p>
+  {/if}
+
   <p class="hint">
     A running tally of what <strong>this app</strong> has used, with an
     <strong>indicative</strong> cost. The usage is measured from the providers'
@@ -1887,7 +1981,11 @@
     <strong>2 · Erase the data without uninstalling.</strong> Use
     <em>Delete all chats, projects &amp; memory</em> under <em>Privacy &amp;
     data</em>, and <em>Remove key from this app</em> in each key section.
-    Together those clear everything the app has saved.
+    Together those clear your conversations, their images, projects, remembered
+    facts, personalization, and your keys — the content. They deliberately leave
+    your <em>settings</em>: which providers you chose, your usage totals and
+    document templates, and the window's own size and position. Step 3 removes
+    those with the data folder.
   </p>
 
   <p class="hint">
@@ -1912,28 +2010,73 @@
     them gone.
   </p>
 
-  {#if SHOW_TERMINAL_ACCESS}
+  <!-- Shown when the launcher is actually on this machine, not when the feature
+       is offered. Gating it on availability would take the removal instructions
+       away from the people who need them most: anyone who installed from a
+       released version, whose launcher has the defects described in the
+       security note and is not repaired by installing a newer app. -->
+  <!-- Five states, not two. What is on disk and what this machine's history is
+       are different questions, and collapsing them meant an upgrade from 1.6.0
+       produced a machine the app called clean — hiding the key-rotation and
+       cleanup guidance from exactly the people it is for. Replacing a launcher
+       does not rotate a key that was already exposed. -->
+  {#snippet legacyRemoval()}
+    {#if platform === "windows"}
+      delete <code>%USERPROFILE%\.claude-glm</code> and
+      <code>%USERPROFILE%\bin\claude-glm.cmd</code>
+    {:else if platform === "macos"}
+      <code>rm -rf ~/.config/claude-glm ~/bin/claude-glm</code>
+    {:else}
+      <code>rm -rf ~/.config/claude-glm ~/.local/bin/claude-glm</code>
+    {/if}
+  {/snippet}
+
+  {#if cgStatus?.layout === "legacy"}
     <p class="hint">
-      <strong>4 · Terminal access is separate.</strong> If you set up
-      <em>claude-glm</em>, it was installed <strong>outside</strong> the app's
-      folder — uninstalling Sovatela does not remove it, and neither does step 3.
-      {#if platform === "windows"}
-        Stop the proxy in Task Manager, then delete
-        <code>%USERPROFILE%\.claude-glm</code> and
-        <code>%USERPROFILE%\bin\claude-glm.cmd</code>.
-      {:else if platform === "macos"}
-        Run <code>kill "$(cat ~/.config/claude-glm/litellm.pid)"</code>, then
-        <code>rm -rf ~/.config/claude-glm ~/bin/claude-glm</code>.
-      {:else}
-        Run <code>kill "$(cat ~/.config/claude-glm/litellm.pid)"</code>, then
-        <code>rm -rf ~/.config/claude-glm ~/.local/bin/claude-glm</code>.
-      {/if}
-      It also installed <strong>uv</strong> and <strong>LiteLLM</strong>, which
-      are general-purpose tools you may be using for other work:
-      <code>uv tool uninstall litellm</code> removes the proxy, and
-      <code>uv</code> itself should go only if nothing else needs it. The
-      installer added one directory to your <code>PATH</code> — check that line
-      before deleting it, as it may pre-date Sovatela.
+      <strong>4 · Terminal access was set up by an older version.</strong>
+      That version's launcher passes your Scaleway key into Claude Code's
+      environment, where every command Claude runs can read it.
+      <strong>Change that key in your provider's console</strong>, then remove
+      the launcher: {@render legacyRemoval()}. It also installed
+      <strong>LiteLLM</strong> into your global <code>uv</code> tools, and
+      possibly <code>uv</code> itself — both are general-purpose, so check
+      ownership before removing either; <em>Uninstalling &amp; your data</em>
+      walks through it.
+    </p>
+  {:else if cgStatus?.layout === "upgraded_from_legacy"}
+    <p class="hint">
+      <strong>4 · Terminal access is current now — but it was not always.</strong>
+      This machine ran a launcher from before 1.6.1, which passed your Scaleway
+      key into Claude Code's environment. Reinstalling fixed what happens from
+      here; it did not undo that. <strong>Change that key in your provider's
+      console if you have not already</strong>, and check whether the older
+      version left a <strong>LiteLLM</strong> in your global <code>uv</code>
+      tools — <em>Uninstalling &amp; your data</em> shows how to tell whether it
+      is yours before removing it.
+    </p>
+  {:else if cgStatus?.layout === "incomplete_or_unknown"}
+    <p class="hint">
+      <strong>4 · Terminal access is installed, but incompletely.</strong>
+      There is a <code>claude-glm</code> launcher here whose version this app
+      cannot establish — most likely a setup that was interrupted.
+      <strong>Do not use it.</strong> Remove it and run setup again:
+      {@render legacyRemoval()}. If you used terminal access on this machine
+      <em>before</em> 1.6.1, follow the key-rotation steps in the security note
+      as well. If you did not, there is nothing else to clean up — in particular,
+      do not remove a <code>uv</code> or a LiteLLM you have here; we cannot tell
+      whether they are ours, so they should be assumed to be yours.
+    </p>
+  {:else if cgStatus?.layout === "fresh_current"}
+    <p class="hint">
+      <strong>4 · Terminal access is separate.</strong> <em>claude-glm</em> lives
+      outside this app's application folder, so uninstalling Sovatela does not
+      remove it and neither does step 3. Everything it installed —
+      <code>uv</code>, the proxy and its packages — is inside its own folder, so
+      removing that folder removes all of it: {@render legacyRemoval()}.
+      <strong>Nothing global was installed</strong>, so there is nothing else to
+      uninstall; in particular, do not remove a <code>uv</code> or a LiteLLM you
+      have on this machine. The installer added one line to your shell profile
+      for <code>PATH</code>; remove it if you want.
     </p>
   {/if}
 
@@ -1986,13 +2129,18 @@
     <button class="danger" onclick={deleteAllData}>Delete all chats, projects &amp; memory…</button>
     {#if wiped}<span class="saved-note">Deleted ✓</span>{/if}
   </div>
+  {#if wipeError}
+    <p class="warn-text" role="alert">{wipeError}</p>
+  {/if}
 {/snippet}
 
 {#snippet aboutSection()}
   <p class="hint">
     <strong>Sovatela</strong> — from <em>sova</em>, Slavic for owl, and
     <em>tutela</em>, Latin for guardianship. The app guards the thing it is
-    named for: your keys and your conversations stay on your device.
+    named for: your conversations stay on your device, and your keys are stored
+    only there — sent directly to the provider you chose, to authenticate you, and
+    to nobody else.
   </p>
   <dl class="about">
     <dt>Version</dt>
@@ -2021,6 +2169,15 @@
     </dd>
     <dt>Licence</dt>
     <dd>MIT — free to use, modify and share</dd>
+    <dt>Third-party notices</dt>
+    <dd>
+      <button class="link" onclick={openNotices}>
+        Open the full list of components →
+      </button>
+      {#if noticesError}
+        <span class="update-line has-result update-failed">{noticesError}</span>
+      {/if}
+    </dd>
     <dt>Source</dt>
     <dd>
       <button class="link" onclick={() => open("https://github.com/jacobla1/sovatela")}>
@@ -2204,7 +2361,7 @@
       </div>
     </section>
 
-    {#if SHOW_TERMINAL_ACCESS}
+    {#if terminalAvailable}
       <section class="settings-group" aria-labelledby="set-advanced">
         <h2 class="settings-group-label" id="set-advanced">Advanced</h2>
         <div class="settings-group-body">

@@ -3,7 +3,6 @@
   import { knownProjectId } from "./projects.js";
   import { invoke, Channel } from "@tauri-apps/api/core";
   import { openUrl } from "@tauri-apps/plugin-opener";
-  import { ask } from "@tauri-apps/plugin-dialog";
   import { cleanText, hasVisibleText, parseParts, renderMd } from "./text.js";
   import Artifact from "./Artifact.svelte";
   import Icon from "./Icon.svelte";
@@ -15,6 +14,7 @@
     MAX_IMAGE_BYTES,
     MAX_TEXT_BYTES,
     MAX_DOC_BYTES,
+    aggregateRefusal,
     readAs,
     looksBinary,
     isExtractableDocument,
@@ -358,11 +358,29 @@
   }
   refreshHistory();
 
+  // Chats whose last save failed, keyed by conversation id.
+  //
+  // Through 1.6.0 a failed save was a console.error and nothing else, and every
+  // call site is fire-and-forget — so a full disk, a permission error, or a
+  // history folder on a drive that had gone away lost whole conversations while
+  // the interface looked exactly like a successful one. The user found out when
+  // they went back for the chat and it was not there.
+  //
+  // Each entry keeps the snapshot that failed, so retrying writes the messages
+  // as they were rather than whatever the chat has become since. That makes
+  // this the recovery buffer as well as the flag: while the entry exists the
+  // conversation is in memory, and the banner keeps saying so across chat
+  // switches, which is when it would otherwise be quietly dropped.
+  let unsaved = $state(new Map());
+  let retrying = $state(false);
+
+  const unsavedList = $derived([...unsaved.values()]);
+
   // Persists an explicit snapshot (id + messages + project), not the current
   // globals — so a reply that finishes streaming after the user has switched
   // to another conversation is still saved into the chat it belongs to.
   async function persist(cid = conversationId, msgs = messages, pid = chatProjectId) {
-    if (msgs.length === 0) return; // recording on/off is enforced authoritatively in the backend
+    if (msgs.length === 0) return true; // recording on/off is enforced authoritatively in the backend
     const firstUser = msgs.find((m) => m.role === "user" && m.text);
     const title = (firstUser?.text || "New chat").trim().slice(0, 60);
     const updatedAt = new Date().toISOString();
@@ -385,8 +403,43 @@
           project_id: pid,
         });
       }
+      // `saved === false` is recording turned off, not a failure.
+      if (unsaved.has(cid)) {
+        unsaved.delete(cid);
+        unsaved = new Map(unsaved);
+      }
+      return true;
     } catch (e) {
       console.error("Could not save conversation:", e);
+      // Snapshot the messages, so a retry cannot be poisoned by later edits and
+      // the text survives here even if the file never lands.
+      unsaved.set(cid, {
+        cid,
+        title,
+        pid,
+        msgs: msgs.map((m) => ({ ...m })),
+        error: String(e?.message ?? e),
+      });
+      unsaved = new Map(unsaved);
+      announce(`This chat could not be saved. ${String(e?.message ?? e)}`);
+      return false;
+    }
+  }
+
+  // Retry every chat that failed to save. Ordered oldest first so the sidebar
+  // ends up in the order the conversations were actually last touched.
+  async function retryUnsaved() {
+    if (retrying) return;
+    retrying = true;
+    try {
+      for (const entry of [...unsaved.values()]) {
+        await persist(entry.cid, entry.msgs, entry.pid);
+      }
+      if (unsaved.size === 0) {
+        announce("Saved.");
+      }
+    } finally {
+      retrying = false;
     }
   }
 
@@ -449,33 +502,31 @@
   }
 
   async function deleteConversation(id) {
-    // Deleting a project asks first, and that keeps its chats. Deleting a chat
-    // removes it and its images from disk with nothing to undo it, and asked
-    // nothing at all — a stray click, or one Enter on a button the keyboard
-    // could reach without showing it, and an hour's conversation was gone.
+    // The confirmation is in Rust, inside `delete_conversation`.
     //
-    // The native dialog, because window.confirm is unreliable in a Tauri
-    // webview — the same reason the project editor uses it.
-    const meta = conversations.find((c) => c.id === id);
-    const ok = await ask("This cannot be undone.", {
-      title: `Delete “${meta?.title || "Untitled"}”?`,
-      kind: "warning",
-    });
-    if (!ok) return;
-
-    // Cancel and unregister an in-flight run before removing the chat.
+    // It used to be here — a real native dialog, but shown or not shown by the
+    // renderer, which put the check on the side of the boundary a compromised
+    // renderer controls. Deleting a chat removes it and its images from disk
+    // with nothing to undo it, so the command asks for itself; asking here as
+    // well would only teach people to click through two dialogs.
+    try {
+      await invoke("delete_conversation", { id });
+    } catch (e) {
+      // Declining the dialog is not a failure and has nothing to report.
+      if (String(e?.message ?? e) !== "cancelled") {
+        console.error("Could not delete conversation:", e);
+      }
+      return;
+    }
+    // Only once it is actually gone: cancel and unregister any in-flight run,
+    // then leave the chat if it was the open one.
     if (runningIds[id]) {
       stoppedRequests.add(runningIds[id]);
       invoke("cancel_request", { requestId: runningIds[id] }).catch(() => {});
       endRun(id, runningIds[id]);
     }
-    try {
-      await invoke("delete_conversation", { id });
-      if (id === conversationId) newChat();
-      refreshHistory();
-    } catch (e) {
-      console.error("Could not delete conversation:", e);
-    }
+    if (id === conversationId) newChat();
+    refreshHistory();
   }
 
   // cleanText / parseParts / renderMd live in text.js (shared with the tests).
@@ -560,6 +611,16 @@
 
   async function onFiles(fileList) {
     for (const file of Array.from(fileList)) {
+      // The whole message, not just this file. Per-file limits let forty
+      // documents just under the cap — or a dropped folder — through together.
+      const tooMany = aggregateRefusal(pending, {
+        kind: file.type.startsWith("image/") ? "image" : "text",
+        bytes: file.size,
+      });
+      if (tooMany) {
+        pending.push({ kind: "error", name: `${file.name} — ${tooMany}` });
+        continue;
+      }
       try {
         if (file.type.startsWith("image/")) {
           if (file.size > MAX_IMAGE_BYTES) {
@@ -581,6 +642,13 @@
           }
           try {
             const content = await extractDocument(file);
+            // Checked again: a 200 KB .docx can extract to far more text than
+            // its size suggests, and the budget is spent in characters.
+            const tooLong = aggregateRefusal(pending, { kind: "text", content });
+            if (tooLong) {
+              pending.push({ kind: "error", name: `${file.name} — ${tooLong}` });
+              continue;
+            }
             pending.push({ kind: "text", name: file.name, content });
           } catch (e) {
             pending.push({ kind: "error", name: `${file.name} — ${e}` });
@@ -1256,6 +1324,32 @@
       <button class="ghost" onclick={() => onOpenSettings()}>Settings</button>
     </div>
   </header>
+
+  <!-- Chats that could not be written to disk. Deliberately outside the thread
+       and not tied to the open conversation: the failure belongs to whichever
+       chat it happened in, and switching away is exactly when it used to
+       disappear. It stays until a retry succeeds. -->
+  {#if unsavedList.length}
+    <div class="unsaved-bar" role="alert">
+      <div class="unsaved-text">
+        <strong
+          >{unsavedList.length === 1
+            ? "This chat isn't saved."
+            : `${unsavedList.length} chats aren't saved.`}</strong
+        >
+        {unsavedList[0].error}
+        {#if unsavedList.length > 1}
+          <span class="unsaved-list">
+            ({unsavedList.map((u) => u.title).join(", ")})
+          </span>
+        {/if}
+        Your messages are still here — copy anything you need before closing the app.
+      </div>
+      <button class="ghost" onclick={retryUnsaved} disabled={retrying}>
+        {retrying ? "Retrying…" : "Retry save"}
+      </button>
+    </div>
+  {/if}
 
   <!-- One polite announcer for the whole chat. aria-atomic so a changed value
        is read as a whole rather than as a diff against the last one, and

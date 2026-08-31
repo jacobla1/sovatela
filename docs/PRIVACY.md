@@ -1,6 +1,6 @@
 # Privacy policy
 
-Last updated: 2026-08-30 · Applies to: Sovatela v1.6.0
+Last updated: 2026-08-30 · Applies to: Sovatela v1.6.1
 
 > **How this was written, since you are entitled to know.** By the publisher,
 > not by a lawyer. It is written to be accurate about what the software does,
@@ -64,6 +64,7 @@ cases is nothing about you:
 
 | Provider | Receives | When |
 | --- | --- | --- |
+| Scaleway (France) | Your Scaleway key, and nothing else — `GET /models`, asking whether the key still works | **Automatically, once, when the app starts.** This is the connection dot in the corner |
 | Scaleway (France) | Your messages, attached file text, images, and system context | Every message |
 | Your search provider (Linkup / Qwant Staan / your SearXNG) | Search queries the model generates | Only when web search is on |
 | Your image provider (OVHcloud / Black Forest Labs / your endpoint) | Image prompts | Only when you generate an image |
@@ -82,11 +83,25 @@ Each provider processes that data under **its own terms and privacy policy**,
 which you accept when you create an account with them. Links to each provider's
 policy are shown in the app where you enable that provider.
 
-The app makes no other network connections, and none of the three above happens
-on its own: each is a button you press. Nothing runs in the background, nothing
-is reported about you or your machine, and no remote resource is loaded into the
-interface. There is no automatic updater — the version check is a button in
-Settings ▸ About, and it fetches a static file.
+The app makes no other network connections. **One is automatic**, and it is the
+first row of the table: at startup the app asks your Scaleway endpoint whether
+your key still works, which is what the coloured dot beside the model name is
+reporting. It sends your key and nothing else — no message, nothing about you or
+your machine — and it is the only call the app makes on its own. Turning off the
+key removes it; there is no setting that suppresses it while a key is stored.
+
+Everything else waits for you. The three non-provider destinations above are
+each a button you press. Nothing is reported about you or your machine, no
+remote resource is loaded into the interface, and there is no automatic updater
+— the version check is a button in Settings ▸ About, and it fetches a static
+file.
+
+**This paragraph is corrected.** Through 1.6.0 it said that nothing happens on
+its own and that nothing runs in the background. The launch connection check has
+existed since before that was written, and [Security](../SECURITY.md) has
+described it accurately since 1.5.2 while this page did not. A privacy policy
+that is wrong about the one automatic call is worse than one that says nothing,
+so it is stated here first and in the table above.
 
 ## 5. Legal basis and roles
 

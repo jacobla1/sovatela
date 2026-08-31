@@ -10,6 +10,25 @@ GitHub, which the page links to.
 Before you start: verify the checksum. The download page lists a SHA-256 for
 each file — see [Verifying your download](#verifying-your-download).
 
+## How much each platform has been tested
+
+Worth knowing before you download, because it is not the same for all three.
+
+| Platform | Signed | Installed, upgraded and uninstalled on a clean machine |
+| --- | --- | --- |
+| macOS | Yes — Developer ID, notarized, ticket stapled | Yes |
+| Windows | **No** — SmartScreen will warn | **Not yet** |
+| Linux (`.deb`, `.rpm`, AppImage) | **No** | **Not yet** |
+
+The application is built and tested on every platform by the automated suite,
+and the Windows and Linux packages are inspected after they are built — their
+contents, their metadata, and their checksums. What has not happened is someone
+sitting at a clean Windows or Linux machine, installing the package, using the
+app, upgrading it, and removing it again. Until that has been done, treat those
+two as builds you are trying rather than as releases that have been through the
+same checks as the macOS one. If something goes wrong there, please
+[say so](SUPPORT.md) — you will be the first to find it.
+
 ---
 
 ## macOS

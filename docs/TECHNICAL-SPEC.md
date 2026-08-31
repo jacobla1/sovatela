@@ -1,6 +1,6 @@
 # Technical and security specification
 
-Sovatela v1.6.0 · Companion to Product spec ·
+Sovatela v1.6.1 · Companion to Product spec ·
 UX spec · [Security policy](../SECURITY.md)
 
 Fuller engineering rationale is kept internally in `ENGINEERING_NOTES.md`, which
@@ -409,6 +409,10 @@ checkout is a superset and is not part of the repository.
   fix still reaches nobody who does not press it
 - Windows and Linux builds unsigned; macOS CI degrades silently to unsigned if
   the Apple secrets lapse
+- Four findings from the August 2026 external review were accepted rather than
+  fixed — a workspace symlink race, unsigned release metadata, untested
+  Windows/Linux screen readers, and the website's missing response headers.
+  Each is recorded with its trade in § 7.2
 
 ### 7.1 Dependency advisories, triaged
 
@@ -448,3 +452,109 @@ cargo tree -i <crate> --target x86_64-unknown-linux-gnu   # for the GTK stack
 cargo tree -i <crate>                                     # for the rest
 ```
 
+### 7.2 Accepted risks from the August 2026 review
+
+Four findings from the external pre-launch review were not fixed. Each is
+recorded with what it is, what it would take, and why the trade was made — an
+accepted risk that is not written down is indistinguishable from one nobody
+noticed, and these were noticed.
+
+**Workspace confinement has a symlink race.** `workspace.rs` canonicalizes an
+existing ancestor of the target path, and the open/create that follows resolves
+the pathname a second time. Between those two moments another process — or a
+sync client — can replace an ancestor directory with a symlink, and the write
+lands outside the folder the user granted.
+
+*Not fixed.* Closing it properly means holding a directory handle and doing
+every subsequent operation relative to it (`openat` with `O_NOFOLLOW`, or a
+cross-platform capability filesystem), which is a rework of the module rather
+than a patch, and the portable half of it is the part that does not exist yet.
+
+*The trade, corrected.* An earlier version of this entry argued that anything
+able to swap a directory mid-operation could already read the credential store,
+so the race bought an attacker nothing. **That reasoning was wrong**, and the
+reviewer was right to reject it: it holds only when the attacker is the same
+local user. It does not hold when the workspace is a directory another local
+account can write, a folder a sync client rewrites, or a share on a network
+filesystem — and nothing stops a user selecting any of those, because the picker
+accepts any folder. In those cases the race is reachable by someone who cannot
+read the credential store at all.
+
+What is true is narrower: the workspace is opt-in and off by default, every
+write is confirmed natively per write, there is no delete tool, and ordinary
+traversal and symlink cases are tested and refused. It is the race that is open,
+and it is open to a party who may not otherwise have access.
+
+*Therefore:* the interface warns against selecting a workspace that another
+account or a sync client can write, which is the mitigation available without
+the rework. The revisit condition is not "if the workspace is ever shared" —
+that can happen today. It is: before the workspace gains any capability the user
+does not confirm per use, this must be fixed first.
+
+**Release metadata is not independently signed.** `version.json` is fetched
+over HTTPS from `sovatela.eu` and believed. From 1.6.1 the `url` it offers is
+constrained to that same host over HTTPS with no credentials and no port
+(`update::allowed_download_url`), and the body is capped — so a tampered
+manifest can no longer send anyone to an arbitrary address, which was the sharp
+edge. What remains is that a manifest served from a compromised
+`sovatela.eu` could still announce a version that does not exist, or point at a
+path on that host that is not the real download page.
+
+*Not fixed.* Signing release metadata means a key, a place to keep it, a
+verification path in the client, and a rotation story — a project, not a patch,
+and one that is worth little while the binaries it would vouch for are
+themselves unsigned on two of three platforms. *The trade:* an attacker with
+`sovatela.eu` already controls the download page and the published checksums,
+so the manifest is not the weakest thing they hold. Do this together with
+Windows signing and build attestation, not before.
+
+**We cannot vouch for `uv` or LiteLLM.** Terminal access installs two
+third-party tools. From 1.6.1 the app verifies it received exactly the ones it
+chose: `uv` against a SHA-256 hard-coded per platform in the installer — not
+fetched alongside the archive, since a digest served by the host an attacker
+would need to control is not a check — and every Python package against
+`deploy/claude-glm/requirements.lock`, which records content hashes rather than
+version numbers and is installed with `--require-hashes`. Nothing that fails a
+check is unpacked or run.
+
+*Not fixed, because it cannot be.* Verifying delivery is not verifying the
+projects. We have not audited uv or LiteLLM, they are not ours, and they run with
+the user's permissions. *The trade:* this is an optional developer-oriented
+feature behind an explicit opt-in; the native confirmation states this before
+anything is fetched; installation is current-user scope, isolated to the app's own
+directory, and anything overwritten is backed up. The comparison with `npm
+install` is context rather than justification — the justification is opt-in,
+verified content, isolation, and a reversible install.
+
+*Revisit when:* the pinned versions are moved. A lock change is a supply-chain
+decision and must be reviewed as one, not taken as a routine dependency bump.
+
+**Screen readers on Windows and Linux are untested.** NVDA, JAWS and Orca have
+never been run against this application; testing has been macOS VoiceOver only,
+and the application is published for all three platforms. The
+[accessibility statement](https://sovatela.eu/accessibility) says so and does not claim
+otherwise.
+
+*Not fixed, and a decision is outstanding rather than made.* NVDA and Orca are
+both free and both run in a virtual machine, so the honest position is that
+they are achievable and have not been done. JAWS is commercial and is a
+different question. Until someone runs them, the statement stays as it is: the
+gap is the untested platforms, not a wrong claim about them.
+
+**The website carries no response security headers.** `sovatela.eu` is on
+GitHub Pages, which does not let a site set headers. From 1.6.1 both page
+templates carry a strict `Content-Security-Policy` in a meta tag —
+`default-src 'none'`, images from the origin only, inline styles, `base-uri`
+and `form-action` denied — and `<meta name="referrer" content="no-referrer">`,
+so an outbound link to a provider does not carry which page of a privacy tool
+the reader came from.
+
+*Three things markup cannot express remain:* `frame-ancestors` is ignored in a
+meta CSP, and `X-Content-Type-Options: nosniff` and a real `Referrer-Policy`
+header have no meta form at all. *The trade:* the site is static HTML with no
+JavaScript, no forms, no cookies and no external resources — a test asserts
+each of those, because they are what make the remaining gaps small. Fixing them
+properly means moving off Pages, which costs the free bandwidth allowance and
+the push-to-deploy that keeps the published page in version control. Revisit if
+the site ever gains a script or a form; at that point the meta policy is no
+longer sufficient and the hosting question answers itself.

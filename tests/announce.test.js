@@ -52,11 +52,17 @@ describe("streaming is announced once, not per token", () => {
     const calls = [...chat.matchAll(/^\s*announce\((.+)\);$/gm)].map((m) => m[1].trim());
     expect(calls).toEqual([
       'showHistory ? "Chat list shown" : "Chat list hidden"',
+      '`This chat could not be saved. ${String(e?.message ?? e)}`',
+      '"Saved."',
       "msg.data",
       "replyAnnouncement(reply)",
     ]);
     // A status, a finished reply, and a panel appearing — a handful per turn.
     // Nothing announces on a token arriving, which is the whole point.
+    //
+    // The two save announcements are the exception to "a handful per turn"
+    // being the only bar: a chat that did not reach disk is shown in a banner,
+    // and a banner is no use to someone who cannot see it.
     expect(chat).not.toMatch(/announce\([^)]*token/i);
   });
 

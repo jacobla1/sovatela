@@ -57,10 +57,15 @@ any text or code file. The text is extracted on your machine and folded into the
 conversation. Attach an image instead and it routes to a European vision model,
 because GLM-5.2 itself is text-only.
 
-One thing to know about Word and ODT files: the **body** is sent, but headers,
-footers, footnotes and comments are not, and nothing warns you. If a title or
-date you want the model to see lives in the header, save the file as a PDF
-instead — a PDF carries that material as ordinary text on the page.
+One thing to know about Word and ODT files: the body, headers, footers,
+footnotes and endnotes are all sent — the last four after the body, under a
+`[Headers, footers and notes]` label. **Comments and tracked-change deletions
+are not**, and nothing warns you. If a note you want the model to see is a
+comment rather than body text, paste it in or resolve it into the document
+first.
+
+*(Through 1.6.0 this said headers and footers were skipped too. They have been
+read since 1.5.5; this page was not updated with the rest.)*
 
 **Ask for something visual.** *"Chart the population of the Nordic countries"* or
 *"build me a tip calculator"*. It renders live in a panel beside the chat, in a
@@ -99,7 +104,7 @@ move it (a synced folder works, and follows you between machines), switch
 recording off entirely, or delete everything in one step.
 
 **If the text is too small**, **Settings → Appearance → Text size** scales the
-whole interface up to 150%. A desktop app has no address bar to zoom with, and
+whole interface up to 200%, which is what WCAG 1.4.4 asks for. A desktop app has no address bar to zoom with, and
 neither macOS nor Windows passes its own text-size setting through to one, so
 this is the control.
 

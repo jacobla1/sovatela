@@ -12,6 +12,19 @@ name: windows terminal access
 # which is separate code from the app's keyring read, so a working key in the
 # app proves nothing about it.
 #
+# From 1.6.1 this job is also the gate on whether Windows may offer the feature
+# at all. `terminal_access_available()` in src-tauri/src/lib.rs enables macOS and
+# Linux and not Windows, because the Windows launcher had never been run
+# anywhere: Windows containers do not run on macOS, so the Docker check that
+# cleared Linux (deploy/claude-glm/verify-linux-docker.sh) cannot cover it.
+#
+# The security assertions below are what would change that. They are the same
+# ones verify-launcher.sh makes on the other two platforms, and they matter more
+# here, because the Windows launcher is the one that differs in mechanism: it
+# sets the Scaleway key and clears it around a single Start-Process, since
+# Start-Process inherits the parent environment and -Environment needs
+# PowerShell 7.4+ while Windows ships 5.1.
+#
 # What is deliberately NOT covered: a real Scaleway call. That needs a paid key,
 # and the proxy answering /v1/models proves LiteLLM started with our config,
 # which is where this has actually broken before.
@@ -50,11 +63,14 @@ jobs:
         run: |
           $stub = Join-Path $env:USERPROFILE 'claude-stub'
           New-Item -ItemType Directory -Force -Path $stub | Out-Null
-          # Prints a marker and echoes its arguments, so the end-to-end step can
-          # prove the launcher reached it and with what.
+          # Prints a marker, echoes its arguments, and dumps its own environment.
+          # The dump is the point: this stands in for the agent, and the finding
+          # that withdrew this feature was that the agent could read the Scaleway
+          # key out of the environment it was started with.
           @"
           @echo off
           echo CLAUDE-STUB-REACHED args=%*
+          set > "%USERPROFILE%\claude-env.txt"
           "@ | Set-Content -LiteralPath (Join-Path $stub 'claude.cmd') -Encoding ASCII
           "$stub" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
@@ -115,17 +131,55 @@ jobs:
           $cfg = Join-Path $env:USERPROFILE '.claude-glm'
           $bin = Join-Path $env:USERPROFILE 'bin'
           $uvBin = Join-Path $env:USERPROFILE '.local\bin'
+          $venv = Join-Path $cfg 'venv'
 
-          Check "uv installed"          (Test-Path (Join-Path $uvBin 'uv.exe'))        "no uv.exe in $uvBin"
-          Check "litellm installed"     (Test-Path (Join-Path $uvBin 'litellm.exe'))   "no litellm.exe in $uvBin"
-          Check "litellm.yaml written"  (Test-Path (Join-Path $cfg 'litellm.yaml'))    "missing"
-          Check "proxy key written"     (Test-Path (Join-Path $cfg 'proxy-key'))       "missing"
-          Check "launcher written"      (Test-Path (Join-Path $cfg 'claude-glm.ps1'))  "missing"
-          Check "cmd shim written"      (Test-Path (Join-Path $bin 'claude-glm.cmd'))  "missing"
+          # uv lives in the app's own directory now, verified against a
+          # hard-coded checksum. This assertion still looked in the global
+          # ~/.local\bin the old bootstrap used, so it failed on a correct
+          # install and stopped the ownership and end-to-end steps from running.
+          Check "uv installed for this app" (Test-Path (Join-Path $cfg 'uv\uv.exe'))       "no uv.exe in $cfg\uv"
+          Check "uv is NOT installed globally" (-not (Test-Path (Join-Path $uvBin 'uv.exe'))) "the global bootstrap ran"
+          Check "lock is content-pinned"   ((Select-String -LiteralPath (Join-Path $cfg 'requirements.lock') -Pattern '--hash=sha256:' -AllMatches).Matches.Count -gt 1000) "no hashes in the lock"
+          # In the app's own virtual environment, not the global uv tool
+          # directory. `uv tool install --force` used to replace a LiteLLM the
+          # user had installed for other work.
+          Check "litellm in our venv"   (Test-Path (Join-Path $venv 'Scripts\litellm.exe')) "no litellm.exe in $venv"
+          Check "versions pinned"       (Test-Path (Join-Path $cfg 'requirements.lock'))   "no requirements.lock"
+          Check "litellm.yaml written"  (Test-Path (Join-Path $cfg 'litellm.yaml'))        "missing"
+          Check "proxy key written"     (Test-Path (Join-Path $cfg 'proxy-key'))           "missing"
+          Check "launcher written"      (Test-Path (Join-Path $cfg 'claude-glm.ps1'))      "missing"
+          Check "cmd shim written"      (Test-Path (Join-Path $bin 'claude-glm.cmd'))      "missing"
+          # By contents. The app reads this file to decide whether to tell
+          # someone their key was exposed; a source test for the word "layout"
+          # passed on comments alone.
+          $state = $null
+          try { $state = Get-Content -LiteralPath (Join-Path $cfg 'state.json') -Raw | ConvertFrom-Json } catch { }
+          Check "state document written"  ($null -ne $state)                        "state.json missing or unreadable"
+          Check "install marked complete" ($state.install_status -eq 'complete')    "got '$($state.install_status)'"
+          Check "layout version is 2"     ($state.layout_version -eq 2)             "got '$($state.layout_version)'"
+          # A fresh install must not claim an exposure it cannot establish.
+          Check "no false legacy claim"   ($state.legacy_seen -eq $false)           "a fresh install claimed prior exposure"
+
+          # A global litellm the user already had must survive the install.
+          # Guarded: from 1.6.1 there is deliberately no global uv, so invoking
+          # one is a command-not-found that takes the whole step down before the
+          # remaining checks run — which is what happened, and why this job
+          # reported a failure with every check it printed marked ok.
+          if (Test-Path (Join-Path $uvBin 'uv.exe')) {
+            $global = & (Join-Path $uvBin 'uv.exe') tool list 2>$null | Out-String
+            Write-Host "  global uv tools after install: $($global.Trim())"
+          } else {
+            Write-Host "  no global uv — as intended from 1.6.1"
+          }
 
           # The FastAPI pin is the fix for a proxy that could not start at all.
-          $pinned = & (Join-Path $uvBin 'uv.exe') tool run --from 'litellm[proxy]' python -c "import fastapi; print(fastapi.__version__)" 2>$null
-          Write-Host "  fastapi in the litellm tool env: $pinned"
+          $pinned = & (Join-Path $venv 'Scripts\python.exe') -c "import fastapi; print(fastapi.__version__)" 2>$null
+          Write-Host "  fastapi in our venv: $pinned"
+          # Packages, not lines: the lock is ~2,771 lines and 110 packages, and
+          # printing the line count as a package count is the evidence drift this
+          # project has been repeatedly caught by.
+          $pkgs = (Select-String -LiteralPath (Join-Path $cfg 'requirements.lock') -Pattern '^[a-zA-Z0-9_.-]+==' -AllMatches).Matches.Count
+          Write-Host "  packages pinned by content: $pkgs"
 
           # The PATH edit must be persistent — a new terminal reads the registry,
           # not this process.
@@ -157,7 +211,7 @@ jobs:
                   ' print("  locale encoding:", locale.getpreferredencoding(False));' +
                   ' yaml.safe_load(open(p));' +
                   ' print("  parses with a bare open() -- as LiteLLM reads it")'
-          & (Join-Path $env:USERPROFILE '.local\bin\uv.exe') tool run --from 'litellm[proxy]' python -c $code $p
+          & (Join-Path $env:USERPROFILE '.claude-glm\venv\Scripts\python.exe') -c $code $p
           if ($LASTEXITCODE -ne 0) { throw "litellm.yaml does not parse the way LiteLLM parses it" }
 
       - name: Does `claude-glm` resolve in a NEW terminal?
@@ -171,6 +225,72 @@ jobs:
           $resolved = & cmd /c "set PATH=$fresh&& where claude-glm" 2>&1
           Write-Host "where claude-glm -> $resolved"
           if ($LASTEXITCODE -ne 0) { throw "claude-glm does not resolve in a new terminal" }
+
+      - name: The ownership predicate must fail closed
+        shell: pwsh
+        run: |
+          # The hostile-listener step below plants on the obsolete fixed port
+          # 4000, which the launcher never touches — so it proves the launcher
+          # ignores 4000, and nothing about what happens when something claims
+          # the ephemeral port it did pick. Racing a randomly chosen port is not
+          # something a CI job can do reliably, so the decision is a pure
+          # function and is tested here directly, with the inputs that matter.
+          $src = Get-Content (Join-Path $env:USERPROFILE '.claude-glm\claude-glm.ps1') -Raw
+          $fn = [regex]::Match($src, "(?s)function Test-ListenerIsOurs \{.*?\n\}").Value
+          if (-not $fn) { throw "Test-ListenerIsOurs is gone from the installed launcher" }
+          Invoke-Expression $fn
+
+          $cases = @(
+            @{ n = "a listener in our tree is ours";        o = @(42);      u = @(7, 42); want = $true  },
+            @{ n = "no owner found fails closed";           o = @();        u = @(7, 42); want = $false },
+            @{ n = "a null owner fails closed";             o = @($null);   u = @(7, 42); want = $false },
+            @{ n = "a foreign owner is refused";            o = @(99);      u = @(7, 42); want = $false },
+            @{ n = "one foreign among ours is refused";     o = @(42, 99);  u = @(7, 42); want = $false },
+            @{ n = "pids as strings still compare";         o = @("42");    u = @(7, 42); want = $true  }
+          )
+          $fail = 0
+          foreach ($c in $cases) {
+            $got = Test-ListenerIsOurs -Owners $c.o -Ours $c.u
+            if ($got -ne $c.want) { Write-Host "  FAIL  $($c.n)"; $fail++ }
+            else { Write-Host "  PASS  $($c.n)" }
+          }
+
+          # And the ordering: ownership must be established before the readiness
+          # request, which is what carries the bearer token.
+          $body = [regex]::Match($src, "(?s)\$owners = @\(\).*").Value
+          $owned = $body.IndexOf("Test-ListenerIsOurs")
+          $sent  = $body.IndexOf("Test-Proxy")
+          if ($owned -lt 0 -or $sent -lt 0) { throw "the readiness loop no longer looks like itself" }
+          if ($owned -gt $sent) { Write-Host "  FAIL  the token is sent before ownership is checked"; $fail++ }
+          else { Write-Host "  PASS  ownership is checked before the token is sent" }
+
+          if ($fail) { throw "$fail ownership check(s) failed" }
+
+      - name: Plant a hostile listener on the port the old launcher trusted
+        shell: pwsh
+        run: |
+          # Through 1.6.0 the launcher probed a fixed 127.0.0.1:4000 and treated
+          # any authenticated 200 as proof its own proxy was up — handing the
+          # proxy token, and then the session, to whatever had bound the port
+          # first. Loopback is machine-wide, so on a shared computer that is any
+          # other local account. This sits there and records anything it is sent.
+          $log = Join-Path $env:RUNNER_TEMP 'hostile.log'
+          "" | Set-Content -LiteralPath $log
+          $job = Start-Job -ScriptBlock {
+            param($log)
+            $l = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 4000)
+            $l.Start()
+            while ($true) {
+              $c = $l.AcceptTcpClient()
+              Add-Content -LiteralPath $log -Value "contacted"
+              $s = $c.GetStream()
+              $b = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 200 OK`r`nContent-Length: 13`r`n`r`n{""data"":[]}`r`n")
+              $s.Write($b, 0, $b.Length); $s.Flush(); $c.Close()
+            }
+          } -ArgumentList $log
+          "$($job.Id)" | Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'hostile.job')
+          Start-Sleep -Seconds 3
+          Write-Host "hostile listener on 127.0.0.1:4000 (job $($job.Id))"
 
       - name: Drive the launcher end to end
         shell: pwsh
@@ -191,7 +311,12 @@ jobs:
           # actually succeeded. A user in a terminal never pipes it; this
           # deadlock was the harness, not the product.
           $outFile = Join-Path $env:RUNNER_TEMP 'launcher-out.txt'
-          $line = "set PATH=$fresh&& claude-glm --version > ""$outFile"" 2>&1"
+          # A provider secret already in the user's shell, as anyone using
+          # Scaleway's own CLI would have. The launcher has to strip it: a
+          # claude-glm session is a context the launcher created, so handing that
+          # key to an agent is the launcher's problem whoever set it.
+          $line = "set PATH=$fresh&& set SCW_SECRET_KEY=A-KEY-FROM-THE-USERS-OWN-SHELL&& " +
+                  "claude-glm --version > ""$outFile"" 2>&1"
           $proc = Start-Process cmd -ArgumentList '/c', $line -PassThru -NoNewWindow
           if (-not $proc.WaitForExit(180000)) {
             $proc.Kill()
@@ -206,6 +331,59 @@ jobs:
             throw "CredReadW could not read the credential the app writes"
           }
           Write-Host "launcher reached claude with the proxy up"
+
+      - name: The agent must not be able to see any provider secret
+        shell: pwsh
+        run: |
+          # This step is the gate. Everything above proves the installer and the
+          # launcher work; this proves the thing that withdrew the feature is
+          # fixed on Windows too. Only when this passes should `windows` be added
+          # to `terminal_access_available()` in src-tauri/src/lib.rs.
+          $fail = @()
+          function Check($label, $condition, $detail) {
+            if ($condition) { Write-Host "  PASS  $label" }
+            else { Write-Host "  FAIL  $label — $detail"; $script:fail += $label }
+          }
+
+          $envFile = Join-Path $env:USERPROFILE 'claude-env.txt'
+          if (-not (Test-Path $envFile)) { throw "the agent stub never ran — no environment to inspect" }
+          $agent = Get-Content -LiteralPath $envFile -Raw
+
+          # The two keys seeded into Credential Manager, and the one planted in
+          # the shell. None may appear in what the agent was started with.
+          foreach ($secret in @('SCW-CHAT-KEY-FOR-TEST','SCW-TERMINAL-KEY-FOR-TEST','A-KEY-FROM-THE-USERS-OWN-SHELL')) {
+            Check "the agent cannot see $secret" ($agent -notmatch [regex]::Escape($secret)) "found in its environment"
+          }
+          foreach ($name in @('SCW_SECRET_KEY','SCW_ACCESS_KEY','CLAUDE_GLM_PROXY_KEY','BFL_API_KEY','OVH_API_KEY','LINKUP_API_KEY','STAAN_API_KEY','SEARXNG_TOKEN','ANTHROPIC_API_KEY')) {
+            Check "$name is not set for the agent" ($agent -notmatch "(?m)^$name=") "present"
+          }
+
+          # The proxy it was pointed at, and the port it was not.
+          $base = ([regex]::Match($agent, '(?m)^ANTHROPIC_BASE_URL=(.+)$')).Groups[1].Value.Trim()
+          Write-Host "  agent was pointed at: $base"
+          Check "the agent was given a loopback proxy" ($base -match '^http://127\.0\.0\.1:\d+$') "got '$base'"
+          Check "the port is not the fixed one anything could squat" ($base -notmatch ':4000$') "still 4000"
+
+          $log = Join-Path $env:RUNNER_TEMP 'hostile.log'
+          $contacted = (Test-Path $log) -and ((Get-Content -LiteralPath $log -Raw).Trim().Length -gt 0)
+          Check "the listener on :4000 was never contacted" (-not $contacted) "it received a request"
+
+          # The proxy is this session's child, so it goes when the session does.
+          $left = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object { $_.CommandLine -like '*claude-glm*litellm*' }
+          Check "the proxy stopped with the session" (-not $left) "still running: $($left.ProcessId -join ', ')"
+
+          if ($fail.Count) { throw "$($fail.Count) security check(s) failed: $($fail -join ', ')" }
+          Write-Host ""
+          Write-Host "Windows launcher holds the same properties as macOS and Linux."
+          Write-Host "This is the evidence for adding windows to terminal_access_available()."
+
+      - name: Stop the hostile listener
+        if: always()
+        shell: pwsh
+        run: |
+          $f = Join-Path $env:RUNNER_TEMP 'hostile.job'
+          if (Test-Path $f) { Stop-Job -Id (Get-Content $f) -ErrorAction SilentlyContinue }
 
       - name: Proxy logs, whatever happened
         if: always()
@@ -226,7 +404,13 @@ jobs:
           # is part of the path under test.
           $cfg = Join-Path $env:USERPROFILE '.claude-glm'
           $bin = Join-Path $env:USERPROFILE 'bin'
-          Get-Process litellm -ErrorAction SilentlyContinue | Stop-Process -Force
+          # By what it is, not by name: `Stop-Process -Name litellm` stops every
+          # LiteLLM on the machine, which is what UNINSTALL.md tells users not
+          # to do. The uninstall path is under test here too.
+          Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object { $_.CommandLine -like '*claude-glm*litellm*' } |
+            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          Remove-Item -Force (Join-Path $env:USERPROFILE 'claude-env.txt') -ErrorAction SilentlyContinue
           Remove-Item -Recurse -Force $cfg -ErrorAction SilentlyContinue
           Remove-Item -Force (Join-Path $bin 'claude-glm.cmd') -ErrorAction SilentlyContinue
           $userPath = [Environment]::GetEnvironmentVariable('Path','User')

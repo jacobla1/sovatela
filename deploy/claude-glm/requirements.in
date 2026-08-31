@@ -1,0 +1,7 @@
+# What the claude-glm proxy needs. Compiled to requirements.lock with hashes.
+#
+# FastAPI 0.140.0 removed `get_flat_dependant`, which LiteLLM still imports, and
+# LiteLLM declares no upper bound — so an unpinned resolve produces a pair that
+# cannot start.
+litellm[proxy]
+fastapi<0.140

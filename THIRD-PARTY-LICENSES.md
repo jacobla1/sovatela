@@ -25,8 +25,16 @@ font), MPL-2.0-OR-Apache-2.0 (1, DOMPurify — taken under Apache-2.0).
   used here under **MIT/Apache-2.0**, so the LGPL option does not apply.
 - **Unicode-3.0** (Unicode data) and permissive BSD/ISC/Zlib/0BSD terms.
 
-A complete, machine-generated per-package manifest should accompany any formal
-binary release — see "Regenerating the full manifest" at the end.
+A complete, machine-generated per-package manifest accompanies every binary
+release: [`src-tauri/THIRD-PARTY-MANIFEST.md`](src-tauri/THIRD-PARTY-MANIFEST.md),
+which is bundled inside each installer as an application resource and reachable
+from *Settings → About*. Regenerate it with
+`node scripts/gen-third-party-manifest.mjs` — see the end of this document.
+
+*This obligation went unmet from 1.4.0 to 1.6.0: the sentence above said a
+manifest "should accompany" a release, and none did. The macOS, Debian and RPM
+packages built for 1.6.0 carried the binary, a desktop entry and icons, and no
+notices at all.*
 
 ## Primary redistributed components
 
@@ -204,7 +212,22 @@ to this application.
 
 ## Regenerating the full manifest
 
-For a formal binary release, generate an exhaustive per-dependency manifest:
+Run this before tagging a release, and commit the result:
+
+```sh
+node scripts/gen-third-party-manifest.mjs
+```
+
+It writes `src-tauri/THIRD-PARTY-MANIFEST.md` from `cargo metadata` and the
+installed `node_modules` tree — no extra tooling to install, so there is no
+step between deciding to release and having the manifest. The script reports
+any package whose license it could not read; resolve those before tagging.
+
+The file is listed in `tauri.conf.json` under `bundle.resources`, so it is
+inside the `.dmg`, `.deb`, `.rpm`, `.exe`, `.msi` and AppImage rather than only
+in the repository.
+
+For a cross-check against a second implementation:
 
 - **Rust:** `cargo install cargo-about && cargo about generate about.hbs`
   (run in `src-tauri/`)

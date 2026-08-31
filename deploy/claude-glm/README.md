@@ -6,7 +6,7 @@ proxy translates Claude Code's Anthropic-format requests into the OpenAI format
 Scaleway speaks:
 
 ```
-claude-glm  →  LiteLLM (127.0.0.1:4000)  →  https://api.scaleway.ai/v1  →  GLM-5.2
+claude-glm  →  LiteLLM (127.0.0.1, a free port picked per session)  →  https://api.scaleway.ai/v1  →  GLM-5.2
 ```
 
 ## Prerequisite
@@ -72,18 +72,52 @@ claude-glm            # GLM-5.2 via Scaleway
 claude                # unchanged: Anthropic models
 ```
 
-The proxy auto-starts on first use and stays running in the background.
+The proxy starts with the session and stops with it. It is a child of the
+`claude-glm` process, on a port chosen when that session begins — not a
+long-lived service on a fixed port, and there is no PID file.
+
+**What the launcher guarantees.** The Scaleway key is put into the proxy's
+environment and nowhere else: it is never exported into the launcher's own
+environment, so Claude Code and the commands it runs cannot read it. Provider
+secrets already present in your shell are removed before Claude Code starts, for
+the same reason. And the proxy is always this session's own child — a listener
+that is already there is never adopted. `./verify-launcher.sh` checks all of
+that against the launcher this installer embeds, using a stub keychain, a stub
+proxy and a stub agent.
 
 ## Maintenance (macOS/Linux)
 
 ```sh
-tail -f ~/.config/claude-glm/litellm.log        # proxy log
-kill "$(cat ~/.config/claude-glm/litellm.pid)"  # stop the proxy
-uv tool upgrade litellm                          # upgrade the proxy
+tail -f ~/.config/claude-glm/litellm.log   # proxy log
+# Not `uv tool upgrade litellm` — that upgrades a *global* LiteLLM, which from
+# 1.6.1 is not the one this app runs, and may be one you installed for other
+# work. The proxy lives in ~/.config/claude-glm/venv and is pinned by
+# requirements.lock. To move it, change the lock and re-run the installer:
+#     uv pip compile --universal --generate-hashes \
+#       deploy/claude-glm/requirements.in -o deploy/claude-glm/requirements.lock
+#     ./install-claude-glm.sh
 ```
 
-On Windows the config lives in `%USERPROFILE%\.claude-glm\` (`litellm.log`
-there); stop the proxy from Task Manager or `Stop-Process -Name litellm`.
+**Stopping the proxy** is not something you normally do: it exits when the
+session does. If one is left behind by a crash, or by a launcher installed
+before 1.6.1 (which ran a long-lived proxy on port 4000 and recorded a PID),
+stop it by what it is rather than by a recorded number — the number is reused by
+the operating system and a stale one belongs to something else:
+
+```sh
+pkill -f 'claude-glm/venv/bin/litellm' || pkill -f 'claude-glm/litellm.yaml'
+```
+
+On Windows:
+
+```powershell
+Get-CimInstance Win32_Process |
+  Where-Object { $_.CommandLine -like '*claude-glm*litellm*' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId }
+```
+
+Not `Stop-Process -Name litellm`, which stops every LiteLLM on the machine
+including one you run for something else.
 
 ## Caveats
 
@@ -98,5 +132,6 @@ there); stop the proxy from Task Manager or `Stop-Process -Name litellm`.
   context follow the local-proxy → Scaleway path, but Claude Code is an agent
   that runs commands (package installs, git remotes, MCP servers, web fetches),
   and those can reach servers outside Europe. For a hard boundary, use a
-  firewall profile that permits only `127.0.0.1:4000` and `api.scaleway.ai:443`
-  during a GLM session.
+  firewall profile that permits only loopback and `api.scaleway.ai:443` during a
+  GLM session. (The proxy's port is chosen per session, so a rule naming one
+  port no longer applies.)

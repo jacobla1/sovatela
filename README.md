@@ -122,7 +122,7 @@ endpoint for chat; see the Roadmap.
   later wording can't drift; the **Guide** tours what the app can do;
   **Settings** is an accordion for the API key, memory, web search, image
   generation, chat history, appearance, terminal access, and privacy.
-- **Accessibility** — text scaling to 150% (*Settings → Appearance*), because a
+- **Accessibility** — text scaling to 200% (*Settings → Appearance*), because a
   desktop app has no address bar to zoom with, and `prefers-reduced-motion` is
   honoured throughout, including in scripted scrolling that CSS alone can't
   reach. Known gaps are documented rather than glossed.
@@ -303,7 +303,9 @@ Full index: [`docs/README.md`](docs/README.md).
   [Uninstall & data deletion](docs/UNINSTALL.md) · [Support](docs/SUPPORT.md)
 - **Policies** — [Security](SECURITY.md) ·
   [Accessibility](https://sovatela.eu/accessibility) · [Privacy](docs/PRIVACY.md) ·
-  [Terms](docs/TERMS.md) *(the last two are outlines pending legal review)*
+  [Terms](docs/TERMS.md) *(published; written by the publisher, not reviewed by
+  a lawyer — Terms is drafted and **not published**, with qualified review due
+  2026-09-30)*
 - **Product** — Product spec ·
   UX spec · [Technical spec](docs/TECHNICAL-SPEC.md)
 - **Release** — Announcement ·
@@ -324,9 +326,9 @@ Full index: [`docs/README.md`](docs/README.md).
 
 ## Roadmap
 
-- Accessibility: text scaling to 200% (150% today), keyboard shortcuts, focus
-  management, landmark roles, and screen-reader testing — the open items in the
-  [accessibility statement](https://sovatela.eu/accessibility).
+- Accessibility: screen-reader testing on each platform — the open items in the
+  [accessibility statement](https://sovatela.eu/accessibility). Text scaling to 200%,
+  keyboard shortcuts, focus management and landmark roles have shipped.
 - Windows code signing, so SmartScreen stops warning. macOS is signed and
   notarized already.
 - A local/OpenAI-compatible chat endpoint (Ollama, llama.cpp, LM Studio) as an

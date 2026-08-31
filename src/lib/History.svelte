@@ -116,10 +116,20 @@
       <div class="history-group-head" id="hist-group-{slug(label)}">{label}</div>
       <!-- role="list" restores what list-style:none takes away in WebKit,
            which is the engine this app runs on: VoiceOver otherwise stops
-           announcing an unstyled list as a list at all. -->
+           announcing an unstyled list as a list at all.
+
+           role="listitem" is the other half, and it was missing — which is the
+           chat-list failure the accessibility statement records. WebKit drops
+           the implicit listitem role from an <li> that is display:flex, and
+           .history-item is, because a row is a title beside a delete button.
+           So the container announced as a list while its rows announced as
+           nothing: no "3 of 12", no sense of how many chats there were or which
+           one this was, which is the entire reason for marking it up as a list.
+           Restoring the role on the <ul> alone cannot fix that; the roles are
+           dropped by different rules and have to be restored separately. -->
       <ul class="history-group" role="list" aria-labelledby="hist-group-{slug(label)}">
         {#each items as c (c.id)}
-          <li class="history-item {c.id === currentId ? 'active' : ''}">
+          <li role="listitem" class="history-item {c.id === currentId ? 'active' : ''}">
             <button
               class="history-open"
               onclick={() => onSelect?.(c.id)}

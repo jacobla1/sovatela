@@ -1,7 +1,8 @@
 # Terms of use — outline
 
-**Status: outline for legal review. Not yet published.**
-Last updated: 2026-08-11 · Applies to: Sovatela v1.2.0
+**Status: drafted, awaiting qualified legal review. Not yet published.**
+Last updated: 2026-08-30 · Applies to: Sovatela v1.6.1
+**Review due by: 2026-09-30.** See *Review status* below.
 
 > Not legal advice. The MIT `LICENSE` governs the *source code*; these terms
 > govern use of the *distributed application* and the website. Both are needed —
@@ -173,7 +174,11 @@ are used descriptively only.
 
 The optional `claude-glm` integration is unofficial; Anthropic's documentation
 states it does not support routing Claude Code to non-Claude models. Use it at
-your own risk and in accordance with Anthropic's terms.
+your own risk and in accordance with Anthropic's terms. Its launcher has known
+defects in every released version, including 1.6.0 — see the
+[security note](release/SECURITY-NOTE-2026-08-30-claude-glm.md). A launcher
+installed before that rewrite is not repaired by installing a newer version of
+this application, because nothing here updates itself.
 
 ## 11. Updates and changes
 
@@ -207,6 +212,40 @@ country of residence.
 <!-- public:end -->
 
 ---
+
+## Review status
+
+This section exists because this document is the one item in the project's open
+findings that no amount of engineering closes, and therefore the one most likely
+to sit still. It records what is true rather than what is intended.
+
+**Where it stands.** The body above (§1–§14) is drafted, not outlined: it is
+text a reviewer can approve or amend rather than a request for text. Five items
+in the checklist below are open, and two of them — the Digital Content Directive
+question in §8 and the pre-contract information duties — determine whether
+publishing these terms is sufficient or whether more is required.
+
+**The problem this creates now.** Sovatela v1.6.0 is publicly distributed to
+consumers in the EU with **no terms of use published at all**. That is not a
+neutral state while review is pending: it is the state these terms exist to
+correct, and it has held since 1.2.0.
+
+**Owner:** Jacob Bergmann Larsen (`info@anaubi.com`).
+**Review due by: 2026-09-30.**
+
+**If that date passes without a completed review**, the decision to make on that
+day is between two options, and *continuing to publish with nothing* is not one
+of them:
+
+1. Publish §1–§14 as they stand, marked *"not reviewed by a qualified adviser"*,
+   on the grounds that terms a user can read beat terms that do not exist; or
+2. Withdraw the public download until review completes.
+
+Whichever is chosen, record it here with its date, so the next person to open
+this file learns what was decided rather than that nothing happened.
+
+**Not a legal conclusion.** Nothing in this file, including this section, is
+advice. It is a record of an open obligation and a date against it.
 
 ## Reviewer's checklist
 
