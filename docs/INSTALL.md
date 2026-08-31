@@ -88,11 +88,15 @@ know which you need, take the `.exe`.
 2. Run it and follow the prompts.
 3. Launch Sovatela from the Start menu.
 
-**SmartScreen.** Windows code signing is not yet configured for this project, so
-the installer carries no publisher name. Until it does, SmartScreen will show
-*"Windows protected your PC"* and an *Unknown publisher*. Click **More info → Run anyway** only if the checksum
-matches. This warning is expected and will disappear once the build is signed;
-see [`SECURITY.md`](../SECURITY.md).
+**SmartScreen.** The Windows installer is not code-signed, so it carries no
+publisher name and SmartScreen will show *"Windows protected your PC"* and an
+*Unknown publisher*. Click **More info → Run anyway** only if the checksum
+matches.
+
+**This warning will not go away.** Signing is not planned — see
+[`SECURITY.md`](../SECURITY.md) for the reason and for what the checksum does and
+does not prove. Treat the warning as accurate rather than as a formality: it is
+telling you that nobody has vouched for this installer, which is true.
 
 **WebView2.** Sovatela renders its interface with Microsoft Edge WebView2, which
 ships with Windows 10/11. On older or stripped-down installs the app may fail to

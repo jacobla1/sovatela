@@ -230,7 +230,7 @@ every piece, including the tools the installer brought with it.
 | Platform | Status |
 | --- | --- |
 | macOS | **Signed and notarized** with an Apple Developer ID. Verify in **Terminal** (*Applications → Utilities*) with `spctl -a -t exec -vv /Applications/Sovatela.app` — expect *accepted / source=Notarized Developer ID*. |
-| Windows | **Not yet signed.** SmartScreen will warn. Verify the SHA-256 before running the installer. |
+| Windows | **Not signed, and not planned.** SmartScreen will warn. Verify the SHA-256 before running the installer. |
 | Linux | **Not signed.** Verify the SHA-256. |
 
 Checksums are published in two places: on the download page, and as a
@@ -252,7 +252,22 @@ position is that the checksum detects corruption rather than establishing
 authorship. Signing those builds, or signing the checksum list, is the fix;
 both are open.
 
-Windows signing is a known gap and is tracked for a future release.
+**Windows signing is not planned.** This is a decision, not a backlog item, and
+it is recorded here so nobody waits for it: a certificate that would satisfy
+SmartScreen is a recurring cost the publisher is not willing to carry for a free
+application distributed by one individual. If that changes, this page changes
+with it.
+
+So the SmartScreen warning on the Windows installer is permanent, and it is
+accurate: nobody has vouched for the publisher. The checksum is what you have,
+and what it proves is the paragraph above.
+
+**Linux packages are not signed either**, and here the reason is different.
+Signing them costs nothing — a GPG key, no certificate authority — but almost
+nothing checks it: `dpkg -i` does not verify a signature on a standalone `.deb`,
+and an AppImage's signature is verified only if you go looking for it. What
+would carry real weight is a signed package repository or a signed
+`SHA256SUMS.txt`, both of which are free and neither of which is done yet.
 
 **Why we tell you to check rather than trust.** The macOS build degrades to
 *unsigned* rather than failing if the signing certificate expires or its secrets
