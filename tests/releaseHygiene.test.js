@@ -108,13 +108,26 @@ describe("every file that states the version agrees", () => {
     expect(applies).toBe(pkg.version);
   });
 
-  // TERMS.md said "Applies to: Sovatela v1.2.0" while 1.6.0 was publicly
-  // distributed to consumers. Nothing checked it, because the version guards
-  // covered the documents that ship and this one does not.
-  it("the terms of use", () => {
+  // TERMS.md carried a version stamp, and it went stale twice: it read
+  // "Applies to: Sovatela v1.2.0" while 1.6.0 was public, and then
+  // "v1.6.1" while the v1.6.1 tag contained the unpublished draft. The stamp
+  // is written before the tag is cut, so it can only ever describe a release
+  // it has not seen — and a test asserting it matched package.json enforced
+  // the false claim rather than catching it.
+  //
+  // An effective date is the honest form: it speaks forwards only. So this
+  // guard now does the opposite of what it used to — it keeps the version
+  // stamp out.
+  it("the terms of use carry an effective date, not a version", () => {
     const terms = read("docs/TERMS.md");
-    const applies = terms.match(/Applies to: Sovatela v(\S+)/)?.[1];
-    expect(applies).toBe(pkg.version);
+    expect(terms, "TERMS.md has no effective date").toMatch(
+      /^Effective from \d{4}-\d{2}-\d{2}\b/m,
+    );
+    expect(
+      terms,
+      "TERMS.md claims to apply to a version again — the tag for that version " +
+        "cannot contain a page written after it was cut",
+    ).not.toMatch(/Applies to: Sovatela v/);
   });
 
   // This used to assert that TERMS.md carried a review due-date and an owner:
@@ -156,6 +169,50 @@ describe("every file that states the version agrees", () => {
         expect(publicPart, `an exclusion clause is back in TERMS.md: ${clause}`)
           .not.toMatch(clause);
       }
+
+      // Matching the old draft's wording only catches the old draft. §4 kept
+      // allocating the cost of a defect to the user for a full revision after
+      // the exclusions were removed, because it was phrased as a statement of
+      // fact — "charges you did not expect, whether from ... a defect in this
+      // software" — and nothing here was looking for the indicative mood.
+      //
+      // The tell is not the verb, it is a named cause of loss sitting inside a
+      // sentence that says who bears it. So look for the causes.
+      for (const disguised of [/defects? in this software/i,
+                               /caused by (?:a )?(?:defect|bug|fault)/i,
+                               /(?:are|is) between you and (?:that|your) provider/i]) {
+        expect(
+          publicPart,
+          "TERMS.md allocates the cost of a defect to the user again, as a " +
+            `statement of fact rather than as an exclusion: ${disguised}`,
+        ).not.toMatch(disguised);
+      }
+    });
+
+    // §2 promises the page you accepted can be read rather than reconstructed.
+    // Nothing in the repository made that true — so it was a claim of the same
+    // kind as the version stamp it replaced, which is the defect, not the fix.
+    // The release workflow attaches the page at the moment the release is cut.
+    it("is archived beside the release, as §2 says it is", () => {
+      const publicTerms = publicPart;
+      expect(publicTerms, "§2 no longer promises an archived copy").toMatch(
+        /archives the page as it stood/i,
+      );
+
+      const release = read(".github/workflows/release.yml");
+      expect(
+        release,
+        "TERMS.md is no longer attached to the release, so §2 promises a copy " +
+          "that will not exist",
+      ).toMatch(/gh release upload "\$TAG" "\$out"/);
+      expect(release, "the archived name does not carry the version").toMatch(
+        /out="TERMS-\$\{version\}\.md"/,
+      );
+      // The maintainer's tail is not a term. Archiving it would publish an
+      // internal record as though people had agreed to it.
+      expect(release, "the archive no longer stops at the public marker").toContain(
+        "public:end",
+      );
     });
 
     it("keeps the record of what was dropped and why", () => {

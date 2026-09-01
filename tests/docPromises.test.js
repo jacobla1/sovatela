@@ -69,6 +69,105 @@ describe("high-risk promises match the implementation", () => {
     }
   });
 
+  // The test above names three documents. That is why it passed while the
+  // security note said, twice, that Sovatela has "no background network
+  // activity" — a fourth document, and a phrasing neither pattern matched. The
+  // claim had already been corrected in SECURITY.md and PRIVACY.md, so the
+  // published set disagreed with itself about the one automatic call.
+  //
+  // A list of documents cannot guard a claim that can be written anywhere. So
+  // this walks every tracked document and comment instead, and it is deliberate
+  // that it will fire on a file nobody thought to add here.
+  it("no tracked file anywhere denies the launch call", () => {
+    // Assert the behaviour first: if this ever stops being true, the sweep
+    // below is forbidding documents from stating a fact, and must go.
+    expect(chat).toMatch(/^ {2}checkConnection\(\);$/m);
+    expect(rust).toMatch(/async fn check_connection/);
+
+    const tracked = execFileSync("git", ["ls-files", "-z"], { cwd: repo, encoding: "utf8" })
+      .split("\0")
+      .filter((f) => /\.(md|svelte|js|mjs|rs|html)$/.test(f))
+      // The QA capture record and this test describe the false claims by
+      // quoting them; that is their subject matter.
+      .filter((f) => f !== "qa/network-capture/README.md" && f !== "tests/docPromises.test.js");
+
+    // Denials of the automatic call, in any wording that has been used or is
+    // likely to be. "No automatic updater" is true and is not one of these.
+    const denials = [
+      /no background network activity/i,
+      /no background (?:channel|traffic|connections?|calls?)/i,
+      /nothing runs in the background/i,
+      /makes? no (?:network )?calls? (?:on launch|at launch|at startup)/i,
+      /contacts? nothing (?:on its own|by itself)/i,
+      /no (?:network )?activity (?:on|at) (?:launch|startup)/i,
+    ];
+    // A paragraph is allowed to contain the phrase if it is recording that the
+    // phrase was wrong. Deleting the history silently is worth less than this.
+    const isCorrection = /corrected|used to|no longer|earlier (?:draft|revision|version)|withdrawn|through 1\.|was wrong|narrower than/i;
+
+    const offences = [];
+    for (const f of tracked) {
+      if (!existsSync(join(repo, f))) continue; // withheld from the public mirror
+      const text = read(f);
+      for (const paragraph of text.split(/\n\s*\n/)) {
+        if (!denials.some((d) => d.test(paragraph))) continue;
+        if (isCorrection.test(paragraph)) continue;
+        offences.push(`${f}: ${paragraph.trim().slice(0, 120)}`);
+      }
+    }
+    expect(
+      offences,
+      "these state that the app makes no call on its own. It makes one: " +
+        "check_connection runs at launch. Say what is actually true — that " +
+        "nothing reaches an installed copy — or record the correction.",
+    ).toEqual([]);
+  });
+
+  // The accessibility statement, the changelog and the QA record all say the
+  // chat-list change is unverified. The published 1.6.1 release notes said it
+  // "announces its positions to VoiceOver again", flatly. Same release, two
+  // answers, and the flat one is the copy most people read.
+  //
+  // The markup fix is real and tests/landmarks.test.js holds it. What no test
+  // can hold is that a screen reader was pointed at it, so any document making
+  // the claim has to carry the qualification with it.
+  it("no document reports the chat-list fix as confirmed", () => {
+    const accessibility = existsSync(join(repo, "docs/ACCESSIBILITY.md"))
+      ? read("docs/ACCESSIBILITY.md")
+      : null;
+    if (accessibility) {
+      expect(
+        accessibility,
+        "the accessibility statement no longer records the chat list as unverified",
+      ).toMatch(/unverified rather than fixed/i);
+    }
+
+    const tracked = execFileSync("git", ["ls-files", "-z"], { cwd: repo, encoding: "utf8" })
+      .split("\0")
+      .filter((f) => /\.md$/.test(f))
+      .filter((f) => f !== "tests/docPromises.test.js");
+
+    // A claim that the list announces, reads or works under a screen reader.
+    const claim = /chat list[^.]{0,120}(?:announce|reads?|works?)[^.]{0,80}(?:voiceover|screen reader)|(?:voiceover|screen reader)[^.]{0,80}chat list[^.]{0,120}(?:announce|reads?|works?)/i;
+    // What has to be nearby for the claim to be honest.
+    const qualified = /unverified|not (?:yet )?confirmed|no (?:voiceover|screen-reader|screen reader) pass|should announce|untested|never been tested/i;
+
+    const offences = [];
+    for (const f of tracked) {
+      if (!existsSync(join(repo, f))) continue; // withheld from the public mirror
+      for (const paragraph of read(f).split(/\n\s*\n/)) {
+        if (!claim.test(paragraph)) continue;
+        if (qualified.test(paragraph)) continue;
+        offences.push(`${f}: ${paragraph.trim().slice(0, 120)}`);
+      }
+    }
+    expect(
+      offences,
+      "these report the chat-list change as confirmed. The cause was found and " +
+        "the markup changed; no screen reader has been run against it since.",
+    ).toEqual([]);
+  });
+
   it("Quick Start agrees with the extractor about what a Word file gives up", () => {
     // The behaviour: headers, footers and notes are read.
     for (const part of ["word/header", "word/footnotes.xml", "word/endnotes.xml"]) {
@@ -145,6 +244,15 @@ describe("high-risk promises match the implementation", () => {
     // which is what this test is for. The format, the generator and the row
     // agreement below are checked everywhere; only the git relationship is
     // conditional on git being able to see it.
+    //
+    // The same is true, permanently, of the public mirror. The register names a
+    // commit in the private repository; `deploy/publish-source.mjs` regenerates
+    // jacobla1/sovatela as its own history, so that SHA is not in its object
+    // store and never will be. Asserting it exists there made the *published*
+    // source fail its own suite while passing here — which is precisely the
+    // finding the August 2026 audit made about `docs/ACCESSIBILITY.md`, in a
+    // second file. A test that can only pass in the repository it was written
+    // in is not a check on the release; it is a check on the developer's disk.
     let shallow = true;
     try {
       shallow =
@@ -155,15 +263,27 @@ describe("high-risk promises match the implementation", () => {
       shallow = true; // not a git checkout at all
     }
 
-    const full = shallow ? null : exists(named);
-    const head = shallow ? null : exists("HEAD");
-    if (!shallow) {
-      expect(full, `the register names ${named}, which is not a commit here`).toBeTruthy();
+    let isSourceRepo = false;
+    try {
+      isSourceRepo = /jacobla1\/Scale(\.git)?$/.test(
+        execFileSync("git", ["remote", "get-url", "origin"], {
+          cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
+        }).trim(),
+      );
+    } catch {
+      isSourceRepo = false; // no remote: a tarball, or the mirror before its first push
     }
-    if (head && full && full !== head) {
+
+    const canSeeHistory = !shallow && isSourceRepo;
+    const resolved = canSeeHistory ? exists(named) : null;
+    const head = canSeeHistory ? exists("HEAD") : null;
+    if (canSeeHistory) {
+      expect(resolved, `the register names ${named}, which is not a commit here`).toBeTruthy();
+    }
+    if (head && resolved && resolved !== head) {
       let ancestor = false;
       try {
-        execFileSync("git", ["merge-base", "--is-ancestor", full, "HEAD"], { cwd: repo });
+        execFileSync("git", ["merge-base", "--is-ancestor", resolved, "HEAD"], { cwd: repo });
         ancestor = true;
       } catch {
         ancestor = false;

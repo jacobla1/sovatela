@@ -303,9 +303,9 @@ Full index: [`docs/README.md`](docs/README.md).
   [Uninstall & data deletion](docs/UNINSTALL.md) · [Support](docs/SUPPORT.md)
 - **Policies** — [Security](SECURITY.md) ·
   [Accessibility](https://sovatela.eu/accessibility) · [Privacy](docs/PRIVACY.md) ·
-  [Terms](docs/TERMS.md) *(published; written by the publisher, not reviewed by
-  a lawyer — Terms is drafted and **not published**, with qualified review due
-  2026-09-30)*
+  [Terms](docs/TERMS.md) *(published 2026-09-01; written by the publisher, not
+  reviewed by a lawyer — the sections that needed one were removed rather than
+  published unreviewed, and TERMS.md records what was dropped and why)*
 - **Product** — Product spec ·
   UX spec · [Technical spec](docs/TECHNICAL-SPEC.md)
 - **Release** — Announcement ·

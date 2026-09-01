@@ -69,10 +69,11 @@ phase are the feature working. In any other phase they are a real finding.
 against DNS rebinding, and re-checks every redirect hop — see `vetted_ip` in
 `src-tauri/src/lib.rs`.
 
-## What the first run found
+## What the runs found
 
-It was run once, on 1.5.1, and it found a false statement on the security page
-within a minute: that page said nothing is contacted when the app launches, and
+It has been run twice — on 1.5.1 (`results/raw-20260825-231119.tsv`) and on
+1.6.0 (`results/raw-20260830-085901.tsv`). The first run found a false statement
+on the security page within a minute: that page said nothing is contacted when the app launches, and
 the idle phase showed a connection to Scaleway before anything had been
 touched. `check_connection` asks whether your key still works so the connection
 dot can be drawn, and it has always run at startup. The call is defensible —

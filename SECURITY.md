@@ -300,8 +300,10 @@ Stated plainly, because a security page that only lists strengths is not useful:
   documentation states it doesn't support routing Claude Code to non-Claude
   models through any gateway. Its launcher was rewritten after the August 2026
   review, and each platform's launcher is verified by execution — macOS on a
-  machine, Linux in a container, Windows on a CI runner. **None of that is in a
-  released version**; see the
+  machine, Linux in a container, Windows on a CI runner. **That rewrite shipped
+  in 1.6.1, and it does not reach a launcher already installed** — the launcher
+  sits outside the application and is replaced only by running setup again; see
+  the
   [security note](docs/release/SECURITY-NOTE-2026-08-30-claude-glm.md), which records what
   was wrong and what to do if you installed it before that.
 - **Single-item deletions, if the renderer is ever compromised.** Deleting a

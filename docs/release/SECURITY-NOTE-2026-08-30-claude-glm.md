@@ -41,10 +41,19 @@ support a negative claim about exposure. It has been withdrawn.
 
 ## How this notice travels, and who it cannot reach
 
-Sovatela has no automatic updater and no background network activity, by design,
-and that is not being changed to deliver a security notice. *Check for updates*
-is a button you press, it first appeared in **1.5.0**, and it only offers a link
-when a newer version exists.
+Sovatela has no automatic updater and nothing that reaches a copy already
+installed, by design, and that is not being changed to deliver a security
+notice. *Check for updates* is a button you press, it first appeared in
+**1.5.0**, and it only offers a link when a newer version exists.
+
+**This is narrower than "no background network activity", which an earlier
+revision of this page claimed twice.** The app does make one call on its own: at
+launch it asks *your* Scaleway endpoint whether your key still works, which is
+what the coloured dot in the header reports. It carries your key and nothing
+else, it goes to your provider rather than to the publisher, and it is not a
+route to you — nothing comes back that could carry a notice. The claim that
+mattered here is that nothing reaches an installed copy, and that one holds.
+[`SECURITY.md`](../../SECURITY.md) lists every call and when it is made.
 
 | If you are running | Will the application tell you? |
 | --- | --- |
@@ -186,9 +195,9 @@ Those releases stay exactly as published: the feature is enabled, the installer
 runs, and all three defects are present.
 
 **1.6.1 rewrites the launcher — and installing it repairs nothing by itself.**
-Sovatela has no automatic updater and no background channel by design, so a
-launcher already on a machine keeps behaving as described above until you replace
-it by running setup again, or remove it. And a key that was in an agent's
+Sovatela has no automatic updater and nothing that reaches an installed copy by
+design, so a launcher already on a machine keeps behaving as described above
+until you replace it by running setup again, or remove it. And a key that was in an agent's
 environment stays exposed whatever you install afterwards: **rotate it**.
 
 What 1.6.1 does add is that it knows. If it finds a launcher from before 1.6.1,

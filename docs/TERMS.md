@@ -1,6 +1,6 @@
 # Terms of use
 
-Last updated: 2026-09-01 · Applies to: Sovatela v1.6.1
+Effective from 2026-09-01 · Last updated: 2026-09-01
 
 > **How this was written, since you are entitled to know.** By the publisher,
 > not by a lawyer. It is short on purpose. An earlier version ran to fourteen
@@ -22,10 +22,17 @@ that address, and to any authority that asks for it.
 
 ## 2. What you are agreeing to
 
-Installing or using Sovatela means accepting this page as it stood for the
-version you installed. There is no updater, and nothing here reaches a copy
-already on your machine — so a later change to this page cannot alter the terms
-you already have. Each release carries its own.
+Installing or using Sovatela means accepting this page as it stood on the day
+you installed. There is no updater, and nothing here reaches a copy already on
+your machine — so a later change to this page cannot alter the terms you already
+have.
+
+This page took effect on the date above and speaks from then on, not backwards:
+it does not describe what was published with any earlier release. Every release
+published after that date archives the page as it stood when it went out, as a
+file attached to the release, so what you accepted can be read rather than
+reconstructed. For releases before that date, the record is the public
+repository's history.
 
 If you do not accept it, do not install it.
 
@@ -48,9 +55,14 @@ has no control over it and no advance notice of it.
 no paid support. The publisher receives no money from you.
 
 **Your provider bills you directly**, and that is the real cost of using this
-software. Charges you incur are between you and that provider — including
-charges you did not expect, whether from a mistake of your own, a runaway
-request, a defect in this software, or a change in the provider's pricing.
+software. There is no billing relationship with the publisher, who cannot see,
+cap, or refund what a provider charges you — those controls sit with the
+provider, not here.
+
+A bill can come out larger than you expected: a request can run long, a
+provider's prices can change, and software can have defects. What follows from a
+defect is a question for the law that applies to you, and this page does not
+answer it in the publisher's favour — see § 7.
 
 The cost figures shown in the app are **estimates for guidance**, calculated from
 published prices that can go out of date. Your provider's invoice is the
@@ -62,7 +74,9 @@ provider. That control is on their side, not this one.
 ## 5. Your data, and your keys
 
 **Your conversations, files and generated output are yours.** The publisher
-claims no rights over them and receives no copy of them.
+claims no rights over them and receives no copy of them. Ownership of model
+output as between you and your provider is governed by that provider's terms;
+it is not something this page is in a position to settle.
 
 **They live on your device, and backing them up is yours to do.** Conversations,
 projects and remembered facts are files on your computer. There is no server
@@ -144,9 +158,10 @@ of this application, because nothing here updates itself.
 
 ## 10. Changes to this page
 
-A material change gets a new date above and a note in the release notes. This
-page describes the release named at the top; earlier versions are in the public
-repository's history and are available on request.
+A material change gets a new effective date above and a note in the release
+notes. This page is the version in force from that date. Earlier versions are in
+the public repository's history, are attached to each release published after
+2026-09-01, and are available on request.
 
 ## 11. Governing law
 
@@ -186,8 +201,31 @@ changes, and §4 and §7 change with it.
 Termination went too: there is no account to close and no service to withdraw.
 *"Continued use is acceptance"* had already been removed, correctly — nothing
 reaches an installed copy, so continued use cannot signal assent to terms the
-user has never seen. §2 keeps the replacement: terms attach per version, at
-install.
+user has never seen.
+
+**Its replacement was wrong in the other direction, and is corrected here.** §2
+said terms attach per version at install, and the header said *Applies to:
+Sovatela v1.6.1*. The v1.6.1 tag contains the fourteen-section draft, under the
+banner *"awaiting qualified legal review. Not yet published."* So this page
+claimed to have governed installs it was not written for — a document asserting
+a state of affairs that did not exist, which is the same defect the review was
+commissioned to find, committed by the document that records removing it. The
+version stamp is gone: an effective date can only speak forwards, and it is the
+second time a version stamp on this page has gone stale (through 1.6.0 it read
+*v1.2.0*). Attaching the page to each release is what makes the per-install
+claim checkable rather than asserted; naming a next version here would have been
+the same mistake a third time, so it does not.
+
+**§4 and §5 were narrowed after a second reading.** §4 said an unexpected charge
+was between the user and the provider *"whether from a mistake of your own, a
+runaway request, a defect in this software, or a change in the provider's
+pricing"* — a liability allocation written in the indicative, which is how it
+survived the removal of the sections that did the same thing in the imperative.
+The facts stay (no billing relationship, no ability to cap or refund); the
+consequence of a defect is left to the law. §5 said generated output is yours
+and stopped there, which overclaims: the earlier draft's *"ownership of AI
+output as between you and your provider is governed by that provider's terms"*
+was the more careful sentence and is restored.
 
 **What remains open.** Whether distributing free software to consumers in the EU
 triggers pre-contract information duties. §1 publishes the identity and contact

@@ -39,7 +39,36 @@ footer corrections:
 | `windows-terminal-access` | success |
 | `npm test` locally | 476 passed |
 
-`linux-terminal-access` at `077d483` covers `install`,
+Re-run again at **`944d9c8`**, the second review round's corrections. This is
+recorded separately rather than by moving the commit above, because for a day
+`main` sat at `23a114e` with the four workflows evidenced only at `077d483` —
+the register named a commit the head had moved past, and nothing had run against
+what was actually on the branch. Naming both is what stops that being invisible.
+
+| Workflow | At `944d9c8` | At `9acc90a` |
+| --- | --- | --- |
+| `ci` — build + test on ubuntu-22.04, windows-latest, macos-latest | 3/3 success | 3/3 success |
+| `audit` — `npm audit`, `cargo audit`, formatting, clippy | success | success |
+| `linux-terminal-access` | 7/7 success — the same fixtures as below | 7/7 success |
+| `windows-terminal-access` | success | success |
+| `npm test` locally | 481 passed | 481 passed here, **444 in the public mirror** |
+
+`23a114e` itself was never run against and now never will be: it is behind
+`944d9c8`, which contains it. The four workflows are dispatched on `main` at
+the head as part of finishing a round, not left to the next tag.
+
+**The mirror figure is the one that matters, and it was failing.** 444 rather
+than 481 is expected — the withheld documents make some assertions conditional.
+Failing was not: `tests/docPromises.test.js` asserted that the commit the
+register names exists in the local object store, and the mirror is regenerated
+with its own history, so that commit is not there and never will be. The
+published 1.6.1 source did not pass its own suite, which is exactly the August
+2026 audit's finding about `docs/ACCESSIBILITY.md`, in a second file, found here
+only because the suite was run in the mirror instead of assumed to match. It is
+now run there as a step, and the figure is recorded above so a regression has
+somewhere to show up.
+
+`linux-terminal-access` at `077d483` and at `944d9c8` covers `install`,
 `refuses-without-python`, and the five `upgrade-classification` fixtures that
 exist because the previous lineage detection was wrong:
 
@@ -53,7 +82,8 @@ exist because the previous lineage detection was wrong:
 
 **Not run locally: `cargo test`.** It rebuilt `target/` and took the machine to
 203 MB free, which is how the disk filled twice during this work. The Rust suite
-is covered by `release.yml`'s `tests` job at the tag and by `ci` at `077d483`;
+is covered by `release.yml`'s `tests` job at the tag and by `ci` at `077d483`
+and `944d9c8`;
 CI is the record, and a local re-run adds nothing but risk. Noted so the gap is
 deliberate rather than mistaken for an omission.
 
@@ -112,6 +142,37 @@ application rather than of the `claude-glm` integration. Both narrowed.
 Neither required a new binary: nothing in the bundle changed. `tauri.conf.json`
 ships only `THIRD-PARTY-MANIFEST.md` and `THIRD-PARTY-LICENSES.md`.
 
+### A second review round, 2026-09-01
+
+Six more claims, all documentation, none requiring a binary. Four were false and
+two were drift. What they have in common is that three of them had a test
+already, and the test was scoped to the place the claim had last been found.
+
+| What was wrong | Where | Why the existing guard missed it |
+| --- | --- | --- |
+| "No automatic updater and **no background network activity**" — the app makes one automatic call, `check_connection` at launch | security note, twice, and the site page built from it | `docPromises` checked three named documents for two named phrasings. This was a fourth document and a fifth phrasing |
+| §4 allocated the cost of "a defect in this software" to the user | `TERMS.md` | The exclusion guard matched the removed draft's wording. This one was in the indicative, so it read as a fact |
+| "Applies to: Sovatela v1.6.1" — the v1.6.1 tag holds the unpublished draft | `TERMS.md` | The guard asserted the stamp matched `package.json`, which enforced the claim instead of checking it |
+| "Generated output is yours", without the provider clause the earlier draft had | `TERMS.md` | Nothing guarded it |
+| The chat-list fix reported as confirmed | published GitHub release notes for 1.6.1 | Nothing reads the published release body |
+| 598 crates where the generator computes 608; "run once" where `results/` holds two; terms held open in two READMEs; "no released version" for a rewrite that shipped in 1.6.1; "Release date: unreleased" | `THIRD-PARTY-LICENSES.md`, `qa/network-capture/README.md`, `README.md`, `docs/README.md`, `SECURITY.md`, `RELEASE-NOTES.md` | Drift. The package-count guard covers the `claude-glm` lock only |
+
+Each is now guarded by a sweep over every tracked file rather than a list of
+filenames, because the failure was never the claim — it was the assumption that
+a claim stays where it was last seen.
+
+**The terms are attached to each release from now on.** §2 tells people the page
+they accepted can be read rather than reconstructed; nothing made that true, so
+it was a promise of the same kind as the version stamp it replaced.
+`release.yml` now uploads the public part of `TERMS.md` as `TERMS-<version>.md`
+in `verify-release-assets`, and a test fails if that step goes away. Not
+exercised yet — the next release is its first run, and it is listed as a gap
+below.
+
+**The published 1.6.1 release notes were edited separately**, by hand: the
+corrected paragraph is the only change, and the release body is not generated
+from anything in this repository.
+
 ## Known gaps, carried forward
 
 | | Status |
@@ -122,3 +183,5 @@ ships only `THIRD-PARTY-MANIFEST.md` and `THIRD-PARTY-LICENSES.md`.
 | Build provenance tying an installer to a commit | open; attestations need Enterprise Cloud for a private repository |
 | Signed `SHA256SUMS.txt` | open, free, not done |
 | The update-check click on a real 1.6.0 install | not run — needs a person |
+| The terms-archive step in `release.yml` | **written, not yet run** — its first run is the next release |
+| The site rebuild carrying the corrected security note | not done — needs the published artifacts, so it goes with the next site build |

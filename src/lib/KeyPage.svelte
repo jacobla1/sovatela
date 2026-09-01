@@ -38,8 +38,10 @@
     .then((v) => (appVersion = v))
     .catch(() => {});
 
-  // Update check. Manual only — nothing here runs unless the button is pressed,
-  // so the app still makes no call on launch. `updateState` is one of:
+  // Update check. Manual only — nothing here runs unless the button is pressed.
+  // That is a fact about this panel and not about the application: Chat.svelte
+  // invokes check_connection as it initialises, and that one is automatic.
+  // `updateState` is one of:
   // "" (untouched) | "checking" | "current" | "available" | "failed".
   let updateState = $state("");
   let updateLatest = $state("");

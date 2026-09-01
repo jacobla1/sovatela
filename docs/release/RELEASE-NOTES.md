@@ -1,6 +1,6 @@
 # Release notes — Sovatela 1.6.1
 
-Release date: unreleased · [All releases](https://github.com/jacobla1/sovatela/releases)
+Release date: 2026-09-01 · [All releases](https://github.com/jacobla1/sovatela/releases)
 
 A safety and correctness release following an external review of 1.6.0.
 
@@ -22,6 +22,15 @@ reinstall the launcher.
 - **A settings file that cannot be read no longer overwrites your settings.**
 - Provider responses, attachments and projects are bounded.
 - Privacy and Quick Start now describe what the app actually does.
+
+**Changed, but not confirmed: the chat list under VoiceOver.** WebKit drops a
+list item's implicit role when the item is laid out with flexbox, which is why
+the chat list read as unstructured text instead of announcing "3 of 12". The
+cause was found and the layout changed in 1.6.1, and a test now holds the markup
+and the flex rule together — but **no screen-reader pass has been run since the
+change**, so treat it as unverified rather than fixed. NVDA, JAWS and Orca have
+never been tested. The [accessibility statement](https://sovatela.eu/accessibility) keeps the
+gap open.
 
 Known limitations and accepted risks: `docs/TECHNICAL-SPEC.md` § 7.
 

@@ -213,6 +213,41 @@ jobs:
     permissions:
       contents: write # a draft release is not visible to a read-only token
     steps:
+      # Needed only by the terms-archive step below; every other step here
+      # talks to the release through `gh` and touches no files.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # docs/TERMS.md § 2 tells people the page they accepted can be read
+      # rather than reconstructed. That is only true if a copy is kept beside
+      # the release it went out with.
+      #
+      # It replaced an "Applies to: Sovatela vX.Y.Z" stamp, which went stale
+      # twice — it read v1.2.0 while 1.6.0 was public, then v1.6.1 while the
+      # v1.6.1 tag still held the unpublished fourteen-section draft. A stamp
+      # written before the tag is cut can only describe a release it has not
+      # seen. An attached file is written at the moment the release is made,
+      # so it cannot disagree with it.
+      #
+      # The public part only: everything after the marker is the maintainer's
+      # record of what was dropped and why, not a term anyone agreed to. It is
+      # in the repository either way.
+      - name: Archive the terms as they stood for this release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          out="TERMS-${version}.md"
+          sed '/<!-- public:end -->/,$d' docs/TERMS.md > "$out"
+          # An empty or truncated file archived as the terms is worse than none.
+          if [ "$(wc -c < "$out")" -lt 2000 ]; then
+            echo "$out is $(wc -c < "$out") bytes — that is not the terms page."
+            exit 1
+          fi
+          gh release upload "$TAG" "$out" --repo "$GITHUB_REPOSITORY" --clobber
+          echo "Archived $out onto $TAG."
+
       # tauri-action always uploads the macOS updater bundle. There is no
       # updater — Settings → About has a manual version check, not a channel
       # that consumes this — so it is a 12 MB file on the download page that

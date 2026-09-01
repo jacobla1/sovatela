@@ -15,7 +15,7 @@ be distributed.
 Apache-2.0/MIT dual (5), BSD-2/3-Clause (4), MIT-0 (1), OFL-1.1 (1, the Inter
 font), MPL-2.0-OR-Apache-2.0 (1, DOMPurify — taken under Apache-2.0).
 
-**Cargo graph — 598 crates:** overwhelmingly `MIT OR Apache-2.0`. Notable:
+**Cargo graph — 608 crates:** overwhelmingly `MIT OR Apache-2.0`. Notable:
 - **MPL-2.0** (5 crates: `cssparser`, `cssparser-macros`, `selectors`,
   `dtoa-short`, `option-ext`), pulled in transitively via the web-view stack.
   MPL-2.0 is *file-level* weak copyleft: because these crates are consumed
