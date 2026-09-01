@@ -228,12 +228,47 @@ fn secrets_entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT_SECRETS).map_err(|e| e.to_string())
 }
 
+/// What the user is told when the consolidated credential item will not parse.
+///
+/// This case used to be `unwrap_or_default()`. A truncated or corrupted item
+/// therefore read as an empty `Secrets` — indistinguishable from a fresh
+/// install — and the next `update_secrets` wrote that empty struct back with a
+/// single field filled in, destroying every other provider key in the store.
+/// The interface showed "no key connected", so the user reasonably typed one
+/// in, and that keystroke was what made the loss permanent.
+///
+/// Failing closed here is what preserves the original bytes: every write goes
+/// through `update_secrets`, which loads before it saves, so an unreadable item
+/// is never overwritten. The item stays in the credential store, and the
+/// message says where it is and what to do with it before touching anything.
+const SECRETS_UNREADABLE: &str = "\
+Sovatela could not read its saved credentials, so it has left them alone rather \
+than replacing them. Nothing has been lost yet.
+
+They are in your operating system's credential store, under the service \
+\"com.anaubi.sovatela\" and the account \"secrets\". Open it with your system's \
+credential manager and copy that value somewhere safe before you enter any key \
+here — saving a key would replace the item you cannot currently read.
+
+If you would rather start over, delete that item in your credential manager and \
+reopen Sovatela. You will be asked for your keys again.";
+
+/// Parse the consolidated credential item.
+///
+/// Split out from `load_secrets` so the failure mode can be tested without a
+/// keychain. Missing fields are `#[serde(default)]` and unknown ones are
+/// ignored, so an item written by an older or newer version still parses — only
+/// genuinely malformed JSON reaches the error.
+fn parse_secrets(json: &str) -> Result<Secrets, String> {
+    serde_json::from_str(json).map_err(|e| format!("{SECRETS_UNREADABLE}\n\n(Details: {e})"))
+}
+
 fn load_secrets() -> Result<Secrets, String> {
     if let Some(s) = SECRETS_CACHE.lock().unwrap().as_ref() {
         return Ok(s.clone());
     }
     let s = match secrets_entry()?.get_password() {
-        Ok(json) => serde_json::from_str(&json).unwrap_or_default(),
+        Ok(json) => parse_secrets(&json)?,
         Err(keyring::Error::NoEntry) => Secrets::default(),
         Err(e) => return Err(e.to_string()),
     };
@@ -254,6 +289,68 @@ fn update_secrets(f: impl FnOnce(&mut Secrets)) -> Result<(), String> {
     let mut s = load_secrets()?;
     f(&mut s);
     save_secrets(&s)
+}
+
+#[cfg(test)]
+mod secrets_parsing {
+    use super::*;
+
+    // The defect: a corrupted item parsed as Secrets::default(), which reads as
+    // a fresh install. The next save then wrote that default back with one
+    // field set, and every other provider key was gone.
+    #[test]
+    fn malformed_json_is_an_error_rather_than_an_empty_store() {
+        for broken in [
+            "",                                 // emptied by a failed write
+            "{\"scaleway_api_key\": \"sk-live", // truncated mid-value
+            "{\"scaleway_api_key\":}",          // structurally invalid
+            "not json at all",
+        ] {
+            let parsed = parse_secrets(broken);
+            assert!(
+                parsed.is_err(),
+                "{broken:?} parsed instead of failing — a save would now overwrite it"
+            );
+        }
+    }
+
+    // Failing closed is only safe if it fails on corruption and nothing else.
+    // An item written by another version must still load, or this turns a
+    // schema change into a lockout.
+    #[test]
+    fn absent_and_unknown_fields_still_parse() {
+        let only_one = parse_secrets(r#"{"scaleway_api_key":"sk-a"}"#)
+            .expect("an item missing later fields must still load");
+        assert_eq!(only_one.scaleway_api_key, "sk-a");
+        assert_eq!(only_one.linkup_key, "");
+
+        let from_the_future = parse_secrets(r#"{"scaleway_api_key":"sk-b","future_key":"x"}"#)
+            .expect("an unknown field must not lock the user out");
+        assert_eq!(from_the_future.scaleway_api_key, "sk-b");
+
+        assert_eq!(
+            parse_secrets("{}")
+                .expect("an empty object is a real empty store")
+                .scaleway_api_key,
+            ""
+        );
+    }
+
+    // The message has to say where the item is and to copy it, because the
+    // user's next instinct is to type the key in again — which is the action
+    // that used to destroy the rest.
+    #[test]
+    fn the_message_says_where_the_item_is_and_not_to_save_over_it() {
+        // `.err()` rather than `.unwrap_err()`: the latter needs `Secrets:
+        // Debug`, and `Secrets` deliberately does not derive it — a Debug on
+        // this struct prints every API key it holds into whatever formatted it.
+        let err = parse_secrets("{oops")
+            .err()
+            .expect("malformed JSON must fail");
+        assert!(err.contains("com.anaubi.sovatela"), "{err}");
+        assert!(err.contains("secrets"), "{err}");
+        assert!(err.contains("copy"), "{err}");
+    }
 }
 
 fn trimmed_nonempty(v: &str) -> Option<String> {

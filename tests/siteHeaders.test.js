@@ -135,3 +135,46 @@ describe("every published page has footer text", () => {
     expect(build).toContain("published with no footer label");
   });
 });
+
+// The live site served three pre-1.6.1 policy pages for a day after the source
+// was corrected — /security, /terms and /security-note-claude-glm — while
+// /privacy and /accessibility were current. Not a build failure: build.mjs
+// produced all of them. The publish step in deploy/web/README.md enumerated
+// four paths to copy, and the page list in build.mjs had grown past it.
+//
+// A list that has to be kept in step with another list is the defect. This
+// asserts the instructions copy the built directory wholesale, so a new page
+// cannot be left behind by omission.
+describe("publishing the site cannot miss a page", () => {
+  const readme = read("deploy/web/README.md");
+  const build = read("deploy/web/build.mjs");
+
+  it("copies all of dist/ rather than naming pages", () => {
+    expect(
+      readme,
+      "the publish step no longer copies the whole of dist/",
+    ).toMatch(/cp -R deploy\/web\/dist\/\.\s+\.\.\/sovatela-web\//);
+  });
+
+  it("names no individual page directory to copy", () => {
+    // Every slug build.mjs renders, taken from the source rather than repeated
+    // here — repeating them would rebuild the coupling this test exists to stop.
+    const slugs = [...build.matchAll(/^\s*\["([a-z0-9-]+)",\s*"docs\//gm)].map((m) => m[1]);
+    expect(slugs.length, "no page slugs found in build.mjs — has PAGES moved?").toBeGreaterThan(2);
+
+    const enumerated = slugs.filter((slug) =>
+      new RegExp(String.raw`cp\s+(-R\s+)?deploy/web/dist/${slug}\b`).test(readme),
+    );
+    expect(
+      enumerated,
+      "the publish step copies named pages again; add a page and it will be forgotten",
+    ).toEqual([]);
+  });
+
+  it("verifies the live pages against what was built", () => {
+    expect(
+      readme,
+      "the publish step no longer diffs the live pages against dist/",
+    ).toMatch(/curl -fsS "https:\/\/sovatela\.eu\/\$p"/);
+  });
+});

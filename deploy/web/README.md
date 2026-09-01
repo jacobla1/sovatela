@@ -87,11 +87,35 @@ node deploy/web/build.mjs /tmp/sovatela-release
 # 6. Publish the pages — commit dist/ into the separate `sovatela-web` repo,
 #    which GitHub Pages serves at sovatela.eu. That repo is the publish
 #    target; do not edit its HTML by hand.
-cp    deploy/web/dist/index.html      ../sovatela-web/
-cp    deploy/web/dist/version.json    ../sovatela-web/   # "Check for updates" reads this
-cp -R deploy/web/dist/accessibility   ../sovatela-web/
-cp -R deploy/web/dist/steps           ../sovatela-web/   # setup-strip cards
-(cd ../sovatela-web && git add -A && git commit && git push)
+#
+#    Copy ALL of dist/, never a list of pages. This step used to name four
+#    paths, and build.mjs kept gaining pages that nobody added here — so
+#    /security, /terms and /security-note-claude-glm served pre-1.6.1 text for a
+#    day after the source was corrected, while /privacy and /accessibility were
+#    current. A partly-updated policy site is worse than a stale one, because
+#    the pages that disagree are the ones a reader is comparing.
+#
+#    `.` copies the contents rather than the directory. Nothing is deleted:
+#    assets/, CNAME and the site repo's own README are not generated and must
+#    survive. Retiring a page is therefore a manual `git rm` in sovatela-web.
+cp -R deploy/web/dist/. ../sovatela-web/
+
+# 6b. Look at what changed before publishing it. Every page the build touched
+#     should appear; a page you expected and do not see is step 6 having gone
+#     wrong again.
+(cd ../sovatela-web && git add -A && git status --short)
+(cd ../sovatela-web && git commit && git push)
+
+# 6c. Prove the live pages are the built pages, not "the ones I meant to copy".
+#     Fetch each back and diff it against dist/. This is the check that would
+#     have caught the stale policy pages the moment they happened.
+for p in "" privacy/ security/ terms/ accessibility/ security-note-claude-glm/; do
+  curl -fsS "https://sovatela.eu/$p" \
+    | diff -q - "deploy/web/dist/${p}index.html" >/dev/null \
+    && echo "  ok   /$p" || echo "  DIFF /$p"
+done
+curl -fsS https://sovatela.eu/version.json | diff -q - deploy/web/dist/version.json \
+  >/dev/null && echo "  ok   /version.json" || echo "  DIFF /version.json"
 
 # 7. Verify from OUTSIDE your own machine. See the warning below.
 ```

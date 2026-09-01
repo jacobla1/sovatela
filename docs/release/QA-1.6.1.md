@@ -45,28 +45,43 @@ recorded separately rather than by moving the commit above, because for a day
 the register named a commit the head had moved past, and nothing had run against
 what was actually on the branch. Naming both is what stops that being invisible.
 
-| Workflow | At `944d9c8` | At `9acc90a` |
-| --- | --- | --- |
-| `ci` — build + test on ubuntu-22.04, windows-latest, macos-latest | 3/3 success | 3/3 success |
-| `audit` — `npm audit`, `cargo audit`, formatting, clippy | success | success |
-| `linux-terminal-access` | 7/7 success — the same fixtures as below | 7/7 success |
-| `windows-terminal-access` | success | success |
-| `npm test` locally | 481 passed | 481 passed here, **444 in the public mirror** |
+| Workflow | At `944d9c8` | At `9acc90a` | At `7d25e1a` |
+| --- | --- | --- | --- |
+| `ci` — build + test on ubuntu-22.04, windows-latest, macos-latest | 3/3 success | 3/3 success | 3/3 success |
+| `audit` — `npm audit`, `cargo audit`, formatting, clippy | success | success | success |
+| `linux-terminal-access` | 7/7 success — the same fixtures as below | 7/7 success | 7/7 success |
+| `windows-terminal-access` | success | success | success |
+| `npm test` locally | 476 passed — **not trustworthy, see below** | **461** passed, and 444 in the public mirror | **464** passed |
 
 `23a114e` itself was never run against and now never will be: it is behind
 `944d9c8`, which contains it. The four workflows are dispatched on `main` at
 the head as part of finishing a round, not left to the next tag.
 
+**461 is a correction, and the way it was wrong is the point.** This table
+first said 481. That figure was real on the maintainer's machine and reproducible
+nowhere else: `tests/docTables.test.js` and `tests/terminalAccess.test.js` walked
+`docs/` with `readdirSync`, which sees files git ignores, and ten working
+documents sit there — one generated test each, in two suites, for exactly twenty
+extra tests. A clean checkout, CI and an external reviewer all got 461. The 476
+recorded against `077d483` was measured the same way on the same machine and is
+therefore inflated by the same mechanism; it is left as written rather than
+quietly adjusted, because the honest record is that nobody knows what a clean
+checkout of that commit reported, and the ignored files leave no history to
+check against. The
+number was quoted as release evidence before anyone noticed, which is the same
+defect as every other entry in this round: a claim that was never checked
+anywhere but where it was written. Both walkers now enumerate tracked files
+(`tests/tracked.js`), so the count no longer depends on whose disk it runs on.
+
 **The mirror figure is the one that matters, and it was failing.** 444 rather
-than 481 is expected — the withheld documents make some assertions conditional.
-Failing was not: `tests/docPromises.test.js` asserted that the commit the
-register names exists in the local object store, and the mirror is regenerated
-with its own history, so that commit is not there and never will be. The
-published 1.6.1 source did not pass its own suite, which is exactly the August
-2026 audit's finding about `docs/ACCESSIBILITY.md`, in a second file, found here
-only because the suite was run in the mirror instead of assumed to match. It is
-now run there as a step, and the figure is recorded above so a regression has
-somewhere to show up.
+than 461 is expected — the withheld documents are absent, and those same
+per-file suites generate fewer tests. Failing was not:
+`tests/docPromises.test.js` asserted that the commit the register names exists
+in the local object store, and the mirror is regenerated with its own history,
+so that commit is not there and never will be. The published 1.6.1 source did
+not pass its own suite, which is exactly the August 2026 audit's finding about
+`docs/ACCESSIBILITY.md`, in a second file, found only because the suite was run
+in the mirror instead of assumed to match.
 
 `linux-terminal-access` at `077d483` and at `944d9c8` covers `install`,
 `refuses-without-python`, and the five `upgrade-classification` fixtures that
@@ -173,6 +188,29 @@ below.
 corrected paragraph is the only change, and the release body is not generated
 from anything in this repository.
 
+### The second review's findings, and what CI caught that a local run could not
+
+`668caa1` corrected five findings from the 2026-09-01 external review: the
+credential store failing open, the site publish step that could omit a page, the
+sovereignty and "everything runs locally" claims, the local-search setup
+instructions, and the test count in this document. Its first CI run **failed**,
+and both failures were in code that cannot be exercised on this machine:
+
+| Failure | Why local runs could not see it |
+| --- | --- |
+| `Secrets doesn't implement Debug` — the new Rust test used `unwrap_err()` | `cargo test` is not run here: it filled this machine's disk twice during 1.6.1, which is recorded above. `Secrets` has no `Debug` on purpose — deriving one prints every API key it holds — so the fix was to change the test, not the struct |
+| `expected 2 to be greater than 10` on windows-latest | `git ls-files` reports forward slashes and `path.join` produces backslashes on Windows. The new tracked-file filter matched almost nothing there, collapsing the file list to two entries. Nothing on macOS or Linux can show this |
+
+Fixed in `7d25e1a`, where all four workflows pass. Recorded because the useful
+part is not that CI works — it is that a change made to improve evidence
+quality shipped two defects that only another platform and another toolchain
+could find, which is the argument for dispatching CI at the head rather than
+trusting a green local run.
+
+**Not verified here:** the keychain fix's behaviour against a genuinely corrupt
+credential item on a real machine. The parser is unit-tested on all three
+platforms; the recovery path a user would walk has not been rehearsed.
+
 ## Known gaps, carried forward
 
 | | Status |
@@ -183,5 +221,8 @@ from anything in this repository.
 | Build provenance tying an installer to a commit | open; attestations need Enterprise Cloud for a private repository |
 | Signed `SHA256SUMS.txt` | open, free, not done |
 | The update-check click on a real 1.6.0 install | not run — needs a person |
+| The credential-store recovery path against a really corrupt keychain item | not rehearsed — the parser is tested, the user's route out is not |
+| The corrected policy pages reaching sovatela.eu | **not done** — the live site still serves the pre-1.6.1 security, terms and security-note pages |
+| The GitHub release notes and the GHSA advisory | **not done** — both still carry claims this repository has corrected |
 | The terms-archive step in `release.yml` | **written, not yet run** — its first run is the next release |
 | The site rebuild carrying the corrected security note | not done — needs the published artifacts, so it goes with the next site build |

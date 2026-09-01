@@ -4,7 +4,11 @@
 
 services:
   searxng:
-    image: searxng/searxng:latest
+    # Pinned. `latest` meant every `docker compose up` could pull a build
+    # nobody here had looked at, on a machine the app sends search queries
+    # to. Bump deliberately: read the release notes, change both this tag
+    # and the digest, and test.
+    image: searxng/searxng:2026.9.1-18af21159@sha256:c7cc75852051bf6254afda6ed1b920dd1677d8efe4ab141bf558f02e582f4371
     container_name: searxng-local
     restart: unless-stopped
     ports:

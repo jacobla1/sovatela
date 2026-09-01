@@ -1,9 +1,14 @@
 # Run web search locally (optional)
 
-Sovatela's web search works out of the box using a **hosted, EU-based search
-server** — no setup needed. This folder is for people who'd rather run search
-**entirely on their own machine**: it starts your own
-[SearXNG](https://searxng.org) locally, and the app queries that instead.
+Web search in Sovatela is **off until you configure a provider**. There is no
+built-in engine and no hosted fallback: *Settings → API keys → Web search* asks
+you to pick one, and each choice needs something from you — a Linkup or Qwant
+Staan API key, the address of a shared server, or the local server this folder
+starts.
+
+This folder is the last of those: it runs your own
+[SearXNG](https://searxng.org) on this machine, so search queries leave your
+computer only as requests to the engines SearXNG itself contacts.
 
 ## One prerequisite: Docker Desktop
 
@@ -26,13 +31,16 @@ its own whenever Docker is running — you don't need to run it again.
 
 ## Point the app at it
 
-In Sovatela: **Manage key → Web search**
+In Sovatela: **Settings → API keys → Web search**, then choose
+**"On this computer — free & private, needs Docker"**.
+
 - **SearXNG base URL:** `http://localhost:8888`
 - **Access token:** leave blank (localhost needs no token)
-- **Save**, then toggle 🌐 on.
+- **Save & test**, then toggle 🌐 on in the composer.
 
-That's it. Leaving the URL blank at any time reverts to the built-in engine, so
-the app always has working search either way.
+Clearing the URL does not fall back to anything — there is nothing to fall back
+to. Search stops working until you set an address again or pick a different
+provider.
 
 ## Handy commands
 

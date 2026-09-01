@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { onlyTracked } from "./tracked.js";
 
 const repo = resolve(import.meta.dirname, "..");
 const read = (f) => readFileSync(join(repo, f), "utf8");
@@ -146,10 +147,16 @@ describe("nothing tells the user to kill a PID it has not identified", () => {
     return out;
   }
 
-  const files = roots.flatMap((r) => {
-    const full = join(repo, r);
-    return statSync(full).isDirectory() ? walk(full) : [full];
-  });
+  // Tracked files only. This asks what the project ships, and an ignored
+  // local draft in docs/ is neither shipped nor the author's problem — see
+  // tests/tracked.js.
+  const files = onlyTracked(
+    repo,
+    roots.flatMap((r) => {
+      const full = join(repo, r);
+      return statSync(full).isDirectory() ? walk(full) : [full];
+    }),
+  );
 
   it("finds files to check", () => {
     expect(files.length).toBeGreaterThan(10);

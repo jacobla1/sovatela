@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { onlyTracked } from "./tracked.js";
 
 // A blank line ends a Markdown table. Removing a row with a naive replace left
 // the blank behind, and the accessibility statement shipped to sovatela.eu as
@@ -21,12 +22,14 @@ function markdownFiles(dir, out = []) {
   return out;
 }
 
-const files = [
+// Tracked files only: docs/ also holds working documents git ignores, and
+// they are not rendered to a public page — see tests/tracked.js.
+const files = onlyTracked(repo, [
   ...markdownFiles(join(repo, "docs")),
   join(repo, "README.md"),
   join(repo, "SECURITY.md"),
   join(repo, "CHANGELOG.md"),
-];
+]);
 
 describe("Markdown tables are not broken by a stray blank line", () => {
   for (const file of files) {
