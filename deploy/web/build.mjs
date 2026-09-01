@@ -102,10 +102,12 @@ const PAGES = [
   // A 404 here on a product whose pitch is data protection was the worse of
   // the two honest options.
   ["privacy", "docs/PRIVACY.md", "Privacy policy", {}],
-  // Still held, and genuinely: six open questions on consumer law, liability
-  // and pre-contract duties, none of which the privacy analysis shares.
-  ["terms", "docs/TERMS.md", "Terms of use",
-    { hold: "TERMS.md: outline for legal review, per its own banner" }],
+  // Published from 1.6.1. It was held while it was a fourteen-section draft
+  // whose riskiest sections existed to limit liability — the parts that needed
+  // a lawyer. Those are gone rather than softened, so what is left describes
+  // the arrangement instead of trying to change it, and holds nothing back
+  // pending a review it no longer needs.
+  ["terms", "docs/TERMS.md", "Terms of use", {}],
   ["security", "SECURITY.md", "Security", {}],
   ["accessibility", "docs/ACCESSIBILITY.md", "Accessibility statement", {}],
   // The terminal-access security note. Published so the banner on the download

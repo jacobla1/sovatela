@@ -78,6 +78,11 @@ ${rows.map((r) => `| \`${r[0]}\` | ${r.slice(1).join(" | ")} |`).join("\n")}
   The advisory is
   [GHSA-jpv9-3mvc-5v5c](https://github.com/jacobla1/sovatela/security/advisories/GHSA-jpv9-3mvc-5v5c),
   CVSS 6.3, with a CVE requested and not yet assigned.
+- **Verification for 1.6.1 is recorded in
+  [\`QA-1.6.1.md\`](QA-1.6.1.md)**, including the checks that were not run and why.
+  The delivery route is verified by \`scripts/verify-update-route.sh\`, which
+  compiles the update comparison out of the **v1.6.0 tag** and runs it against the
+  live manifest rather than reasoning about it.
 - Accepted risks are recorded with their trade in
   [\`TECHNICAL-SPEC.md\` § 7.2](../TECHNICAL-SPEC.md#72-accepted-risks-from-the-august-2026-review).
 `;

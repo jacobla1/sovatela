@@ -117,16 +117,56 @@ describe("every file that states the version agrees", () => {
     expect(applies).toBe(pkg.version);
   });
 
-  // The one open finding no code closes, and therefore the one that rots. The
-  // date is the thing being asserted: a review with no date is a backlog entry.
-  it("the terms carry a review date and an owner", () => {
+  // This used to assert that TERMS.md carried a review due-date and an owner:
+  // the finding no code closes, and therefore the one that rots. It was closed
+  // on 2026-09-01 by a decision rather than by a review — the sections that
+  // needed a lawyer were the ones limiting liability, and they were removed
+  // instead of published unreviewed. So the guard changes shape. It no longer
+  // protects a pending review; it protects the decision from being quietly
+  // reversed.
+  describe("the terms are published, and stay publishable", () => {
     const terms = read("docs/TERMS.md");
-    const due = terms.match(/\*\*Review due by: (\d{4}-\d{2}-\d{2})\.\*\*/)?.[1];
-    expect(due, "TERMS.md no longer states when its review is due").toBeTruthy();
-    expect(terms).toMatch(/\*\*Owner:\*\*/);
-    // And what happens if the date passes is written down, so the decision is
-    // one someone makes rather than one that is made by default.
-    expect(terms).toMatch(/If that date passes/);
+    const build = read("deploy/web/build.mjs");
+    const publicPart = terms.slice(0, terms.indexOf("<!-- public:end -->"));
+
+    it("no longer hangs a pending legal review over a shipped product", () => {
+      // Scoped to what is published. The maintainer tail quotes the banner it
+      // is explaining the removal of, and that is the point of the tail.
+      for (const banner of [/Review due by/i, /awaiting .{0,20}legal review/i,
+                            /^#\s.*\boutline\b/im, /Not yet published/i]) {
+        expect(publicPart, `TERMS.md carries a pending-review banner again: ${banner}`)
+          .not.toMatch(banner);
+      }
+    });
+
+    it("is not held back from the site", () => {
+      const entry = build.match(/\["terms", "docs\/TERMS\.md"[^\]]*\]/s)?.[0];
+      expect(entry, "the terms are no longer in PAGES").toBeTruthy();
+      expect(entry, "the terms are held again — if that is deliberate, say why here")
+        .not.toContain("hold:");
+    });
+
+    it("does not reintroduce an unreviewed liability exclusion", () => {
+      // The removed sections are the ones a consumer is least likely to be
+      // bound by and a lawyer most needed to see. Putting them back is a
+      // decision that has to be made deliberately, not by pasting the old text.
+      for (const clause of [/^#+.*Limitation of liability/im,
+                            /to the fullest extent the law allows/i,
+                            /we are not liable for indirect/i]) {
+        expect(publicPart, `an exclusion clause is back in TERMS.md: ${clause}`)
+          .not.toMatch(clause);
+      }
+    });
+
+    it("keeps the record of what was dropped and why", () => {
+      expect(terms).toContain("Why this document is short");
+      expect(terms).toMatch(/remains open/i);
+    });
+
+    it("sends complaints to the publisher rather than onward", () => {
+      expect(publicPart).toMatch(/\*\*Complaints come here:\*\*/);
+      expect(publicPart).toContain("info@anaubi.com");
+    });
   });
 
   it("the technical specification", () => {

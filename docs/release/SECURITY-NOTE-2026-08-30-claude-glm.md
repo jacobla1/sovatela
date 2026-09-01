@@ -39,6 +39,30 @@ That argument does not hold: download figures cannot distinguish a person from a
 scanner, cannot see who went on to install the terminal integration, and cannot
 support a negative claim about exposure. It has been withdrawn.
 
+## How this notice travels, and who it cannot reach
+
+Sovatela has no automatic updater and no background network activity, by design,
+and that is not being changed to deliver a security notice. *Check for updates*
+is a button you press, it first appeared in **1.5.0**, and it only offers a link
+when a newer version exists.
+
+| If you are running | Will the application tell you? |
+| --- | --- |
+| **1.2.0 – 1.4.0** | **No. There is no route at all.** These builds have no update check. Nothing in the software will ever mention this, however long you use it. |
+| **1.5.0 – 1.6.0** | Only if you press *Check for updates*. 1.6.1 exists, so the button now offers a link, and that link opens this notice. |
+| **1.6.1 or later** | Yes, if this machine ever had an earlier launcher — *Settings → Advanced* says so and repeats the steps below. |
+
+For the first row there is no in-app remedy and no way to manufacture one: those
+copies can be reached only by this page, by the
+[advisory](https://github.com/jacobla1/sovatela/security/advisories/GHSA-jpv9-3mvc-5v5c),
+by the release notes and by the download page. **If you are running 1.2.0 to
+1.4.0 and someone sent you here, that is the mechanism working — it is the only
+one there is.**
+
+That limitation is stated here rather than left to be discovered, because a
+notice that quietly reaches most people reads, to the people it missed, exactly
+like a notice that was never published.
+
 ## If you used terminal access
 
 Three things, in this order.

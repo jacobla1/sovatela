@@ -156,10 +156,10 @@
     "F18",
     "Legal publication unresolved",
     "Present",
-    "Scope corrected, owner and review-by 2026-09-30 recorded with a decision rule",
-    "**Open decision**",
-    "Release-hygiene tests pin the date",
-    "Open"
+    "**Closed by decision 2026-09-01**, not by review: the sections that needed a lawyer were the ones limiting liability, so they were removed rather than published unreviewed. Short terms published at /terms",
+    "Pre-contract information duties for free software remain unanswered — but nothing published depends on the answer, and §1/§4 are facts that stay true either way",
+    "Release-hygiene tests now guard the decision, not a due date",
+    "Yes — recorded as decided, with what was dropped and why"
   ],
   [
     "F19",
