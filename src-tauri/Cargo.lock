@@ -3709,13 +3709,14 @@ dependencies = [
 
 [[package]]
 name = "scale"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "base64 0.22.1",
  "flate2",
  "futures-util",
  "html2text",
  "keyring",
+ "libc",
  "meval",
  "pdf-extract",
  "quick-xml",

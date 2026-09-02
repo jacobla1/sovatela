@@ -1,9 +1,9 @@
 # Changelog
 
-## Unreleased
+## 1.6.2 — 2026-09-02
 
-Six findings from the September 2026 external review. No release carries these
-yet; the version headings below are what shipped.
+Six findings from the September 2026 external review, plus the corrections that
+review found in the previous round's own records.
 
 ### Security
 - **The renderer can no longer hand the operating system a URL.** It held

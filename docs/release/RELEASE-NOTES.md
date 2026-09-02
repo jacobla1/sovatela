@@ -1,3 +1,59 @@
+# Release notes — Sovatela 1.6.2
+
+Release date: 2026-09-02 · [All releases](https://github.com/jacobla1/sovatela/releases)
+
+A hardening release following a second external review. Nothing here changes what
+the app does for you; it changes what it will let a provider, a folder, or a
+compromised interface do to you.
+
+**If you set up terminal access (`claude-glm`) on 1.2.0–1.6.0, the
+[security note](SECURITY-NOTE-2026-08-30-claude-glm.md) still applies**, and
+installing this release does not repair a launcher already on your machine.
+
+## Fixed in 1.6.2
+
+- **A provider can no longer decide how much memory this app uses.** Replies,
+  errors and search results are read against a limit. A stream that never ends a
+  line used to grow until something gave; now it stops, and a reply that hits the
+  ceiling arrives marked as truncated rather than thrown away.
+- **A very long paste becomes an attachment** instead of an error after you press
+  send. Below the limit nothing changes.
+- **A chat too large to reopen is refused before it is saved**, rather than
+  saving once and failing every time afterwards.
+- **Writing into your workspace folder no longer follows a link** at the file
+  itself, so a file swapped for a shortcut between your approval and the write
+  cannot redirect it. Shared and synced folders remain a bad choice — see
+  `docs/TECHNICAL-SPEC.md` § 7.2 for what is still open.
+- **Links open through a check.** The interface can ask for a web address and
+  nothing else; it can no longer hand your computer a `file://` or an
+  application-specific link to open.
+- **A damaged keychain entry no longer looks like a fresh install**, which is how
+  saving one key could wipe the rest.
+
+## New in 1.6.2
+
+- **Be told about new versions without giving anyone your address.** The download
+  page now offers a [release feed](https://sovatela.eu/releases.atom) for any
+  feed reader, and GitHub's *Watch → Releases only*. There is no mailing list and
+  no signup, deliberately: both routes are things you subscribe to at your end,
+  so there is no address here to lose.
+
+## Said more accurately
+
+- **Generated Word, Excel and PowerPoint files** are real files that open without
+  a repair prompt, and they are basic: one sheet, no formulas, no cell
+  formatting, simplified lists and tables.
+- **The chat-list accessibility change is unverified, not fixed.** The published
+  1.6.1 notes said it worked; no screen-reader pass has been run since the
+  change, and the 1.6.1 notes have been corrected.
+- **The app does make one automatic network call** — a connection check at launch
+  against your own Scaleway endpoint. The security note and the advisory said it
+  made none; both have been corrected.
+
+Known limitations and accepted risks: `docs/TECHNICAL-SPEC.md` § 7.
+
+---
+
 # Release notes — Sovatela 1.6.1
 
 Release date: 2026-09-01 · [All releases](https://github.com/jacobla1/sovatela/releases)
