@@ -79,6 +79,23 @@ startup. That second error was found by capturing the app's own traffic
 (`qa/network-capture`), which is the check the end of this page recommends, and
 it was found the first time anyone ran it.
 
+### Opening a link
+
+A link in a reply, or a button in Settings, is opened by asking Rust, which
+accepts **`https` and `http` only** and refuses a URL carrying a username or
+password. The renderer does not hold the opener permission.
+
+Through 1.6.1 it did. Anything running in the renderer could hand the operating
+system a URL of any scheme, and a URL is not only an address: `file://` opens a
+local file in whatever is registered for it, and a custom scheme starts whatever
+program claimed it. That turned a rendering bug into a way to launch something.
+
+**What this does not stop:** a compromised renderer can still open an ordinary
+web address, and an address can carry data in its query string. Narrowing the
+schemes removes the escalation, not the exfiltration; the protections that keep
+the renderer from being compromised in the first place are the CSP, DOMPurify
+and the isolated artifact frame above.
+
 ### Web content is untrusted input
 
 With web search on, the model chooses which page to read, so text on a page or

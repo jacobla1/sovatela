@@ -184,6 +184,39 @@ const VISION_MODEL: &str = "mistral-small-3.2-24b-instruct-2506";
 /// answer uses this; the 8k default is only for short internal calls.
 const MAX_OUTPUT_TOKENS: u32 = 16384;
 
+/// Largest single message the composer may send, in characters.
+///
+/// The textarea had no limit, so a paste was bounded only by what the machine
+/// could allocate — and that text then went into the request, the conversation
+/// file, and every later context assembly. The interface turns an over-long
+/// paste into an attachment, which is the pleasant path; this is the one that
+/// holds when the interface is not the thing calling.
+pub const MAX_MESSAGE_CHARS: usize = 100_000;
+
+/// Largest conversation file this app will write or read.
+///
+/// Conversations grow without limit: every turn is appended and nothing is ever
+/// removed. A file too large to parse is a chat that cannot be opened again,
+/// and the first anyone knew of it was the failure.
+pub const MAX_CONVERSATION_BYTES: usize = 32 * 1024 * 1024;
+
+/// Read a file that a previous run wrote, refusing one that has outgrown `max`.
+///
+/// The length is checked from the directory entry before the bytes are read, so
+/// an oversized file costs a stat rather than the allocation it describes.
+fn read_to_string_capped(path: &std::path::Path, max: usize, what: &str) -> Result<String, String> {
+    let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+    if meta.len() as usize > max {
+        return Err(format!(
+            "{what} is {} MB, larger than the {} MB this app will open. \
+             The file has not been changed.",
+            meta.len() as usize / (1024 * 1024),
+            max / (1024 * 1024)
+        ));
+    }
+    std::fs::read_to_string(path).map_err(|e| e.to_string())
+}
+
 // Keychain coordinates. macOS asks the user's consent per keychain ITEM and
 // per binary identity (which changes on every rebuild of an unsigned app),
 // so all secrets live in ONE consolidated item — one consent prompt per
@@ -594,6 +627,128 @@ async fn validate_key(key: String) -> Result<bool, String> {
 ///   "auth"    — key rejected (401/403)
 ///   "error"   — reachable but returned another error
 ///   "offline" — could not reach Scaleway at all
+/// Schemes the interface may ask the operating system to open.
+///
+/// The renderer held `opener:default`, so anything running in it could hand the
+/// OS any URL — and a URL is not only an address. `file://` opens a local file
+/// in its registered handler, and a custom scheme launches whatever claimed it,
+/// which turns a rendering bug into starting a program. Restricting to http(s)
+/// leaves the exfiltration risk (a compromised renderer can still open a public
+/// address with data in the query) and removes the escalation, which is the
+/// half that does not need a second bug to matter.
+const OPENABLE_SCHEMES: [&str; 2] = ["https", "http"];
+
+/// Longest URL that will be handed to the operating system.
+const MAX_OPEN_URL_BYTES: usize = 8 * 1024;
+
+/// Decide whether a URL from the interface may be opened.
+fn vetted_external_url(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.len() > MAX_OPEN_URL_BYTES {
+        return Err("that link is too long to open".into());
+    }
+    let parsed = reqwest::Url::parse(trimmed).map_err(|_| "that is not a link".to_string())?;
+    if !OPENABLE_SCHEMES.contains(&parsed.scheme()) {
+        return Err(format!(
+            "links like \"{}:\" are not opened from here — only web addresses are.",
+            parsed.scheme()
+        ));
+    }
+    // `is_none_or` is stable since 1.82; this crate's MSRV is 1.77.2. Same
+    // shape as the check in pricing.rs, for the same reason.
+    if !parsed.host_str().is_some_and(|h| !h.is_empty()) {
+        return Err("that link has no site in it".into());
+    }
+    // A URL carrying credentials reads as one address and authenticates as
+    // another; the update check refuses these for the same reason.
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("that link carries a username or password, so it was not opened".into());
+    }
+    Ok(trimmed.to_string())
+}
+
+#[cfg(test)]
+mod external_links {
+    use super::*;
+
+    // The escalation this closes: `opener:default` accepted any scheme, so a
+    // compromised renderer could ask the OS to open a local file in its
+    // handler, or a custom scheme registered by some other installed program.
+    #[test]
+    fn only_web_addresses_are_opened() {
+        for bad in [
+            "file:///etc/passwd",
+            "file://C:/Windows/System32/cmd.exe",
+            "javascript:alert(1)",
+            "data:text/html,<script>fetch('https://evil.example')</script>",
+            "vscode://file/etc/passwd",
+            "smb://198.51.100.4/share",
+            "mailto:someone@example.com",
+        ] {
+            assert!(
+                vetted_external_url(bad).is_err(),
+                "{bad} would have been handed to the operating system"
+            );
+        }
+    }
+
+    // A URL that reads as one site and authenticates as another. The update
+    // check refuses these already; this is the same trick on a different path.
+    #[test]
+    fn credentials_in_a_link_are_refused() {
+        assert!(vetted_external_url("https://sovatela.eu@evil.example/").is_err());
+        assert!(vetted_external_url("https://user:pw@example.com/").is_err());
+    }
+
+    #[test]
+    fn a_link_without_a_site_is_refused() {
+        // Not `https:///nowhere`: the URL spec tolerates extra slashes after a
+        // special scheme, so that parses to the host `nowhere` and opening it
+        // is correct. The assertion was wrong, not the code.
+        assert!(vetted_external_url("https://").is_err());
+        assert!(vetted_external_url("not a link at all").is_err());
+        assert!(vetted_external_url("").is_err());
+    }
+
+    #[test]
+    fn an_absurdly_long_link_is_refused() {
+        let long = format!("https://example.com/{}", "a".repeat(MAX_OPEN_URL_BYTES));
+        assert!(vetted_external_url(&long).is_err());
+    }
+
+    // Ordinary links must still work, or this gets reverted rather than fixed.
+    #[test]
+    fn ordinary_links_still_open() {
+        for good in [
+            "https://console.scaleway.com/",
+            "https://sovatela.eu/security-note-claude-glm",
+            "http://localhost:8888/",
+            "https://example.com/path?q=a+b#frag",
+        ] {
+            assert!(vetted_external_url(good).is_ok(), "{good} was refused");
+        }
+        assert_eq!(
+            vetted_external_url("  https://example.com/  ").unwrap(),
+            "https://example.com/"
+        );
+    }
+}
+
+/// Open a link in the user's browser, after Rust has agreed to it.
+///
+/// The interface can ask; it cannot decide. This is the same shape as the
+/// workspace picker, which moved into Rust after the August 2026 review for the
+/// same reason: a guard the renderer enforces is a guard a compromised renderer
+/// does not have.
+#[tauri::command]
+async fn open_external(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let url = vetted_external_url(&url)?;
+    app.opener()
+        .open_url(url, None::<String>)
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn check_connection() -> Result<String, String> {
     let key = match get_api_key()? {
@@ -1535,7 +1690,7 @@ async fn extract_memories(
     if !resp.status().is_success() {
         return Err(format!("extraction failed ({})", resp.status()));
     }
-    let v: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let v = read_json_capped(resp, "The model's reply").await?;
     if let Some(u) = glm::usage(&v) {
         usage::record_ai(MODEL, u.prompt, u.completion);
     }
@@ -2190,10 +2345,10 @@ async fn bfl_generate(
         .map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
+        let text = read_error_text(resp).await;
         return Err(format!("Black Forest Labs returned {status}: {text}"));
     }
-    let v: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let v = read_json_capped(resp, "The Black Forest Labs reply").await?;
     let polling_url = v["polling_url"]
         .as_str()
         .ok_or("Black Forest Labs: no polling_url in response")?
@@ -2237,9 +2392,7 @@ async fn bfl_generate(
             if !pr.status().is_success() {
                 return Err(format!("poll returned {}", pr.status()));
             }
-            pr.json::<serde_json::Value>()
-                .await
-                .map_err(|e| e.to_string())
+            read_json_capped(pr, "The Black Forest Labs poll reply").await
         };
         let pv = match poll.await {
             Ok(v) => {
@@ -2314,18 +2467,32 @@ fn sniff_image_mime(bytes: &[u8]) -> Option<&'static str> {
 /// configured — neither of which this process should let decide how much of its
 /// memory to take.
 async fn read_capped(resp: reqwest::Response, max: usize, what: &str) -> Result<Vec<u8>, String> {
-    let mut resp = resp;
-    let mut out: Vec<u8> = Vec::new();
-    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
-        if out.len() + chunk.len() > max {
-            return Err(format!(
-                "{what} is larger than {} MB, so it was not loaded.",
-                max / (1024 * 1024)
-            ));
-        }
-        out.extend_from_slice(&chunk);
+    glm::read_body_capped(resp, max, what).await
+}
+
+/// Parse a JSON body that was read against a cap.
+///
+/// `resp.json()` reads to the end of a stream whose length the far end chooses.
+/// Every provider call in this file used it, so any provider — or anything able
+/// to answer as one — decided how much memory this process used. The image
+/// paths were bounded in 1.6.0 and the rest were not.
+async fn read_json_capped(
+    resp: reqwest::Response,
+    what: &str,
+) -> Result<serde_json::Value, String> {
+    let body = read_capped(resp, glm::MAX_RESPONSE_BYTES, what).await?;
+    serde_json::from_slice(&body).map_err(|e| format!("{what} was not valid JSON: {e}"))
+}
+
+/// Read an error body against the same cap and trim it for display.
+///
+/// An error body is chosen by the far end exactly as a success body is, and it
+/// arrives on the path that runs when something is already going wrong.
+async fn read_error_text(resp: reqwest::Response) -> String {
+    match read_capped(resp, glm::MAX_RESPONSE_BYTES, "The error reply").await {
+        Ok(bytes) => glm::clamp_provider_text(&String::from_utf8_lossy(&bytes)),
+        Err(e) => e,
     }
-    Ok(out)
 }
 
 /// Turn bytes a provider returned into a data URL, or refuse them.
@@ -2359,7 +2526,7 @@ async fn ovh_generate(
         .map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
+        let text = read_error_text(resp).await;
         return Err(format!("OVHcloud returned {status}: {text}"));
     }
     // No `Content-Type` default, and no `bytes()`. Through 1.6.0 an absent or
@@ -2399,7 +2566,7 @@ async fn custom_image_generate(s: &AppSettings, prompt: &str) -> Result<String, 
     let resp = req.send().await.map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
+        let text = read_error_text(resp).await;
         return Err(format!("Image endpoint returned {status}: {text}"));
     }
     // `json()` reads to the end of the stream, and how long that is belongs to
@@ -3104,7 +3271,7 @@ async fn shorten_query(client: &reqwest::Client, key: &str, query: &str) -> Stri
         "stream": false
     });
     let rewritten = match post_completion(client, key, &body).await {
-        Ok(r) if r.status().is_success() => match r.json::<serde_json::Value>().await {
+        Ok(r) if r.status().is_success() => match read_json_capped(r, "The rewrite reply").await {
             Ok(v) => {
                 if let Some(u) = glm::usage(&v) {
                     usage::record_ai(MODEL, u.prompt, u.completion);
@@ -3157,10 +3324,10 @@ async fn staan_search(client: &reqwest::Client, key: &str, query: &str) -> Resul
         .map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
+        let text = read_error_text(resp).await;
         return Err(format!("Staan returned {status}: {text}"));
     }
-    let v: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let v = read_json_capped(resp, "The Staan reply").await?;
     let mut out = String::new();
     if let Some(results) = v["web"]["results"].as_array() {
         for (i, r) in results.iter().take(6).enumerate() {
@@ -3216,10 +3383,10 @@ async fn linkup_search(client: &reqwest::Client, key: &str, query: &str) -> Resu
         .map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
+        let text = read_error_text(resp).await;
         return Err(format!("Linkup returned {status}: {text}"));
     }
-    let v: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let v = read_json_capped(resp, "The Linkup reply").await?;
     let mut out = String::new();
     if let Some(results) = v["results"].as_array() {
         let texts = results
@@ -3268,7 +3435,7 @@ async fn searxng_search(base: &str, token: &str, query: &str) -> Result<String, 
     if !resp.status().is_success() {
         return Err(format!("SearXNG returned {}", resp.status()));
     }
-    let v: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let v = read_json_capped(resp, "The SearXNG reply").await?;
     let mut out = String::new();
     if let Some(results) = v["results"].as_array() {
         for (i, r) in results.iter().take(6).enumerate() {
@@ -5296,7 +5463,7 @@ async fn stream_tool_round(
     let resp = post_completion(client, key, body).await?;
     if !resp.status().is_success() {
         let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
+        let text = read_error_text(resp).await;
         let msg = completion_error_message(status, &text);
         let _ = on_event.send(StreamEvent::Error(msg.clone()));
         return Err(msg);
@@ -5674,7 +5841,7 @@ async fn summarize_turns(client: &reqwest::Client, key: &str, transcript: &str) 
         "stream": false
     });
     match post_completion(client, key, &body).await {
-        Ok(r) if r.status().is_success() => match r.json::<serde_json::Value>().await {
+        Ok(r) if r.status().is_success() => match read_json_capped(r, "The summary reply").await {
             Ok(v) => {
                 if let Some(u) = glm::usage(&v) {
                     usage::record_ai(MODEL, u.prompt, u.completion);
@@ -5809,6 +5976,24 @@ async fn send_chat(
         "No Scaleway key yet — add one in Settings → Scaleway API key to start chatting."
             .to_string()
     })?;
+
+    // The composer had no limit, so this bound was whatever the machine could
+    // allocate. The interface turns an over-long paste into an attachment, and
+    // attachments have had their own caps since 1.6.0; this is the check that
+    // holds when the interface is not what called, and it is the last point
+    // before the text reaches a request, a file, and every later context
+    // assembly.
+    if let Some(over) = messages
+        .iter()
+        .map(|m| message_text(m).chars().count())
+        .find(|n| *n > MAX_MESSAGE_CHARS)
+    {
+        return Err(format!(
+            "A message in this chat is {over} characters, over the {MAX_MESSAGE_CHARS} \
+             this app will send. Attach the long part as a file instead — attachments \
+             are read in a separate process and summarised."
+        ));
+    }
 
     let cancel = request_id.as_deref().map(|id| state.flag(id));
     let _cleanup = CancelCleanup(state.inner(), request_id.clone());
@@ -6758,6 +6943,17 @@ async fn save_conversation(
     conversation.app = APP_FORMAT_TAG.to_string();
     conversation.schema = CONV_SCHEMA_VERSION;
     let json = serde_json::to_string(&conversation).map_err(|e| e.to_string())?;
+    // Refuse before writing, not after. A conversation written past the size
+    // this app will open is a chat that saves once and never loads again — the
+    // failure lands on the next person to click it, with no way back.
+    if json.len() > MAX_CONVERSATION_BYTES {
+        return Err(format!(
+            "This chat has grown past {} MB, which is larger than this app will \
+             reopen, so it has not been saved. Start a new chat (＋ New chat) to \
+             keep going — everything already saved is untouched.",
+            MAX_CONVERSATION_BYTES / (1024 * 1024)
+        ));
+    }
     write_atomic(&dir.join(format!("{safe}.json")), &json)?;
     // Keep the sidebar index in step so listing never has to reopen this file.
     upsert_conv_index(
@@ -6813,7 +7009,11 @@ async fn list_conversations(app: tauri::AppHandle) -> Result<Vec<ConversationMet
 
 #[tauri::command]
 async fn load_conversation(app: tauri::AppHandle, id: String) -> Result<Conversation, String> {
-    let s = std::fs::read_to_string(conversation_path(&app, &id)?).map_err(|e| e.to_string())?;
+    let s = read_to_string_capped(
+        &conversation_path(&app, &id)?,
+        MAX_CONVERSATION_BYTES,
+        "This chat",
+    )?;
     let mut c: Conversation = serde_json::from_str(&s).map_err(|e| e.to_string())?;
     // Refuse a file a later version wrote rather than reading it as though it
     // were this format. Opening it would be survivable; *saving* it afterwards
@@ -9088,30 +9288,50 @@ mod tests {
 
     #[test]
     fn provider_bodies_are_read_against_a_cap() {
-        // `bytes()` and `json()` read to the end of a stream whose length the
-        // far end chooses. Every image path reads in bounded chunks instead.
-        let src = lib_source();
-        for f in [
-            "\nasync fn ovh_generate",
-            "\nasync fn custom_image_generate",
-            "\nasync fn fetch_as_data_url",
-        ] {
-            let at = src.find(f).unwrap_or_else(|| panic!("{f} is gone"));
-            let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
-            assert!(
-                body.contains("read_capped") || body.contains("MAX_IMAGE_BYTES"),
-                "{f} reads a provider response without a cap"
-            );
-            // `text()` on an error path is fine — it is the success path that
-            // must not buffer whatever arrives.
-            assert!(
-                !body.contains("resp.bytes().await"),
-                "{f} buffers the whole body again"
-            );
-            assert!(
-                !body.contains("resp.json().await"),
-                "{f} parses an unbounded body again"
-            );
+        // This used to name three image functions. Eleven other provider reads
+        // sat outside it — every search backend, the chat completion, the
+        // rewrite and summary calls — so `resp.json()` and `resp.text()` let
+        // whoever answered the request decide how much memory this process
+        // used. Naming the functions to check was the defect, exactly as
+        // naming the documents to check was elsewhere. So this scans instead.
+        //
+        // The needles are assembled rather than written out, because a test
+        // that greps its own source for a literal it contains always fails.
+        let json_turbofish = [".json::", "<"].concat();
+        let json_call = [".json()", ".await"].concat();
+        let text_call = [".text()", ".await"].concat();
+        let bytes_call = [".bytes()", ".await"].concat();
+        let forbidden = [
+            (json_turbofish.as_str(), "parses an unbounded body"),
+            (json_call.as_str(), "parses an unbounded body"),
+            (text_call.as_str(), "buffers an unbounded body"),
+            (bytes_call.as_str(), "buffers an unbounded body"),
+        ];
+
+        // Everything before the test module. The helpers that *do* the capping
+        // live in there and must be allowed to call the underlying reader.
+        let lib = lib_source();
+        let lib_code = &lib[..lib.find("\nmod tests {").unwrap_or(lib.len())];
+        let glm = include_str!("glm.rs").replace("\r\n", "\n");
+        let glm_code = &glm[..glm.find("\nmod tests {").unwrap_or(glm.len())];
+
+        for (name, code) in [("lib.rs", lib_code), ("glm.rs", glm_code)] {
+            for (needle, what) in forbidden {
+                for (n, line) in code.lines().enumerate() {
+                    // `read_body_capped` is the one place allowed to read a
+                    // response chunk by chunk; it is what everything else uses.
+                    if line.contains("response.chunk()") {
+                        continue;
+                    }
+                    assert!(
+                        !line.contains(needle),
+                        "{name}:{} {what} — route it through read_json_capped, \
+                         read_error_text or read_capped: {}",
+                        n + 1,
+                        line.trim()
+                    );
+                }
+            }
         }
     }
 
@@ -13795,6 +14015,7 @@ pub fn run() {
             delete_api_key,
             validate_key,
             check_connection,
+            open_external,
             get_search_settings,
             set_search_settings,
             test_search,

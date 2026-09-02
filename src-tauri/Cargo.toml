@@ -42,6 +42,12 @@ html2text = "0.13"
 # meval is f64-only, so no silent integer-division truncation (10/3 = 3.33…).
 meval = "0.2"
 
+# O_NOFOLLOW for workspace file operations, so a path validated as inside the
+# chosen folder cannot be swapped for a symlink before it is opened. Already in
+# the dependency graph transitively — naming it here adds no crate to the build.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # Not on Windows: tauri's `test` harness (MockRuntime) links a webview loader
 # that won't start the test binary in headless Windows CI (STATUS_ENTRYPOINT_
 # NOT_FOUND). The send_chat scenario tests that need it are OS-independent and

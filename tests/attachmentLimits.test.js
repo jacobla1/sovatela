@@ -5,6 +5,7 @@ import {
   MAX_TOTAL_IMAGE_BYTES,
   MAX_TOTAL_TEXT_CHARS,
   MAX_IMAGE_BYTES,
+  MAX_MESSAGE_CHARS,
   attachmentTotals,
   aggregateRefusal,
 } from "../src/lib/files.js";
@@ -70,5 +71,34 @@ describe("a message has a budget, not just its files", () => {
     const at = chat.indexOf("const content = await extractDocument(file)");
     expect(at).toBeGreaterThan(-1);
     expect(chat.slice(at, at + 400)).toContain("aggregateRefusal");
+  });
+});
+
+// The composer decides when a paste becomes an attachment by comparing against
+// the size the backend refuses. If the two numbers drift, the composer either
+// converts pastes that would have been fine, or lets through one that is
+// rejected after the user presses send — which is the failure the conversion
+// exists to avoid.
+describe("the composer's message limit is the backend's", () => {
+  const rust = readFileSync("src-tauri/src/lib.rs", "utf8");
+
+  it("matches MAX_MESSAGE_CHARS in Rust", () => {
+    const declared = rust.match(
+      /pub const MAX_MESSAGE_CHARS: usize = ([0-9_]+);/,
+    )?.[1];
+    expect(declared, "MAX_MESSAGE_CHARS is gone from lib.rs").toBeTruthy();
+    expect(Number(declared.replace(/_/g, ""))).toBe(MAX_MESSAGE_CHARS);
+  });
+
+  it("is the number the composer actually compares against", () => {
+    const chat = readFileSync("src/lib/Chat.svelte", "utf8");
+    expect(chat, "the paste handler is gone").toMatch(/function onPaste/);
+    expect(
+      chat,
+      "onPaste no longer compares against the shared limit",
+    ).toMatch(/MAX_MESSAGE_CHARS/);
+    expect(chat, "the textarea no longer has a paste handler").toMatch(
+      /onpaste=\{onPaste\}/,
+    );
   });
 });

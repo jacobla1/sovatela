@@ -1,5 +1,59 @@
 # Changelog
 
+## Unreleased
+
+Six findings from the September 2026 external review. No release carries these
+yet; the version headings below are what shipped.
+
+### Security
+- **The renderer can no longer hand the operating system a URL.** It held
+  `opener:default`, and a URL is not only an address: `file://` opens a local
+  file in its registered handler and a custom scheme starts whatever claimed it,
+  so a rendering bug was a route to launching a program. Links now go through
+  `open_external` in Rust, which takes `https`/`http` without credentials. A
+  compromised renderer can still open a public address, which is exfiltration
+  rather than escalation, and `SECURITY.md` says so.
+- **Writing to the workspace no longer follows a link at the final component.**
+  `safe_join` validates a path and the open resolves it again; between the two
+  the last component could be replaced. The overwrite branch used
+  `std::fs::write`, which follows a symlink — `create_new` was already safe. Both
+  reads and the overwrite now open with `O_NOFOLLOW`, and a test creates the link
+  and asserts the file it pointed at is untouched. An ancestor directory swapped
+  mid-operation is still followed, and Windows checks rather than guarantees;
+  both are stated in TECHNICAL-SPEC § 7.2 rather than implied away.
+- **A corrupt credential item can no longer erase the rest.** Carried over from
+  the previous round and now unit-tested on all three platforms.
+
+### Limits
+- **Provider responses are read against a cap.** `resp.json()` and `resp.text()`
+  read to the end of a stream whose length the far end chooses; every search
+  backend, the chat completion, the rewrite and the summary call used them, so a
+  provider — or anything answering as one — decided this process's memory. The
+  guard that existed named three image functions; it now scans instead.
+- **Streaming is bounded.** `decode_sse` accumulated a line buffer that was only
+  drained on a newline, and reply content with no ceiling. A stream that never
+  sends a newline was an unbounded allocation. Both are capped, and a reply that
+  hits the ceiling is returned as truncated rather than thrown away.
+- **A provider's error body is trimmed before it is shown**, by characters rather
+  than bytes so it cannot split a multi-byte character.
+- **Messages and conversation files have limits.** The composer had none, so a
+  paste was bounded by what the machine could allocate. A conversation is refused
+  before it is written past the size the app will reopen — the failure used to
+  land on whoever clicked it next, with no way back.
+
+### Interface
+- **A paste too long to send becomes an attachment** instead of an error after
+  you press send. Below the limit nothing changes.
+
+### Documentation
+- **Generated Office files say what they are**: real `.docx`/`.xlsx`/`.pptx` that
+  open without a repair prompt, and also basic — one sheet, no formulas, no cell
+  formatting, simplified lists and tables.
+- **Releases can be subscribed to without anyone collecting an address.** The
+  download page offers a static Atom feed and GitHub's *Watch → Releases only*.
+  A mailing list would have meant holding personal data to solve a notification
+  problem, for a project whose claim is that it holds nothing about anyone.
+
 ## 1.6.1 — 2026-09-01
 
 Remediation of an external review of 1.6.0. **A patch release, not a re-cut of

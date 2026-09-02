@@ -90,6 +90,16 @@ reporting. It sends your key and nothing else — no message, nothing about you 
 your machine — and it is the only call the app makes on its own. Turning off the
 key removes it; there is no setting that suppresses it while a key is stored.
 
+**Being told about a new version collects nothing.** There is no mailing list
+and no signup, and that is a deliberate choice rather than an omission: a list
+of subscribers would be personal data held by the publisher, taken on to solve a
+notification problem for a project whose whole claim is that it holds nothing
+about you. Instead the subscription is at your end — a
+[release feed](https://sovatela.eu/releases.atom) your reader fetches, or
+GitHub's *Watch → Releases only*, which GitHub holds and the publisher never
+sees. Neither involves telling anyone here who you are, and the application
+itself does not fetch the feed; your reader does.
+
 Everything else waits for you. The three non-provider destinations above are
 each a button you press. Nothing is reported about you or your machine, no
 remote resource is loaded into the interface, and there is no automatic updater

@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capabilities for the main window",
+  "description": "Capabilities for the main window. `opener:default` was removed after the September 2026 review: it let the renderer hand the operating system any URL, and a URL is not only an address — file:// opens a local file in its registered handler and a custom scheme launches whatever claimed it, so a rendering bug became a way to start a program. Links now go through the `open_external` command in Rust, which accepts http(s) only, without credentials. The plugin stays registered because Rust calls it.",
   "windows": ["main"],
-  "permissions": ["core:default", "opener:default", "dialog:default"]
+  "permissions": ["core:default", "dialog:default"]
 }

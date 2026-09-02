@@ -3,8 +3,7 @@
   import { invoke, Channel } from "@tauri-apps/api/core";
   import { getVersion } from "@tauri-apps/api/app";
   import ScalewayKeySteps from "./ScalewayKeySteps.svelte";
-  import { openUrl } from "@tauri-apps/plugin-opener";
-  import { open as openDialog, ask } from "@tauri-apps/plugin-dialog";
+    import { open as openDialog, ask } from "@tauri-apps/plugin-dialog";
   import {
     fmtCost as fmtCostIn,
     fmtNum,
@@ -735,9 +734,11 @@
     refreshUsage();
   }
 
+  // Rust vets the URL — scheme, credentials and length — before the
+  // operating system sees it. See `open_external` in src-tauri/src/lib.rs.
   async function open(url) {
     try {
-      await openUrl(url);
+      await invoke("open_external", { url });
     } catch (e) {
       console.error("Could not open URL:", e);
     }

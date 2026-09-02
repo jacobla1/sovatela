@@ -19,6 +19,16 @@ export const MAX_TOTAL_IMAGE_BYTES = 8 * MAX_IMAGE_BYTES;
 // ~75k tokens of text, well inside the model's window with room for the reply.
 export const MAX_TOTAL_TEXT_CHARS = 300_000;
 
+// The largest message the backend will send, in characters. Must equal
+// MAX_MESSAGE_CHARS in src-tauri/src/lib.rs — tests/attachmentLimits.test.js
+// checks that it does, because two copies of a limit is one limit and one bug.
+//
+// The composer had no limit at all, so a paste was bounded by what the machine
+// could allocate. Rather than refuse at this size, the composer turns the paste
+// into an attachment: attachments are already budgeted, already summarised, and
+// the work is not lost.
+export const MAX_MESSAGE_CHARS = 100_000;
+
 /// Decoded size of a `data:` URL, without decoding it.
 function dataUrlBytes(url) {
   const comma = url.indexOf(",");

@@ -2,8 +2,7 @@
   import { untrack } from "svelte";
   import { knownProjectId } from "./projects.js";
   import { invoke, Channel } from "@tauri-apps/api/core";
-  import { openUrl } from "@tauri-apps/plugin-opener";
-  import { cleanText, hasVisibleText, parseParts, renderMd } from "./text.js";
+    import { cleanText, hasVisibleText, parseParts, renderMd } from "./text.js";
   import Artifact from "./Artifact.svelte";
   import Icon from "./Icon.svelte";
   import History from "./History.svelte";
@@ -14,6 +13,7 @@
     MAX_IMAGE_BYTES,
     MAX_TEXT_BYTES,
     MAX_DOC_BYTES,
+    MAX_MESSAGE_CHARS,
     aggregateRefusal,
     readAs,
     looksBinary,
@@ -538,8 +538,13 @@
     if (!a) return;
     e.preventDefault();
     const href = a.getAttribute("href") || "";
+    // The scheme test here is a courtesy, not the guard: Rust decides. The
+    // renderer no longer holds `opener:default`, so a compromised one cannot
+    // hand the operating system a `file://` or a custom scheme.
     if (/^https?:\/\//i.test(href)) {
-      openUrl(href).catch((err) => console.error("Could not open URL:", err));
+      invoke("open_external", { url: href }).catch((err) =>
+        console.error("Could not open URL:", err),
+      );
     }
   }
 
@@ -607,6 +612,32 @@
       const near = listEl.scrollHeight - listEl.scrollTop - listEl.clientHeight < 160;
       if (force || near) listEl.scrollTop = listEl.scrollHeight;
     });
+  }
+
+  // A paste large enough to be refused by the backend becomes an attachment
+  // instead of a wall. The threshold is the refusal itself rather than a
+  // smaller "feels long" number: below it nothing changes, so pasting three
+  // hundred lines of code still behaves exactly as it always has, and above it
+  // the alternative was an error after pressing send with the text already
+  // typed.
+  //
+  // Attachments are the right home for it — they are budgeted by
+  // aggregateRefusal, extracted and summarised in the backend, and shown as a
+  // chip the user can remove.
+  function onPaste(e) {
+    const pasted = e.clipboardData?.getData("text/plain") ?? "";
+    if (!pasted) return;
+    const selected = (inputEl?.selectionEnd ?? 0) - (inputEl?.selectionStart ?? 0);
+    if (input.length - selected + pasted.length <= MAX_MESSAGE_CHARS) return;
+
+    e.preventDefault();
+    const name = `Pasted text (${pasted.length.toLocaleString()} characters)`;
+    const tooLong = aggregateRefusal(pending, { kind: "text", content: pasted });
+    if (tooLong) {
+      pending.push({ kind: "error", name: `${name} — ${tooLong}` });
+      return;
+    }
+    pending.push({ kind: "text", name, content: pasted });
   }
 
   async function onFiles(fileList) {
@@ -1533,6 +1564,7 @@
           : "Message GLM-5.2…   (Enter to send · Shift+Enter for newline)"}
         bind:value={input}
         onkeydown={onKeydown}
+        onpaste={onPaste}
         rows="1"
       ></textarea>
       <div class="composer-tools">

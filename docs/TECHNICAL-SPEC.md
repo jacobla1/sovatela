@@ -404,9 +404,13 @@ checkout is a superset and is not part of the repository.
 - `nom v1.2.4` future-incompatibility warning (transitive)
 - 19 `cargo audit` warnings, none of them a vulnerability — triaged in § 7.1
 - No structured logging, so no post-hoc diagnosis
-- No auto-updater. *Settings → About* now has a manual **Check for updates**,
-  so a release is at least discoverable from inside the app, but a security
-  fix still reaches nobody who does not press it
+- No auto-updater. *Settings → About* has a manual **Check for updates**, so a
+  release is discoverable from inside the app, but a security fix still reaches
+  nobody who does not press it. After 1.6.1 the download page also offers a
+  static [release feed](https://sovatela.eu/releases.atom) and GitHub's
+  *Watch → Releases only*, both of which put the subscription on the reader's
+  side — chosen over a mailing list so that notification does not require the
+  publisher to hold anyone's address
 - Windows and Linux builds unsigned; macOS CI degrades silently to unsigned if
   the Apple secrets lapse
 - Four findings from the August 2026 external review were accepted rather than
@@ -465,10 +469,26 @@ the pathname a second time. Between those two moments another process — or a
 sync client — can replace an ancestor directory with a symlink, and the write
 lands outside the folder the user granted.
 
-*Not fixed.* Closing it properly means holding a directory handle and doing
-every subsequent operation relative to it (`openat` with `O_NOFOLLOW`, or a
-cross-platform capability filesystem), which is a rework of the module rather
-than a patch, and the portable half of it is the part that does not exist yet.
+*Partly closed after 1.6.1 — on `main`, not yet in a release — and the
+remainder is still open.* The **final
+component** no longer follows a link: reads and the replacing write open with
+`O_NOFOLLOW` on Unix, so the open itself fails rather than resolving a path that
+was validated a moment earlier. `create_new` was already safe — `O_EXCL` refuses
+an existing path, link included — so the branch that could write through a link
+was the overwrite, and it no longer can. A test creates the link and asserts the
+file it points at is unchanged.
+
+*What remains.* `O_NOFOLLOW` covers the last component only. An **ancestor
+directory** swapped for a link is still followed, and that is the case that
+needs a directory handle with every operation performed relative to it
+(`openat`, or a capability filesystem) — a rework of the module rather than a
+patch. On **Windows** there is no `O_NOFOLLOW`: the check there is
+`symlink_metadata` before the open, which is a look rather than a guarantee, so
+Windows is narrower than Unix and this says so rather than implying parity.
+
+*Therefore the folder advice stands, and is stronger than before.* Do not point
+the workspace at a folder that another account can write to, or that a sync
+client writes into. The common case is closed; the shared-folder case is not.
 
 *The trade, corrected.* An earlier version of this entry argued that anything
 able to swap a directory mid-operation could already read the credential store,

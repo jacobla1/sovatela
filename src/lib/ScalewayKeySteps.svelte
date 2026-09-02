@@ -11,11 +11,13 @@
   // Renders bare <li> elements so the caller supplies the <ol class="setup-steps">
   // and its own final step. The numerals are CSS counters on .setup-step, so
   // they keep counting across the seam without anything being passed in.
-  import { openUrl } from "@tauri-apps/plugin-opener";
+  import { invoke } from "@tauri-apps/api/core";
 
+  // Rust vets the URL — scheme, credentials and length — before the
+  // operating system sees it. See `open_external` in src-tauri/src/lib.rs.
   async function open(url) {
     try {
-      await openUrl(url);
+      await invoke("open_external", { url });
     } catch (e) {
       console.error("Could not open URL:", e);
     }

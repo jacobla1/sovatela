@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 const repo = resolve(import.meta.dirname, "..");
@@ -56,5 +56,51 @@ describe("the window CSP does not allow inline script", () => {
     expect(directive(sec.devCsp, "script-src")).toContain("'unsafe-inline'");
     expect(sec.devCsp).toContain("localhost:1420");
     expect(sec.csp).not.toContain("localhost:1420");
+  });
+});
+
+// The renderer held `opener:default`, which let anything running in it hand the
+// operating system a URL of any scheme — `file://` opens a local file in its
+// registered handler, a custom scheme launches whatever claimed it. That turns
+// a rendering bug into starting a program, which is a different class of
+// problem from the exfiltration risk that remains.
+//
+// Links now go through `open_external`, which is Rust. This asserts the
+// renderer cannot go around it.
+describe("the renderer cannot open a URL by itself", () => {
+  const read = (f) => readFileSync(join(repo, f), "utf8");
+  const capabilities = JSON.parse(read("src-tauri/capabilities/default.json"));
+  const frontendFiles = () =>
+    readdirSync(join(repo, "src/lib"))
+      .filter((f) => /\.(svelte|js)$/.test(f))
+      .map((f) => `src/lib/${f}`)
+      .concat(["src/App.svelte", "src/main.js"])
+      .filter((f) => existsSync(join(repo, f)));
+
+  it("does not grant the opener plugin to the webview", () => {
+    expect(
+      capabilities.permissions,
+      "opener:default is back — the renderer can hand the OS any scheme again",
+    ).not.toContain("opener:default");
+    for (const p of capabilities.permissions) {
+      expect(p, `${p} grants the opener plugin`).not.toMatch(/^opener:/);
+    }
+  });
+
+  it("has no frontend file importing the opener plugin", () => {
+    const offenders = [];
+    for (const f of frontendFiles()) {
+      if (read(f).includes("@tauri-apps/plugin-opener")) offenders.push(f);
+    }
+    expect(
+      offenders,
+      "these call the opener plugin directly instead of invoking open_external",
+    ).toEqual([]);
+  });
+
+  it("routes links through the Rust command", () => {
+    const rust = read("src-tauri/src/lib.rs");
+    expect(rust).toMatch(/async fn open_external/);
+    expect(rust, "the scheme allowlist is gone").toMatch(/OPENABLE_SCHEMES/);
   });
 });

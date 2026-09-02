@@ -178,3 +178,52 @@ describe("publishing the site cannot miss a page", () => {
     ).toMatch(/curl -fsS "https:\/\/sovatela\.eu\/\$p"/);
   });
 });
+
+// F-14: a security fix reaches nobody who does not press "Check for updates".
+// The fix cannot be a mailing list — that would make the publisher a controller
+// of a pile of email addresses to solve a notification problem, for a project
+// whose claim is that it holds nothing about anyone. So the subscription sits
+// on the reader's side: a static Atom file, and GitHub's release watch.
+describe("releases can be subscribed to without collecting anything", () => {
+  const build = read("deploy/web/build.mjs");
+  const index = read("deploy/web/index.html");
+  const notes = read("docs/release/RELEASE-NOTES.md");
+  const pkg = JSON.parse(read("package.json"));
+
+  it("builds a feed", () => {
+    expect(build).toMatch(/releases\.atom/);
+    expect(build, "the feed is no longer written into dist/").toMatch(
+      /writeFileSync\(join\(dist, "releases\.atom"\)/,
+    );
+  });
+
+  // The generator parses the release notes. If that parse stops matching, the
+  // build fails loudly by design — but only if the pattern is actually right,
+  // so it is exercised here against the real file rather than trusted.
+  it("parses every release out of the notes, newest first", () => {
+    const re =
+      /^# Release notes — Sovatela (\d+\.\d+\.\d+)\s*\n\s*\nRelease date: (\d{4}-\d{2}-\d{2})/gm;
+    const found = [...notes.matchAll(re)].map((m) => ({ v: m[1], d: m[2] }));
+    expect(found.length, "no releases parsed out of RELEASE-NOTES.md").toBeGreaterThan(0);
+    expect(found[0].v, "the newest note is not this version").toBe(pkg.version);
+    for (const { d } of found) expect(d).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it("offers the feed and the GitHub watch route on the download page", () => {
+    expect(index).toMatch(/rel="alternate"[^>]*application\/atom\+xml/);
+    expect(index).toMatch(/\/releases\.atom/);
+    expect(index, "the GitHub watch route is gone").toMatch(/Watch/);
+  });
+
+  // The point of the design. If a signup form ever appears here, this fails and
+  // the person adding it has to decide to delete this test.
+  it("collects no address to subscribe", () => {
+    expect(index, "the download page has a form — what does it submit?").not.toMatch(
+      /<form\b/i,
+    );
+    expect(index).not.toMatch(/type="email"/i);
+    expect(index, "the no-signup promise is gone from the page").toMatch(
+      /no mailing list and no signup/i,
+    );
+  });
+});

@@ -9,6 +9,62 @@
 use std::io::Read as _;
 use std::path::{Component, Path, PathBuf};
 
+/// Open a workspace file without traversing a symlink at the final component.
+///
+/// `safe_join` canonicalises and confirms the path is inside the chosen folder,
+/// and then returns. Opening it is a second syscall, and between the two the
+/// last component can be replaced — by another account, by a sync client
+/// restoring a link, by anything with write access to that directory. The write
+/// then lands wherever the link points, having passed a check that was true
+/// when it was made.
+///
+/// `O_NOFOLLOW` closes that window for the final component: the open itself
+/// fails if the path is a symlink, so there is no gap between deciding and
+/// acting. It does **not** protect the intermediate directories — a parent
+/// swapped for a link to elsewhere is still followed — which is why the
+/// residual risk in TECHNICAL-SPEC § 7.2 stays open and why shared, synced and
+/// other-account-writable folders remain a bad choice.
+///
+/// On Windows there is no `O_NOFOLLOW`. The check there is
+/// `symlink_metadata`, which is a look before the open rather than part of it —
+/// narrower than the Unix guarantee, and stated as such rather than implied.
+fn open_no_follow(path: &Path, opts: &mut std::fs::OpenOptions) -> Result<std::fs::File, String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        opts.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        // Not atomic. A link created after this and before the open is missed.
+        if let Ok(meta) = std::fs::symlink_metadata(path) {
+            if meta.file_type().is_symlink() {
+                return Err("that path is a link, and links are not followed here".into());
+            }
+        }
+    }
+    opts.open(path).map_err(|e| {
+        // ELOOP is what O_NOFOLLOW returns for a symlink. Saying "could not
+        // open" there would describe a permissions problem the user would go
+        // looking for and never find.
+        if is_symlink_refusal(&e) {
+            "that path is a link, and links are not followed here".to_string()
+        } else {
+            format!("could not open the file: {e}")
+        }
+    })
+}
+
+#[cfg(unix)]
+fn is_symlink_refusal(e: &std::io::Error) -> bool {
+    e.raw_os_error() == Some(libc::ELOOP)
+}
+
+#[cfg(not(unix))]
+fn is_symlink_refusal(_e: &std::io::Error) -> bool {
+    false
+}
+
 /// Cap on a single file's text, matching the document-upload limits, so a huge
 /// file can't blow the model's context.
 pub const WORKSPACE_MAX_READ_CHARS: usize = 200_000;
@@ -134,7 +190,15 @@ pub fn read_bytes(root: &Path, rel: &str) -> Result<Vec<u8>, String> {
     if meta.len() as usize > WORKSPACE_MAX_WRITE_BYTES {
         return Err("that file is too large to read".into());
     }
-    std::fs::read(&path).map_err(|e| format!("could not read the file: {e}"))
+    let mut file = open_no_follow(&path, std::fs::OpenOptions::new().read(true))?;
+    let mut buf = Vec::new();
+    std::io::Read::take(&mut file, WORKSPACE_MAX_WRITE_BYTES as u64 + 1)
+        .read_to_end(&mut buf)
+        .map_err(|e| format!("could not read the file: {e}"))?;
+    if buf.len() > WORKSPACE_MAX_WRITE_BYTES {
+        return Err("that file is too large to read".into());
+    }
+    Ok(buf)
 }
 
 pub fn read_file(root: &Path, rel: &str) -> Result<String, String> {
@@ -152,7 +216,7 @@ pub fn read_file(root: &Path, rel: &str) -> Result<String, String> {
     // file that would have fitted, and the boundary is repaired below.
     let cap = WORKSPACE_MAX_READ_CHARS * 4 + 1;
     let mut buf = Vec::with_capacity(8192);
-    let file = std::fs::File::open(&path).map_err(|e| format!("could not read the file: {e}"))?;
+    let file = open_no_follow(&path, std::fs::OpenOptions::new().read(true))?;
     std::io::Read::take(file, cap as u64)
         .read_to_end(&mut buf)
         .map_err(|e| format!("could not read the file: {e}"))?;
@@ -200,7 +264,21 @@ fn write_new_or_existing(path: &Path, content: &[u8], replacing: bool) -> Result
     use std::io::Write as _;
 
     if replacing {
-        return std::fs::write(path, content).map_err(|e| format!("could not write the file: {e}"));
+        // Not `std::fs::write`: that opens with O_TRUNC and follows a symlink,
+        // so a target swapped between the user's approval and this call is
+        // written through to whatever it points at. `create_new` below is
+        // already safe — O_EXCL refuses an existing path, link included — and
+        // this is the branch that was not.
+        let mut f = open_no_follow(
+            path,
+            std::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .create(true),
+        )?;
+        return f
+            .write_all(content)
+            .map_err(|e| format!("could not write the file: {e}"));
     }
     match std::fs::File::create_new(path) {
         Ok(mut f) => f
@@ -231,6 +309,74 @@ pub fn write_bytes(root: &Path, rel: &str, content: &[u8], replacing: bool) -> R
 
 pub fn write_file(root: &Path, rel: &str, content: &str, replacing: bool) -> Result<(), String> {
     write_bytes(root, rel, content.as_bytes(), replacing)
+}
+
+#[cfg(all(test, unix))]
+mod symlink_race {
+    use super::*;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "scale-nofollow-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    // The race: safe_join validates a path, and the last component is replaced
+    // with a link before the write lands. safe_join cannot see that — it
+    // already returned. So the guarantee has to be part of the open.
+    //
+    // This creates the link first, which is the state the race produces, and
+    // then asks for the write that used to follow it.
+    #[test]
+    fn replacing_a_file_does_not_write_through_a_link() {
+        let dir = scratch("write");
+        let outside = dir.join("secret.txt");
+        std::fs::write(&outside, b"original").unwrap();
+        let link = dir.join("innocent.txt");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+
+        let err = write_new_or_existing(&link, b"attacker", true)
+            .expect_err("writing through a link must be refused");
+        assert!(err.contains("link"), "{err}");
+        assert_eq!(
+            std::fs::read(&outside).unwrap(),
+            b"original",
+            "the file the link pointed at was modified"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Reading through a link leaks a file the user never granted.
+    #[test]
+    fn reading_does_not_follow_a_link() {
+        let dir = scratch("read");
+        let outside = dir.join("secret.txt");
+        std::fs::write(&outside, b"private").unwrap();
+        let link = dir.join("innocent.txt");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+
+        let err = open_no_follow(&link, std::fs::OpenOptions::new().read(true))
+            .expect_err("opening a link for reading must be refused");
+        assert!(err.contains("link"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // The guard must not break the ordinary case, or it will be removed.
+    #[test]
+    fn an_ordinary_file_still_reads_and_writes() {
+        let dir = scratch("ok");
+        let file = dir.join("notes.txt");
+        write_new_or_existing(&file, b"first", false).unwrap();
+        write_new_or_existing(&file, b"second", true).unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), b"second");
+        assert!(open_no_follow(&file, std::fs::OpenOptions::new().read(true)).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]

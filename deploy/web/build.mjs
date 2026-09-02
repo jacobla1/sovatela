@@ -437,6 +437,79 @@ writeFileSync(
   JSON.stringify({ version: RELEASE, url: UPDATE_LANDING }, null, 2) + "\n",
 );
 
+// ---------- a release feed, so a notice can reach people without a list -------
+//
+// There is no auto-updater, and *Check for updates* only helps someone who
+// presses it. The review's F-14 said, correctly, that a security fix therefore
+// reaches nobody who does not go looking.
+//
+// A mailing list would fix that and make the publisher a controller of a pile
+// of email addresses — a data-protection obligation taken on to solve a
+// notification problem, for a project whose whole claim is that it holds
+// nothing about anyone. So the subscription lives on the reader's side instead:
+// this is a static Atom file, fetched by whatever feed reader or CI job the
+// user points at it. Nothing is submitted, nothing is stored, there is no
+// address to leak and no list to breach. GitHub's "Watch → Releases only" is
+// the same trade with GitHub holding the subscription.
+//
+// If anyone ever adds a signup form to this site, that is the decision this
+// comment exists to make visible.
+const FEED_URL = "https://sovatela.eu/releases.atom";
+{
+  const notes = readFileSync(join(repo, "docs/release/RELEASE-NOTES.md"), "utf8");
+  // One entry per release section: the heading carries the version, the line
+  // under it the date. Parsed from the notes rather than kept in a second list,
+  // because a second list is a thing that goes stale.
+  const entries = [];
+  const re = /^# Release notes — Sovatela (\d+\.\d+\.\d+)\s*\n\s*\nRelease date: (\d{4}-\d{2}-\d{2})/gm;
+  for (const m of notes.matchAll(re)) entries.push({ version: m[1], date: m[2] });
+
+  if (!entries.length) {
+    console.error("\nNo releases could be read from docs/release/RELEASE-NOTES.md.");
+    console.error("Refusing to build: the feed would be empty and readers would see nothing.");
+    process.exit(1);
+  }
+  if (entries[0].version !== RELEASE) {
+    console.error(
+      `\nThe newest release note is ${entries[0].version} but this build is ${RELEASE}.`,
+    );
+    console.error("Refusing to build: the feed would not announce the release being published.");
+    process.exit(1);
+  }
+
+  const esc = (t) =>
+    String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const feed = [
+    '<?xml version="1.0" encoding="utf-8"?>',
+    '<feed xmlns="http://www.w3.org/2005/Atom">',
+    "  <title>Sovatela releases</title>",
+    `  <id>${FEED_URL}</id>`,
+    `  <link rel="self" href="${FEED_URL}"/>`,
+    '  <link rel="alternate" href="https://sovatela.eu/"/>',
+    `  <updated>${entries[0].date}T00:00:00Z</updated>`,
+    "  <author><name>Jacob Bergmann Larsen</name></author>",
+    "  <subtitle>New versions of Sovatela, including security releases. " +
+      "Nothing is collected from subscribing — this is a static file your reader fetches.</subtitle>",
+    ...entries.map((e) => {
+      const url = `https://github.com/${RELEASE_REPO}/releases/tag/v${e.version}`;
+      return [
+        "  <entry>",
+        `    <title>Sovatela ${esc(e.version)}</title>`,
+        `    <id>${url}</id>`,
+        `    <link rel="alternate" href="${url}"/>`,
+        `    <updated>${e.date}T00:00:00Z</updated>`,
+        `    <summary>Sovatela ${esc(e.version)} was released on ${e.date}. ` +
+          `Release notes and checksums are on the release page.</summary>`,
+        "  </entry>",
+      ].join("\n");
+    }),
+    "</feed>",
+    "",
+  ].join("\n");
+  writeFileSync(join(dist, "releases.atom"), feed);
+  console.log(`  release feed: ${entries.length} entries, newest ${entries[0].version}`);
+}
+
 // ---------- the update landing page must exist, and say what it must ---------
 //
 // A manifest URL pointing at a page that does not exist, or at one that has lost

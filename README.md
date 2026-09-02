@@ -98,6 +98,16 @@ endpoint for chat; see the Roadmap.
   model. Save it from the conversation, or have it written into your workspace
   folder.
 
+  **What "real file" means, and does not.** These are genuine `.docx`, `.xlsx`
+  and `.pptx` files that open in Word, Excel and PowerPoint without a repair
+  prompt — not renamed CSVs or HTML. They are also *basic*: a spreadsheet is one
+  sheet with no formulas and no cell formatting, lists and tables are simplified,
+  and only part of Markdown survives the conversion. If you are expecting a
+  finished corporate deliverable, read
+  [what they carry and what they drop](docs/TECHNICAL-SPEC.md#7-known-technical-debt)
+  first — it is a first draft in the right file format, not a replacement for the
+  application that opens it.
+
   Supply your own `.docx`, `.dotx`, `.pptx` or `.potx` in *Settings → Document
   templates* and generated files come out in your fonts, colours, page size and
   page furniture; headings and lists use your template's own styles for them,

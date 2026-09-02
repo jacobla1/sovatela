@@ -5,6 +5,66 @@ pub const DEFAULT_ENDPOINT: &str = "https://api.scaleway.ai/v1";
 pub const DEFAULT_MODEL: &str = "glm-5.2";
 pub const DEFAULT_MAX_TOKENS: u32 = 8192;
 
+/// Largest non-streaming provider body this app will buffer.
+///
+/// `json()` and `text()` read to the end of a stream whose length the far end
+/// chooses. A provider that is compromised, misconfigured, or simply broken can
+/// therefore decide how much memory this process uses. The image paths have
+/// been read against a cap since 1.6.0; the chat paths had not.
+pub const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+
+/// Largest assistant reply accumulated while streaming.
+///
+/// `max_tokens` bounds what a well-behaved provider sends. It is a request
+/// parameter, so it bounds nothing at all if the far end ignores it.
+pub const MAX_STREAM_CONTENT_BYTES: usize = 8 * 1024 * 1024;
+
+/// Largest single SSE line held while waiting for its newline.
+///
+/// The decode loop only drains `buffer` when it finds a `\n`. A stream that
+/// never sends one is not a slow stream, it is an unbounded allocation.
+const MAX_SSE_LINE_BYTES: usize = 1024 * 1024;
+
+/// How much of a provider's error body is shown to the user.
+///
+/// The whole body used to be interpolated into the message. That is unbounded,
+/// and it puts provider-authored text — which may echo the request — in front
+/// of the reader verbatim.
+pub const MAX_ERROR_BODY_CHARS: usize = 600;
+
+/// Read a response body in bounded chunks, refusing one that outgrows `max`.
+pub async fn read_body_capped(
+    response: reqwest::Response,
+    max: usize,
+    what: &str,
+) -> Result<Vec<u8>, String> {
+    let mut response = response;
+    let mut out: Vec<u8> = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+        if out.len() + chunk.len() > max {
+            return Err(format!(
+                "{what} is larger than {} MB, so it was not loaded.",
+                max / (1024 * 1024)
+            ));
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
+}
+
+/// Trim a provider-supplied string to something safe to display.
+///
+/// Truncation is by characters, not bytes, so this cannot split a multi-byte
+/// character and produce mojibake in an error message.
+pub fn clamp_provider_text(body: &str) -> String {
+    let body = body.trim();
+    if body.chars().count() <= MAX_ERROR_BODY_CHARS {
+        return body.to_string();
+    }
+    let kept: String = body.chars().take(MAX_ERROR_BODY_CHARS).collect();
+    format!("{kept}… (truncated)")
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct CompletionOptions {
     pub endpoint: String,
@@ -192,7 +252,10 @@ where
     }
 
     if !options.stream {
-        let value = response.json::<serde_json::Value>().await.map_err(|e| {
+        let body = read_body_capped(response, MAX_RESPONSE_BYTES, "The model's reply")
+            .await
+            .map_err(|e| CompletionError::new(ErrorKind::Protocol, e))?;
+        let value = serde_json::from_slice::<serde_json::Value>(&body).map_err(|e| {
             CompletionError::new(
                 ErrorKind::Protocol,
                 format!("The model returned an invalid JSON response: {e}"),
@@ -236,6 +299,16 @@ where
         }
         let chunk = chunk.map_err(stream_network_error)?;
         buffer.push_str(&String::from_utf8_lossy(&chunk));
+        // A line is only drained when its newline arrives. Without this, a
+        // stream that sends bytes and never a newline is an unbounded
+        // allocation that looks like a slow reply.
+        if buffer.len() > MAX_SSE_LINE_BYTES {
+            return Err(CompletionError::new(
+                ErrorKind::Protocol,
+                "The model sent a single line of reply larger than this app will hold. \
+                 The reply has been stopped.",
+            ));
+        }
         while let Some(position) = buffer.find('\n') {
             let line = buffer[..position].trim().to_string();
             buffer.drain(..=position);
@@ -263,6 +336,14 @@ where
             }
             let delta = &value["choices"][0]["delta"];
             if let Some(token) = delta["content"].as_str().filter(|s| !s.is_empty()) {
+                // `max_tokens` is a request parameter: it bounds a provider
+                // that honours it and nothing else. What is kept so far is
+                // returned rather than discarded — a truncated reply the user
+                // can read beats an error that throws away a long answer.
+                if content.len() + token.len() > MAX_STREAM_CONTENT_BYTES {
+                    on_event(CompletionEvent::Truncated, &content);
+                    return Ok(content);
+                }
                 content.push_str(token);
                 if !on_event(CompletionEvent::Token(token), &content) {
                     return Ok(content);
@@ -285,7 +366,14 @@ where
 
 async fn response_error(response: reqwest::Response) -> CompletionError {
     let status = response.status();
-    let body = response.text().await.unwrap_or_default();
+    // Bounded, because an error body is chosen by the far end just as a success
+    // body is, and this one is on the path that runs when things are going
+    // wrong — which is exactly when a provider is most likely to return
+    // something enormous.
+    let body = read_body_capped(response, MAX_RESPONSE_BYTES, "The error reply")
+        .await
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .unwrap_or_default();
     // 401 and 403 are different mistakes and want different fixes, so they no
     // longer share one message. By far the commoner is 401: the key screen
     // shows an access key and a secret key together, and only the secret key
@@ -384,6 +472,64 @@ mod network_message_tests {
     }
 }
 
+#[cfg(test)]
+mod provider_body_limits {
+    use super::*;
+
+    // The whole provider body used to be interpolated into the user-visible
+    // error. Unbounded, and provider-authored text shown verbatim.
+    #[test]
+    fn a_huge_error_body_is_trimmed_before_it_is_shown() {
+        let huge = "x".repeat(MAX_ERROR_BODY_CHARS * 10);
+        let out = clamp_provider_text(&huge);
+        assert!(
+            out.chars().count() < MAX_ERROR_BODY_CHARS + 32,
+            "{}",
+            out.len()
+        );
+        assert!(out.ends_with("… (truncated)"));
+    }
+
+    // Truncating by bytes would split a multi-byte character and render as
+    // mojibake in the one message a user reads when something is wrong.
+    #[test]
+    fn trimming_never_splits_a_character() {
+        let wide = "。".repeat(MAX_ERROR_BODY_CHARS * 2);
+        let out = clamp_provider_text(&wide);
+        assert!(out.starts_with("。"));
+        assert!(out.chars().count() <= MAX_ERROR_BODY_CHARS + 16);
+    }
+
+    #[test]
+    fn a_short_body_is_left_alone() {
+        assert_eq!(clamp_provider_text("  quota exceeded  "), "quota exceeded");
+    }
+
+    // The friendly context-limit message must still win: it is the one case
+    // where the body is inspected rather than shown.
+    #[test]
+    fn the_context_limit_message_survives_trimming() {
+        let body = format!(
+            "{} maximum context length",
+            "y".repeat(MAX_ERROR_BODY_CHARS * 4)
+        );
+        let msg = completion_error_message(reqwest::StatusCode::BAD_REQUEST, &body);
+        assert_eq!(msg, CONTEXT_LIMIT_MSG);
+    }
+
+    #[test]
+    fn an_ordinary_error_carries_a_bounded_body() {
+        let body = "z".repeat(MAX_ERROR_BODY_CHARS * 4);
+        let msg = completion_error_message(reqwest::StatusCode::BAD_GATEWAY, &body);
+        assert!(msg.contains("502"));
+        assert!(
+            msg.chars().count() < MAX_ERROR_BODY_CHARS + 128,
+            "{}",
+            msg.len()
+        );
+    }
+}
+
 const CONTEXT_LIMIT_MSG: &str =
     "This conversation has grown too long for the model to handle. Start a new chat (＋ New chat) to keep going — your history is saved.";
 
@@ -401,7 +547,7 @@ pub fn completion_error_message(status: reqwest::StatusCode, body: &str) -> Stri
     if context_error {
         CONTEXT_LIMIT_MSG.into()
     } else {
-        format!("Scaleway returned {status}: {body}")
+        format!("Scaleway returned {status}: {}", clamp_provider_text(body))
     }
 }
 
