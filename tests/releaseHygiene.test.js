@@ -226,6 +226,15 @@ describe("every file that states the version agrees", () => {
     });
   });
 
+  // Missed in the 1.6.2 bump and caught by deploy/web/build.mjs, which refuses
+  // to publish a page whose stamp disagrees with the release. That guard works,
+  // but it only fires at release time — by which point the tag is cut and the
+  // installers are built. This is the same check, on the commit that causes it.
+  it("the privacy policy", () => {
+    const applies = read("docs/PRIVACY.md").match(/Applies to: Sovatela v(\S+)/)?.[1];
+    expect(applies).toBe(pkg.version);
+  });
+
   it("the technical specification", () => {
     const v = read("docs/TECHNICAL-SPEC.md").match(/^Sovatela v(\S+)/m)?.[1];
     expect(v).toBe(pkg.version);

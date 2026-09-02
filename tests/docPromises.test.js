@@ -103,7 +103,13 @@ describe("high-risk promises match the implementation", () => {
     ];
     // A paragraph is allowed to contain the phrase if it is recording that the
     // phrase was wrong. Deleting the history silently is worth less than this.
-    const isCorrection = /corrected|used to|no longer|earlier (?:draft|revision|version)|withdrawn|through 1\.|was wrong|narrower than/i;
+    // Word forms, not exact words: a correction record that says "records the
+    // withdrawal" or "the narrower true claim" is as much a correction as one
+    // that says "withdrawn" or "narrower than". This fired on QA-1.6.2.md,
+    // which is a table of claims that were corrected — the guard was right to
+    // look and wrong about what counts as looking like a correction.
+    const isCorrection =
+      /corrected|used to|no longer|earlier (?:draft|revision|version)|withdraw|through 1\.|was wrong|narrower/i;
 
     const offences = [];
     for (const f of tracked) {
