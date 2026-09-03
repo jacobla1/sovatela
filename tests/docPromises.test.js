@@ -6,6 +6,30 @@ import { join, resolve } from "node:path";
 const repo = resolve(import.meta.dirname, "..");
 const read = (f) => readFileSync(join(repo, f), "utf8");
 
+// Paragraphs, with their internal line breaks flattened.
+//
+// Every sweep in this file matches a phrase against a paragraph, and these
+// documents are hard-wrapped at about 80 columns — so a phrase lands across a
+// line break as often as not, and a regex written as one line silently never
+// matches. That is not hypothetical: SECURITY.md said the terminal defects were
+// found "before the feature\n  had reached anyone" and the sweep written to
+// catch exactly that claim reported nothing, because the wrap fell between
+// "feature" and "had". The claim was on the live site for three days.
+//
+// So paragraphs are flattened before matching, everywhere, without exception.
+const paragraphs = (text) =>
+  text.split(/\n\s*\n/).map((p) => p.replace(/\s+/g, " ").trim());
+
+// A paragraph is allowed to quote a claim if it is recording that the claim was
+// made and was wrong. One list, used by every sweep — two lists drift, and a
+// sweep whose allowlist is narrower than the prose people actually write fails
+// on honest corrections until someone loosens it in a hurry.
+//
+// Word forms, not exact words: "withdrawal" is as much a correction as
+// "withdrawn", and "previously said" as much as "earlier draft".
+const CORRECTION =
+  /withdr[ae]w|corrected|does not hold|was wrong|were wrong|no longer|previously said|used to|earlier (?:draft|revision|version)|was false|through 1\./i;
+
 // releaseHygiene checks that every document agrees about the version number.
 // Nothing checked that they agreed about behaviour, and they did not: the
 // privacy policy said no network call happens on its own while the app has
@@ -57,7 +81,7 @@ describe("high-risk promises match the implementation", () => {
       ["docs/PRIVACY.md", privacy],
       ["docs/QUICKSTART.md", quickstart],
     ]) {
-      for (const paragraph of doc.split(/\n\s*\n/)) {
+      for (const paragraph of paragraphs(doc)) {
         for (const claim of claims) {
           if (!claim.test(paragraph)) continue;
           expect(
@@ -108,14 +132,13 @@ describe("high-risk promises match the implementation", () => {
     // that says "withdrawn" or "narrower than". This fired on QA-1.6.2.md,
     // which is a table of claims that were corrected — the guard was right to
     // look and wrong about what counts as looking like a correction.
-    const isCorrection =
-      /corrected|used to|no longer|earlier (?:draft|revision|version)|withdraw|through 1\.|was wrong|narrower/i;
+    const isCorrection = new RegExp(`${CORRECTION.source}|narrower`, "i");
 
     const offences = [];
     for (const f of tracked) {
       if (!existsSync(join(repo, f))) continue; // withheld from the public mirror
       const text = read(f);
-      for (const paragraph of text.split(/\n\s*\n/)) {
+      for (const paragraph of paragraphs(text)) {
         if (!denials.some((d) => d.test(paragraph))) continue;
         if (isCorrection.test(paragraph)) continue;
         offences.push(`${f}: ${paragraph.trim().slice(0, 120)}`);
@@ -161,7 +184,7 @@ describe("high-risk promises match the implementation", () => {
     const offences = [];
     for (const f of tracked) {
       if (!existsSync(join(repo, f))) continue; // withheld from the public mirror
-      for (const paragraph of read(f).split(/\n\s*\n/)) {
+      for (const paragraph of paragraphs(read(f))) {
         if (!claim.test(paragraph)) continue;
         if (qualified.test(paragraph)) continue;
         offences.push(`${f}: ${paragraph.trim().slice(0, 120)}`);
@@ -172,6 +195,64 @@ describe("high-risk promises match the implementation", () => {
       "these report the chat-list change as confirmed. The cause was found and " +
         "the markup changed; no screen reader has been run against it since.",
     ).toEqual([]);
+  });
+
+  // The launch-call sweep looks for claims about the network. This one looks
+  // for claims about *who was affected*, which is a different sentence and is
+  // why SECURITY.md went on saying the terminal defects were "found before the
+  // feature had reached anyone" for three days after the security note withdrew
+  // exactly that argument — on the live /security page, next to an advisory
+  // saying the affected population is unknown.
+  //
+  // The register, the note and the advisory all say the same thing: nobody
+  // knows who installed it. Any document that says otherwise is wrong.
+  it("no document claims the terminal defects reached nobody", () => {
+    const tracked = execFileSync("git", ["ls-files", "-z"], { cwd: repo, encoding: "utf8" })
+      .split("\0")
+      .filter((f) => /\.(md|svelte|html)$/.test(f))
+      .filter((f) => f !== "tests/docPromises.test.js");
+
+    // Assertions that nobody was exposed, in the shapes that have been used.
+    const claims = [
+      /before the feature had reached anyone/i,
+      /reached no users/i,
+      /affected (?:nobody|no one|no-one)/i,
+      /nobody (?:was|had been) affected/i,
+      /no ?body installed it/i,
+    ];
+    // A paragraph may quote the claim in order to withdraw it.
+    const withdrawing = CORRECTION;
+
+    const offences = [];
+    for (const f of tracked) {
+      if (!existsSync(join(repo, f))) continue; // withheld from the public mirror
+      for (const paragraph of paragraphs(read(f))) {
+        if (!claims.some((c) => c.test(paragraph))) continue;
+        if (withdrawing.test(paragraph)) continue;
+        offences.push(`${f}: ${paragraph.trim().slice(0, 140)}`);
+      }
+    }
+    expect(
+      offences,
+      "these assert that the terminal defects reached nobody. The app has no " +
+        "telemetry, so who installed the feature cannot be established — the " +
+        "advisory and the register both say so.",
+    ).toEqual([]);
+  });
+
+  // The same page said an advisory had not been issued. One was.
+  it("no document says the terminal finding was not issued as an advisory", () => {
+    const security = read("SECURITY.md");
+    for (const paragraph of paragraphs(security)) {
+      if (!/rather than issued as an\s+advisory/i.test(paragraph)) continue;
+      expect(
+        paragraph,
+        "SECURITY.md says no advisory was issued. GHSA-jpv9-3mvc-5v5c exists.",
+      ).toMatch(/previously said|corrected|withdraw/i);
+    }
+    expect(security, "SECURITY.md no longer names the advisory").toContain(
+      "GHSA-jpv9-3mvc-5v5c",
+    );
   });
 
   it("Quick Start agrees with the extractor about what a Word file gives up", () => {
@@ -205,21 +286,29 @@ describe("high-risk promises match the implementation", () => {
     ];
     const forbidden = [
       /withdrawn in 1\.6\.0/i,
-      /the feature is off/i,
+      // Not a bare "the feature is off": PRIVACY.md says it is "off until you
+      // install it", which is true and is about the feature being opt-in
+      // rather than about a release having withdrawn it. Flattening paragraphs
+      // made this pattern reach that sentence for the first time, so the false
+      // positive it had always had finally showed up.
+      /the feature is off\b(?!\s+until)/i,
       /before (?:the feature|it) (?:had )?reached anyone/i,
       /reached no users/i,
     ];
     for (const d of docs) {
       const text = read(d);
-      for (const paragraph of text.split(/\n\s*\n/)) {
+      for (const paragraph of paragraphs(text)) {
         for (const claim of forbidden) {
           if (!claim.test(paragraph)) continue;
           // Allowed only where the paragraph is recording that the claim was
           // made and was wrong.
+          // This list used to be four exact phrases, and the sweep was blind
+          // anyway: the claim it exists to catch was wrapped across a line
+          // break, so it never matched at all until paragraphs were flattened.
           expect(
             paragraph,
             `${d} still asserts that a released version withdrew terminal access`,
-          ).toMatch(/earlier draft|was false|withdrawn:|does not hold/i);
+          ).toMatch(CORRECTION);
         }
       }
     }
@@ -400,5 +489,157 @@ describe("high-risk promises match the implementation", () => {
       );
       expect(doc).toContain("200%");
     }
+  });
+});
+
+// The opt-in launch update check is the only setting in the app that adds an
+// automatic network call. Two properties have to hold for the privacy story to
+// stay true, and neither is obvious from reading one file.
+describe("the update check at launch stays opt-in", () => {
+  const rust = read("src-tauri/src/lib.rs");
+  const app = read("src/App.svelte");
+
+  // `#[serde(default)]` on a bool is false. If someone "helpfully" makes it
+  // default_true, every existing install starts making a call its owner never
+  // agreed to — and the privacy policy becomes wrong for everyone at once.
+  it("defaults to off", () => {
+    const decl = rust.match(
+      /#\[serde\(default(?:\s*=\s*"([a-z_]+)")?\)\]\s*\n\s*check_updates_on_launch: bool/,
+    );
+    expect(decl, "check_updates_on_launch is gone from AppSettings").toBeTruthy();
+    expect(
+      decl[1],
+      "the launch update check now defaults to on — nobody opted in to that",
+    ).toBeUndefined();
+  });
+
+  it("does not run unless the setting says so", () => {
+    expect(app, "the launch check is gone").toMatch(/checkForUpdateOnLaunch/);
+    const fn = app.slice(app.indexOf("async function checkForUpdateOnLaunch"));
+    const body = fn.slice(0, fn.indexOf("\n  }"));
+    expect(
+      body,
+      "the launch check no longer reads the setting before calling out",
+    ).toMatch(/get_update_check_on_launch/);
+    // The guard must come before the request, not after it.
+    expect(body.indexOf("get_update_check_on_launch")).toBeLessThan(
+      body.indexOf("check_for_update"),
+    );
+  });
+
+  // Both documents that enumerate what the app contacts must describe it, and
+  // must not go back to calling the connection check the only automatic call.
+  it("is disclosed in both documents that list network activity", () => {
+    for (const [name, doc] of [
+      ["SECURITY.md", read("SECURITY.md")],
+      ["docs/PRIVACY.md", read("docs/PRIVACY.md")],
+    ]) {
+      expect(doc, `${name} does not mention the launch update check`).toMatch(
+        /(?:only if you switch it on|switch it on|starts.*off by default|off until you enable)/i,
+      );
+      for (const paragraph of paragraphs(doc)) {
+        if (!/only call the app makes on its own/i.test(paragraph)) continue;
+        expect(
+          paragraph,
+          `${name} still calls the connection check the only automatic call, ` +
+            "but the opt-in update check can be a second one",
+        ).toMatch(CORRECTION);
+      }
+    }
+  });
+});
+
+// "Uninstall and data deletion" is the page a person reads when they want
+// everything gone — before selling the machine, or after deciding they are
+// done with this app. A file it does not name survives a removal the reader
+// believes was complete, and they have no way to discover it.
+describe("the uninstall page accounts for everything stored", () => {
+  const rust = read("src-tauri/src/lib.rs");
+  const uninstall = read("docs/UNINSTALL.md");
+
+  // Each of these is written by the app and holds something of the user's.
+  it("names every stored file and folder", () => {
+    for (const artefact of [
+      "settings.json",
+      "memories.json",
+      "usage.json",
+      "conversations/",
+      "projects/",
+      "compactions/",
+      "templates/", // the user's own documents, copied in
+    ]) {
+      expect(
+        uninstall,
+        `UNINSTALL.md never mentions ${artefact}, so it survives a removal ` +
+          "the reader thinks was complete",
+      ).toContain(artefact);
+    }
+  });
+
+  // The one that was actually wrong. Everything lives under app_config_dir()
+  // except templates, which are app_data_dir() — the same folder on macOS and
+  // Windows, a different one on Linux (~/.local/share vs ~/.config). The page
+  // listed only the config path, so a Linux user who followed it kept a copy
+  // of every document template they had supplied.
+  it("gives the Linux data directory when anything is stored there", () => {
+    if (!/app_data_dir\(\)/.test(rust)) return; // nothing stored there any more
+    // The identifier has to be on the path. The page already mentions
+    // ~/.local/share/uv, from the terminal-access cleanup, so matching the
+    // bare directory would have passed while this app's own data sat there
+    // undocumented — which is the state this test was written to catch.
+    expect(
+      uninstall,
+      "something is stored under app_data_dir(), which on Linux is " +
+        "~/.local/share/com.anaubi.sovatela — a path UNINSTALL.md does not " +
+        "give, so removing the documented folder leaves it behind",
+    ).toMatch(/\.local\/share\/com\.anaubi\.sovatela/);
+  });
+});
+
+// Auto-memory is the app's other opt-in, and the one whose default decides
+// whether personal facts start being collected. The stored setting was off by
+// default and correct; the two values that *write* it were not, which is how a
+// documented opt-in becomes an opt-out without any document changing.
+describe("auto-memory stays opt-in", () => {
+  const rust = read("src-tauri/src/lib.rs");
+  const keypage = read("src/lib/KeyPage.svelte");
+
+  // The stored setting. Same shape as the update-check guard above.
+  it("defaults to off where it is stored", () => {
+    const decl = rust.match(
+      /#\[serde\(default(?:\s*=\s*"([a-z_]+)")?\)\]\s*\n\s*auto_memory: bool, \/\/ suggest/,
+    );
+    expect(decl, "auto_memory is gone from AppSettings").toBeTruthy();
+    expect(
+      decl[1],
+      "auto-memory now defaults to on — nobody opted in to that",
+    ).toBeUndefined();
+  });
+
+  // The transfer struct. This one is deserialized from the renderer and
+  // written straight into settings, so `default_true` here means a payload
+  // that omits the field switches the feature on.
+  it("cannot be switched on by a payload that omits it", () => {
+    const dto = rust.slice(rust.indexOf("struct MemorySettings"));
+    const decl = dto
+      .slice(0, dto.indexOf("}"))
+      .match(/#\[serde\(default(?:\s*=\s*"([a-z_]+)")?\)\]\s*\n\s*auto_memory: bool/);
+    expect(decl, "auto_memory is gone from MemorySettings").toBeTruthy();
+    expect(
+      decl[1],
+      "MemorySettings.auto_memory defaults to on, so a partial payload enables it",
+    ).toBeUndefined();
+  });
+
+  // The interface's own starting value, which is what Save sends. Rendering an
+  // on toggle to someone who has the feature off is how they end up enabling
+  // it by saving something else on the same panel.
+  it("starts off in the interface, so a stale value cannot enable it", () => {
+    const decl = keypage.match(/let autoMemory = \$state\((true|false)\)/);
+    expect(decl, "the autoMemory state is gone").toBeTruthy();
+    expect(
+      decl[1],
+      "the memory panel starts with auto-memory on, before the stored value is read",
+    ).toBe("false");
   });
 });

@@ -313,6 +313,33 @@ if (missing.length) {
   process.exit(1);
 }
 
+// The minisign public key, embedded on the page so the signature over
+// SHA256SUMS.txt can be checked against something that does not travel with
+// the files it vouches for. SECURITY.md and the release-notes template both
+// say the key is published on the download page; this is what makes that
+// true rather than asserted. The key file's last line is the key itself — the
+// first is minisign's own "untrusted comment".
+if (index.includes("MINISIGN_PUBKEY_UNFILLED")) {
+  const pubPath = join(repo, "minisign.pub");
+  if (!existsSync(pubPath)) {
+    console.error("\nThe page embeds the minisign public key, and minisign.pub is not");
+    console.error("in the repository. Generate the key pair first — deploy/web/README.md");
+    console.error("§ First-time setup — or the page would promise a verification that");
+    console.error("cannot be run.");
+    process.exit(1);
+  }
+  const keyLine = readFileSync(pubPath, "utf8")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith("untrusted comment:"))
+    .pop();
+  if (!/^RW[A-Za-z0-9+/=]{40,}$/.test(keyLine ?? "")) {
+    console.error("\nminisign.pub does not look like a minisign public key.");
+    process.exit(1);
+  }
+  index = index.replaceAll("MINISIGN_PUBKEY_UNFILLED", keyLine);
+}
+
 // A leftover placeholder would ship a verification step that cannot pass.
 if (/UNFILLED/.test(index)) {
   console.error("\nindex.html still contains an UNFILLED placeholder. Aborting.");

@@ -240,3 +240,111 @@ describe("every file that states the version agrees", () => {
     expect(v).toBe(pkg.version);
   });
 });
+
+// The release build moved to the public repository so that build attestations
+// could exist: GitHub publishes them free for public repos and charges
+// Enterprise Cloud for private ones, so a private build could be signed by
+// Apple and still not prove which commit produced it. That put the Apple
+// certificate in a public repository's secrets, which is safe only while
+// specific properties hold. These are those properties.
+describe("the release builds where its provenance can be published", () => {
+  const release = read(".github/workflows/release.yml");
+  const workflows = readdirSync(join(repo, ".github/workflows")).filter((f) =>
+    f.endsWith(".yml"),
+  );
+
+  it("runs in the public repository", () => {
+    expect(release).toMatch(/github\.repository == 'jacobla1\/sovatela'/);
+    expect(
+      release,
+      "the release still gates on the private repository, so it will never run",
+    ).not.toMatch(/github\.repository == 'jacobla1\/Scale'/);
+  });
+
+  // The one that matters most. A secret is only as scoped as the number of
+  // jobs that can read it.
+  it("lets exactly one job see the Apple certificate", () => {
+    const jobs = release.split(/\n  (?=[a-z][a-z0-9-]*:\n)/);
+    const withApple = jobs.filter((j) => /APPLE_CERTIFICATE:/.test(j));
+    expect(
+      withApple.length,
+      "more than one job can read the signing certificate",
+    ).toBe(1);
+    expect(withApple[0], "the signing job is not named for what it does").toMatch(
+      /^\s*build-macos:/m,
+    );
+    expect(
+      withApple[0],
+      "the signing job no longer sits behind an approval environment",
+    ).toMatch(/environment: release/);
+  });
+
+  // These are the triggers that hand secrets to code from a fork. Neither has
+  // ever been used here; in a public repository that has to stay true.
+  it("uses no trigger that runs untrusted code with secrets", () => {
+    for (const f of workflows) {
+      const src = read(join(".github/workflows", f));
+      expect(src, `${f} uses pull_request_target`).not.toMatch(
+        /^\s*pull_request_target:/m,
+      );
+      expect(src, `${f} uses workflow_run`).not.toMatch(/^\s*workflow_run:/m);
+    }
+  });
+
+  it("only builds from a tag", () => {
+    const on = release.slice(release.indexOf("on:"), release.indexOf("jobs:"));
+    expect(on).toMatch(/tags:/);
+    expect(on, "the release can be triggered by something other than a tag").not.toMatch(
+      /workflow_dispatch|pull_request|schedule/,
+    );
+  });
+
+  it("publishes checksums, a signature over them, and provenance", () => {
+    expect(release, "checksums are no longer generated in CI").toMatch(
+      /shasum -a 256/,
+    );
+    expect(release, "the checksums are no longer signed").toMatch(/minisign -S/);
+    expect(release, "there is no build attestation").toMatch(
+      /attest-build-provenance/,
+    );
+    // A signing step that degrades quietly when its key is missing produces
+    // releases that claim to be signed and are not — the exact defect the Apple
+    // secrets already taught this project.
+    expect(release, "a missing signing key no longer fails the release").toMatch(
+      /MINISIGN_SECRET_KEY is not set/,
+    );
+  });
+
+  // The Windows terminal-access gate is called by the release. Gated to the
+  // private repo alone it would *skip* rather than fail, and a skipped job
+  // satisfies `needs:` — so the gate would silently stop being one.
+  it("keeps the Windows terminal-access gate reachable from the release", () => {
+    const win = read(".github/workflows/windows-terminal-access.yml");
+    expect(win).toMatch(/jacobla1\/sovatela/);
+  });
+});
+
+// Three documents disagreed about Windows signing: SECURITY.md called it a
+// decision and permanent, the README listed it on the roadmap, and the website
+// said "not signed yet". A reader deciding whether to trust the installer got a
+// different answer depending on which page they opened.
+describe("Windows signing is described the same way everywhere", () => {
+  const docs = {
+    "SECURITY.md": read("SECURITY.md"),
+    "README.md": read("README.md"),
+    "deploy/web/index.html": read("deploy/web/index.html"),
+  };
+
+  it("is recorded as a decision, not as pending work", () => {
+    expect(docs["SECURITY.md"]).toMatch(/Windows signing is not planned/i);
+  });
+
+  it("is not on the roadmap in any document", () => {
+    for (const [name, text] of Object.entries(docs)) {
+      // "not signed yet" and "signing planned" both promise a later change.
+      expect(text, `${name} implies Windows signing is coming`).not.toMatch(
+        /not signed yet|signing,? so SmartScreen stops warning|signing is planned/i,
+      );
+    }
+  });
+});

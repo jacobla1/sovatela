@@ -27,6 +27,7 @@ copy of this index.
 | Document | What it's for |
 | --- | --- |
 | Product spec | Overview, target users, differentiators, full functionality list with shipped/later status |
+| Product gaps | What users of this product category expect and don't get here, by expectation rather than defect |
 | UX spec | Screens, states, accessibility requirements, keyboard shortcuts |
 | [Technical spec](TECHNICAL-SPEC.md) | Architecture, security, data model, network dependency, debt |
 | Website description | Public product copy, three lengths |

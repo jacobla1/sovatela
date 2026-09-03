@@ -149,8 +149,8 @@
     "Present",
     "Fixed: uv verified against a hard-coded SHA-256 per platform; 2,417 content hashes installed with --require-hashes; app-owned venv; backups on all three",
     "**Accepted:** we cannot vouch for uv or LiteLLM as projects — verified delivery is not audited code",
-    "Windows CI install checks; Linux CI end-to-end and tamper checks (**written, not yet run**)",
-    "Windows yes; **Linux CI job is new and has not run**"
+    "Windows CI install checks; Linux CI end-to-end and tamper checks, green on main since 2026-09-02",
+    "Windows yes; Linux CI now runs and passes — not independently re-reviewed"
   ],
   [
     "F18",
@@ -165,10 +165,10 @@
     "F19",
     "Binary notices and provenance",
     "Present",
-    "Manifest generated (608 crates, 151 packages), bundled, in-app link",
-    "**Not done:** signed provenance; mutable runner and toolchain refs",
-    "tests/thirdPartyNotices.test.js",
-    "Partial, as stated"
+    "Manifest generated (608 crates, 151 packages), bundled, in-app link; signed SHA256SUMS.txt and build attestations written into release.yml, which fails rather than publish an unsigned list",
+    "**Written, not exercised:** no public-repo release has run the provenance path yet; runner and toolchain refs still mutable",
+    "tests/thirdPartyNotices.test.js; tests/releaseHygiene.test.js",
+    "Partial, as stated — the provenance claim becomes checkable at the first public-repo release"
   ],
   [
     "F20",

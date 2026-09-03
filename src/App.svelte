@@ -13,6 +13,30 @@
   // Drives the Guide's quick start: shown only while there is no key to paste.
   let hasKey = $state(false);
 
+  // Opt-in update check. Off unless the user turned it on in Settings ▸ About.
+  //
+  // It exists because a security fix reaches nobody who does not press the
+  // button, and the alternative — a mailing list — would mean holding people's
+  // addresses to solve a notification problem. This holds nothing: it fetches
+  // the same static file the button fetches, sends no query string and nothing
+  // about the machine, and there is no account and no list.
+  //
+  // Failure is silent by design. A version check that cannot reach the site is
+  // not something to interrupt someone's launch about, and an error here would
+  // be indistinguishable from "you are being told something is wrong with your
+  // app" — which it is not.
+  let updateBanner = $state(null); // { latest, url } when a newer version exists
+
+  async function checkForUpdateOnLaunch() {
+    try {
+      if (!(await invoke("get_update_check_on_launch"))) return;
+      const r = await invoke("check_for_update");
+      if (r?.update_available) updateBanner = { latest: r.latest, url: r.url };
+    } catch {
+      // Offline, or the site is unreachable. Nothing to say about it.
+    }
+  }
+
   function seenOverview() {
     try {
       return localStorage.getItem("seenOverview") === "1";
@@ -54,6 +78,7 @@
       // will this take?" before asking for anything. It leads into Quick start;
       // the key form itself is one step further in, under Settings.
       view = hasKey || skippedOnboarding() ? "chat" : "splash";
+      checkForUpdateOnLaunch();
     } catch (e) {
       console.error("Failed to read stored key:", e);
       view = "welcome";
@@ -128,6 +153,26 @@
   }
 </script>
 
+{#if updateBanner}
+  <!-- Opt-in only. Dismissible, and it never reappears in this session: a
+       notice that cannot be got rid of is a notice people learn to ignore. -->
+  <div class="update-banner" role="status">
+    <span>
+      <strong>Sovatela {updateBanner.latest}</strong> is available. Updating is
+      manual — nothing here installs itself.
+    </span>
+    <button
+      class="update-banner-link"
+      onclick={() => invoke("open_external", { url: updateBanner.url })}
+    >Open the download page</button>
+    <button
+      class="update-banner-close"
+      aria-label="Dismiss the update notice"
+      onclick={() => (updateBanner = null)}
+    >✕</button>
+  </div>
+{/if}
+
 {#if view === "loading"}
   <div class="center muted">Loading…</div>
 {:else if view === "splash"}
@@ -160,3 +205,35 @@
 {:else}
   <Chat onOpenSettings={goSettings} onOpenGuide={goGuide} onQuickStart={goQuickStart} />
 {/if}
+
+<style>
+  .update-banner {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    background: var(--accent-soft, #eef2ff);
+    border-bottom: 1px solid var(--border, #d7dbe7);
+    font-size: 14px;
+  }
+  .update-banner span {
+    flex: 1;
+  }
+  .update-banner-link {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--accent, #3b53c4);
+    font: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .update-banner-close {
+    background: none;
+    border: none;
+    padding: 2px 6px;
+    color: var(--muted, #5b6178);
+    font: inherit;
+    cursor: pointer;
+  }
+</style>

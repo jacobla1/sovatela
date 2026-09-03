@@ -42,6 +42,7 @@ docs/*
 !docs/PUBLISHER.md
 !docs/LEGAL-CHECKLIST.md
 !docs/PRODUCT-SPEC.md
+!docs/PRODUCT-GAPS.md
 !docs/UX-SPEC.md
 !docs/TECHNICAL-SPEC.md
 !docs/website-description.md

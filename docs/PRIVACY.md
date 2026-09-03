@@ -1,6 +1,6 @@
 # Privacy policy
 
-Last updated: 2026-09-02 · Applies to: Sovatela v1.6.2
+Last updated: 2026-09-03 · Applies to: Sovatela v1.7.0
 
 > **How this was written, since you are entitled to know.** By the publisher,
 > not by a lawyer. It is written to be accurate about what the software does,
@@ -83,12 +83,27 @@ Each provider processes that data under **its own terms and privacy policy**,
 which you accept when you create an account with them. Links to each provider's
 policy are shown in the app where you enable that provider.
 
-The app makes no other network connections. **One is automatic**, and it is the
-first row of the table: at startup the app asks your Scaleway endpoint whether
-your key still works, which is what the coloured dot beside the model name is
-reporting. It sends your key and nothing else — no message, nothing about you or
-your machine — and it is the only call the app makes on its own. Turning off the
-key removes it; there is no setting that suppresses it while a key is stored.
+The app makes no other network connections. **One is automatic by default**, and
+it is the first row of the table: at startup the app asks your Scaleway endpoint
+whether your key still works, which is what the coloured dot beside the model
+name is reporting. It sends your key and nothing else — no message, nothing about
+you or your machine. Turning off the key removes it; there is no setting that
+suppresses it while a key is stored.
+
+**A second automatic call exists only if you switch it on.** *Settings ▸ About ▸
+Check for a new version when Sovatela starts* is off until you enable it. When
+enabled, the app reads the same static version file that the *Check for updates*
+button reads — no query string, nothing about you or your machine — and tells you
+if a newer version exists. Nothing installs itself; updating remains a download
+you choose.
+
+It is there because a security fix otherwise reaches only the people who think to
+press a button, and because the usual remedy for that — a mailing list — would
+mean this project holding a database of email addresses to solve a notification
+problem. It holds none: there is no sign-up, no account and no list, and this
+call leaves nothing behind at the other end beyond an ordinary web request. The
+[release feed](https://sovatela.eu/releases.atom) is the same trade made the
+other way round, with your feed reader doing the asking.
 
 **Being told about a new version collects nothing.** There is no mailing list
 and no signup, and that is a deliberate choice rather than an omission: a list

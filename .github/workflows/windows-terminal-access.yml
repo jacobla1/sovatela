@@ -51,7 +51,12 @@ jobs:
     # Not on the public mirror: it receives this file with the source, so a
     # push or a tag there would run a Windows installer test for a repository
     # that never builds anything.
-    if: github.repository == 'jacobla1/Scale'
+    # Both repositories: development and dispatch happen on Scale, and the
+    # release calls this from the public repository, where the build now lives.
+    # Gated to Scale alone it would *skip* during a release rather than fail —
+    # and a skipped job satisfies `needs:`, so the gate that says nothing is
+    # built until this runs would have quietly stopped being a gate.
+    if: github.repository == 'jacobla1/Scale' || github.repository == 'jacobla1/sovatela'
     runs-on: windows-latest
     timeout-minutes: 25
 

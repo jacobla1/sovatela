@@ -1,5 +1,63 @@
 # Changelog
 
+## 1.7.0 — 2026-09-03
+
+### Security
+- **One provider field could take the process down.** The tool-enabled chat path
+  read `index` out of a tool-call delta and grew its vector until it reached that
+  index, so `"index": 4000000000` was an allocation primitive rather than gradual
+  growth. A custom endpoint is configurable, so "the provider would not send
+  that" was not an argument available. Content, the SSE line buffer, tool
+  arguments, ids and names are all bounded now. 1.6.2 capped the plain-chat
+  decoder and announced caps; there are two decoders, and this was the other one.
+- **`SECURITY.md` said the terminal defects were found "before the feature had
+  reached anyone", and that no advisory was issued.** Both were false and both
+  were live on /security: the first is the download-count argument the security
+  note itself withdrew, the second was overtaken by GHSA-jpv9-3mvc-5v5c. A sweep
+  with the right pattern already existed and never fired, because the claim was
+  wrapped across a line break. Every documentation sweep now flattens paragraphs
+  before matching.
+
+- **The memory panel could switch on a collection nobody chose.** Auto-memory
+  is stored off by default, because approved facts are personal data kept on
+  disk. The two values that *write* that setting disagreed with it: the struct
+  deserialized from the interface defaulted to on, so a payload omitting the
+  field enabled the feature, and the panel's own toggle started on, so a fresh
+  install saw it as already enabled. Typing a line of "About you" and pressing
+  Save was enough to turn it on. Both fail closed now, with a guard on the
+  stored default, the transfer struct and the interface's starting value.
+
+### Release engineering
+- **Releases are built in the public repository**, so every installer and the
+  checksum list carry a build attestation binding them to the commit and workflow
+  that produced them. GitHub publishes attestations free for public repositories
+  and charges Enterprise Cloud for private ones, which is why this could not
+  exist before. Notarization says Apple scanned the binary; an attestation says
+  which source produced it.
+- **`SHA256SUMS.txt` is signed** with minisign and generated in CI rather than by
+  hand. The signing step fails when its key is missing rather than publishing an
+  unsigned list.
+- **The Apple certificate is scoped to one job**, behind an environment that
+  pauses for the maintainer's approval.
+
+### New
+- **An optional update check at launch**, off by default, under *Settings ▸
+  About*. It reads the same static version file the button reads and sends
+  nothing; there is no sign-up, no account and no list, which is the whole point
+  — a mailing list would have meant holding addresses to solve a notification
+  problem.
+
+### Documentation
+- Windows signing is described as a decision everywhere, rather than as a
+  decision in one document and a roadmap item in another.
+- The download page marks Windows and Linux experimental at the download itself,
+  not one page away from it.
+- The README's roadmap listed screen-reader testing as if a pass were coming,
+  after the accessibility statement had stopped saying so; the README now says
+  the same as the statement. And `check_for_update`'s own doc comment still
+  said "there is no call on launch" — true when written, made conditional by
+  the opt-in launch check in this release. Both corrected.
+
 ## 1.6.2 — 2026-09-02
 
 Six findings from the September 2026 external review, plus the corrections that

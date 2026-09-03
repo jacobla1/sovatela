@@ -12,7 +12,7 @@ jobs:
   # broken one can only be fixed by another release. It shipped broken twice
   # before anyone ran it. Nothing is built until it is run.
   windows-terminal-access:
-    if: github.repository == 'jacobla1/Scale'
+    if: github.repository == 'jacobla1/sovatela'
     uses: ./.github/workflows/windows-terminal-access.yml
 
   # Tests gate the tag. `ci` runs the same suites across three OSes, but it only
@@ -24,7 +24,7 @@ jobs:
   # fails the release if any platform stops building. So this runs the suites
   # themselves, once, on the cheapest runner.
   tests:
-    if: github.repository == 'jacobla1/Scale'
+    if: github.repository == 'jacobla1/sovatela'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -81,23 +81,38 @@ jobs:
 
   build:
     needs: [windows-terminal-access, tests]
-    # The public repository is a mirror, and `gh release create --repo
-    # jacobla1/sovatela` creates a tag there — which started this workflow on
-    # the mirror and uploaded its own build onto the release. Because the
-    # source for a version is published *after* the release is created, that
-    # tag pointed at the previous version's code, so the mirror attached the
-    # previous version's installers: five of them, never a .dmg, because the
-    # mirror has no Apple secrets and the macOS leg fails. That is exactly the
-    # shape of the strays found on v1.3.0, v1.3.1 and v1.4.0.
-    if: github.repository == 'jacobla1/Scale'
+    # This builds in the PUBLIC repository, which is where the provenance can
+    # be published: GitHub's build attestations are free for public repos and
+    # need Enterprise Cloud for private ones, so a private build can be signed
+    # by Apple but cannot prove which commit produced it. Those answer different
+    # questions — notarization says Apple checked it for malware, provenance
+    # says this workflow at this commit built it — and only one of them was
+    # available while the build lived in the private repository.
+    #
+    # The historical hazard this replaces: `gh release create` used to create
+    # the tag on the mirror at whatever main was, and because source was
+    # published after the release, that tag pointed at the previous version's
+    # code. The mirror then ran its own copy of this workflow and attached the
+    # previous version's installers — the strays on v1.3.0, v1.3.1 and v1.4.0.
+    # The order that prevents it is unchanged and is now the only order there
+    # is: publish the source, then tag, then this builds from that tag.
+    if: github.repository == 'jacobla1/sovatela'
     permissions:
       contents: write # needed to create the Release and upload assets
+    #
+    # macOS is deliberately NOT in this matrix. It is the only platform that
+    # needs the Apple certificate, and this workflow now runs in a public
+    # repository, so the certificate is scoped to exactly one job that says so
+    # in its name — `build-macos` below, behind an environment that pauses for
+    # the maintainer's approval. Linux and Windows read no secret of any kind.
+    #
+    # Splitting costs some duplicated setup steps. That is the price of being
+    # able to answer "which job can spend the signing key" by reading the file
+    # rather than by reasoning about matrix expressions.
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-latest # macOS: universal .dmg + .app
-            args: "--target universal-apple-darwin"
           - platform: ubuntu-22.04 # Linux: .deb + .AppImage
             args: ""
           - platform: windows-latest # Windows: .msi + .exe (NSIS)
@@ -140,20 +155,9 @@ jobs:
       - name: Build app and publish release
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
         env:
+          # No Apple secrets here, and none available to this job. These are the
+          # unsigned platforms; the certificate lives in `build-macos`.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS code signing + notarization. Only consumed on the macOS
-          # runner; harmless (unused) elsewhere. If these secrets are unset the
-          # build is simply unsigned, exactly as before — so this is safe to
-          # merge before the Apple Developer credentials exist. Setup steps and
-          # the full secret list are in README → Releasing → Signing.
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-          # Notarization via the Apple ID method (app-specific password).
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           tagName: ${{ github.ref_name }}
           # Keep this in sync with productName in tauri.conf.json — it is the
@@ -172,26 +176,98 @@ jobs:
           releaseBody: |
             Download the installer for your platform below.
 
-            See [CHANGELOG.md](https://github.com/jacobla1/Scale/blob/main/CHANGELOG.md) for what changed in this version.
+            See [CHANGELOG.md](https://github.com/jacobla1/sovatela/blob/main/CHANGELOG.md) for what changed in this version.
 
-            **Verify your download.** `SHA256SUMS.txt` is published on
-            https://sovatela.eu — check the file against it before running it.
+            **Verify your download.** Three checks, strongest last:
 
-            Signing status is not asserted here. tauri-action degrades to an
-            unsigned build rather than failing when the Apple secrets are missing
-            or expired, and nothing in the log flags it, so a claim written into
-            this template would be believed on every release whether or not it
-            was true. Confirm it on the artifact instead, before publishing the
-            draft:
+                # 1. the file arrived intact
+                shasum -a 256 -c SHA256SUMS.txt --ignore-missing
+
+                # 2. the publisher vouches for that list
+                minisign -Vm SHA256SUMS.txt -P <the key published at sovatela.eu>
+
+                # 3. this commit and workflow produced the file
+                gh attestation verify <file> --repo jacobla1/sovatela
+
+            Signing status is not asserted in this template. tauri-action
+            degrades to an unsigned build rather than failing when the Apple
+            secrets are missing or expired, and nothing in the log flags it, so
+            a claim written here would be believed on every release whether or
+            not it was true. It is checked on the artifact instead, before the
+            draft is published:
 
                 hdiutil attach Sovatela_*_universal.dmg
                 spctl -a -t exec -vv /Volumes/Sovatela/Sovatela.app
                 # expect: accepted / source=Notarized Developer ID
 
-            Windows and Linux builds are not signed; SmartScreen will warn.
+            Windows and Linux builds are not code-signed; SmartScreen will warn.
+            They have also never been installed, upgraded and removed on a clean
+            machine — treat them as experimental.
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+  # The only job that ever sees the Apple certificate.
+  #
+  # `environment: release` is what makes that statement enforceable rather than
+  # aspirational. The Apple secrets are attached to that environment, not to the
+  # repository, so no other job in this workflow — and no workflow added later —
+  # can read them without also naming the environment, which pauses for a
+  # maintainer's approval before the job starts. In a public repository that is
+  # the difference between "a merged workflow change could spend the signing
+  # key" and "a merged workflow change produces an approval request".
+  build-macos:
+    needs: [windows-terminal-access, tests]
+    if: github.repository == 'jacobla1/sovatela'
+    environment: release
+    permissions:
+      contents: write # needed to create the Release and upload assets
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build app and publish release
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Code signing and notarization. tauri-action degrades to an unsigned
+          # build rather than failing when these are missing or expired, and
+          # nothing in the log flags it — which is why the release procedure
+          # verifies the artifact with scripts/verify-notarization.sh instead of
+          # trusting this step's exit code.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          # Notarization via the Apple ID method (app-specific password).
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Sovatela v__VERSION__"
+          releaseDraft: true
+          prerelease: false
+          args: "--target universal-apple-darwin"
 
   # Every asset on the release must belong to the tag being released.
   #
@@ -207,11 +283,13 @@ jobs:
   # about one is a person's job. The release is still a draft here, so a failure
   # lands before it can be published.
   verify-release-assets:
-    needs: build
-    if: github.repository == 'jacobla1/Scale'
+    needs: [build, build-macos]
+    if: github.repository == 'jacobla1/sovatela'
     runs-on: ubuntu-latest
     permissions:
       contents: write # a draft release is not visible to a read-only token
+      id-token: write # Sigstore identity for the build attestations
+      attestations: write # write the attestations themselves
     steps:
       # Needed only by the terms-archive step below; every other step here
       # talks to the release through `gh` and touches no files.
@@ -326,3 +404,99 @@ jobs:
             exit 1
           fi
           echo "OK — every asset is $version, and all six installers are present."
+
+      # ---------------------------------------------------------------------
+      # Checksums, a signature over them, and provenance for every artifact.
+      #
+      # Until now SHA256SUMS.txt was produced by hand on the maintainer's
+      # machine and uploaded alongside the installers. A checksum list that
+      # travels with the files it vouches for, unsigned, proves only that the
+      # download was not corrupted in transit — anyone able to replace one could
+      # replace both, and the download page said so.
+      #
+      # Two different claims are made here, and they are not substitutes:
+      #
+      #   * the minisign signature says *the publisher vouches for this list*,
+      #     and is checkable offline with one command and a published key, with
+      #     no GitHub account involved;
+      #   * the build attestation says *this workflow, at this commit, produced
+      #     these bytes*, which is the question a signature cannot answer and
+      #     the reason the build moved to the public repository at all.
+      # ---------------------------------------------------------------------
+      - name: Collect the published installers
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          cd release-assets
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern 'Sovatela*'
+          version="${TAG#v}"
+          # Named explicitly and in a fixed order, so the file is byte-identical
+          # for the same inputs and a missing platform is a failure rather than
+          # a shorter list nobody reads.
+          shasum -a 256 \
+            "Sovatela_${version}_universal.dmg" \
+            "Sovatela_${version}_x64-setup.exe" \
+            "Sovatela_${version}_x64_en-US.msi" \
+            "Sovatela_${version}_amd64.deb" \
+            "Sovatela_${version}_amd64.AppImage" \
+            "Sovatela-${version}-1.x86_64.rpm" \
+            > SHA256SUMS.txt
+          echo "Checksums:"; sed 's/^/  /' SHA256SUMS.txt
+
+      - name: Sign the checksums
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Fail rather than publish an unsigned list. The Apple secrets taught
+          # this lesson: a signing step that degrades quietly when its key is
+          # missing produces releases that claim to be signed and are not.
+          if [ -z "${MINISIGN_SECRET_KEY:-}" ]; then
+            echo "MINISIGN_SECRET_KEY is not set."
+            echo "Generate a key once with:  minisign -G -W -p minisign.pub -s minisign.key"
+            echo "then store minisign.key's contents as that secret and commit minisign.pub."
+            exit 1
+          fi
+          sudo apt-get update -qq && sudo apt-get install -y -qq minisign
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > /tmp/minisign.key
+          cd release-assets
+          minisign -S -s /tmp/minisign.key \
+            -m SHA256SUMS.txt \
+            -t "Sovatela $TAG checksums" </dev/null
+          shred -u /tmp/minisign.key
+          # Verify with the committed public key before publishing it, so a
+          # mismatched key pair fails here rather than in a user's terminal.
+          if [ ! -f "$GITHUB_WORKSPACE/minisign.pub" ]; then
+            echo "minisign.pub is not in the repository, so the signature this"
+            echo "run just made cannot be checked against the key people will"
+            echo "use. Commit the public half of the key pair as minisign.pub."
+            exit 1
+          fi
+          minisign -Vm SHA256SUMS.txt -p "$GITHUB_WORKSPACE/minisign.pub"
+
+      - name: Attach the checksums and their signature
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" \
+            release-assets/SHA256SUMS.txt \
+            release-assets/SHA256SUMS.txt.minisig \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+      # Binds every installer and the checksum list to this workflow, this run
+      # and this commit. Free for public repositories; needs Enterprise Cloud
+      # for private ones, which is why this could not exist before the build
+      # moved. Verified by a user with:
+      #   gh attestation verify <file> --repo jacobla1/sovatela
+      - name: Attest what was built
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            release-assets/Sovatela*
+            release-assets/SHA256SUMS.txt

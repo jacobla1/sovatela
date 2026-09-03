@@ -1,3 +1,55 @@
+# Release notes — Sovatela 1.7.0
+
+Release date: 2026-09-03 · [All releases](https://github.com/jacobla1/sovatela/releases)
+
+The first release built in the open. Every installer now carries a record of
+which source produced it, and the checksum list is signed — neither of which was
+possible while the build was private.
+
+## Fixed in 1.7.0
+
+- **Auto-memory could switch itself on.** The setting is stored off, because
+  remembered facts are personal data kept on your device — but the memory panel
+  showed its toggle as *on* before reading the stored value, so saving anything
+  on that screen switched it on. If you never chose auto-memory and found it
+  enabled, this is why. It is off unless you turn it on, and three checks now
+  hold that.
+- **One field from a provider could take the app down.** A reply naming an
+  absurd position in a list of tool calls made the app reserve memory for all of
+  it. Every part of a streamed reply is bounded now. The previous release capped
+  one of the two paths a reply can take; this is the other.
+- **The uninstall page missed your document templates.** Templates you supply
+  are copies of your own files, and on Linux they live outside the folder that
+  page told you to delete — so following it left them behind. The page names
+  them now, with the extra path.
+
+## New in 1.7.0
+
+- **Optionally check for a new version at launch.** Off unless you switch it on,
+  under *Settings ▸ About*. It reads the same static file the button reads and
+  sends nothing about you or your machine — no address, no account, no list.
+  Turning it on is the only setting in the app that adds an automatic network
+  call, and both documents that enumerate those say so.
+
+## Verifying this download
+
+Three checks, strongest last. The first two need nothing but the files; the
+third asks GitHub which commit produced them.
+
+    shasum -a 256 -c SHA256SUMS.txt --ignore-missing
+    minisign -Vm SHA256SUMS.txt -P <the key published at sovatela.eu>
+    gh attestation verify <file> --repo jacobla1/sovatela
+
+The macOS build is signed and notarized by Apple. **Windows and Linux builds are
+not code-signed, and will not be** — a certificate is a recurring cost this
+project does not carry — so SmartScreen will warn, and those packages remain
+experimental: they have never been installed, upgraded and removed on a clean
+machine.
+
+Known limitations and accepted risks: `docs/TECHNICAL-SPEC.md` § 7.
+
+---
+
 # Release notes — Sovatela 1.6.2
 
 Release date: 2026-09-02 · [All releases](https://github.com/jacobla1/sovatela/releases)

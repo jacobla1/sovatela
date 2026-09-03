@@ -23,7 +23,7 @@ pub const MAX_STREAM_CONTENT_BYTES: usize = 8 * 1024 * 1024;
 ///
 /// The decode loop only drains `buffer` when it finds a `\n`. A stream that
 /// never sends one is not a slow stream, it is an unbounded allocation.
-const MAX_SSE_LINE_BYTES: usize = 1024 * 1024;
+pub const MAX_SSE_LINE_BYTES: usize = 1024 * 1024;
 
 /// How much of a provider's error body is shown to the user.
 ///

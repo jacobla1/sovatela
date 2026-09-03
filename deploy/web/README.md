@@ -26,19 +26,53 @@ the release procedure.
 
 ## Release procedure
 
-```sh
-# 1. Get the artifacts as published — not a local build.
-mkdir -p /tmp/sovatela-release && cd /tmp/sovatela-release
-gh release download vX.Y.Z --repo jacobla1/Scale
+> **The build moved to the public repository in September 2026.** Installers are
+> built by `release.yml` on `jacobla1/sovatela`, not on Scale. That is what makes
+> build attestations possible — GitHub publishes them free for public
+> repositories and charges Enterprise Cloud for private ones — so a release can
+> now prove which commit produced each binary, which notarization cannot say and
+> a checksum certainly cannot. The Apple certificate therefore lives in a public
+> repository's `release` environment, which pauses for your approval before the
+> macOS job can read it.
 
-# 2. macOS notarization, on the artifact you are about to ship.
-#    CI degrades to an unsigned build rather than failing, and nothing in the
-#    log flags it, so this is the only thing standing between an expired
-#    certificate and a false claim on the download page.
+```sh
+# 0. ONE-TIME SETUP, if it has not been done. See "First-time setup" below.
+#    - the `release` environment on jacobla1/sovatela, with you as reviewer
+#    - the seven Apple secrets attached to that environment
+#    - MINISIGN_SECRET_KEY as a repository secret, minisign.pub committed
+
+# 1. Publish the SOURCE for this version into the public repo. This must happen
+#    before the tag, and now for a third reason on top of the two below: the
+#    tag is what the public build compiles, so a tag pushed before the source
+#    would build the previous version.
 #
-#    Exits non-zero unless the disk image really holds that version, is signed,
-#    is notarized, and has the ticket stapled (without the staple, Gatekeeper
-#    has to reach Apple at first launch, and fails offline).
+#    - SECURITY.md § "Verifying the claims" points readers at whatever that
+#      repository last received. For 1.3.0 it pointed at 1.2.0 — true of the
+#      old release and quietly false of the one people were downloading.
+#    - a tag created at whatever main happened to be is how v1.3.0, v1.3.1 and
+#      v1.4.0 ended up carrying the previous version's installers.
+node deploy/publish-source.mjs ../sovatela
+(cd ../sovatela && npm ci && npx vitest run)   # the published source must pass
+(cd ../sovatela && git add -A && git commit -m "Sovatela X.Y.Z — source" && git push)
+
+# 2. Tag both repositories. The private tag is the internal record; the public
+#    tag is what builds.
+git tag -a vX.Y.Z -m "Sovatela X.Y.Z" && git push origin vX.Y.Z
+(cd ../sovatela && git tag -a vX.Y.Z -m "Sovatela X.Y.Z" && git push origin vX.Y.Z)
+
+# 3. Approve the macOS job. GitHub will show the `release` environment waiting.
+#    Nothing is signed until you do, which is the point of the gate.
+gh run watch --repo jacobla1/sovatela
+
+#    The workflow then produces, on a DRAFT release: six installers, the terms
+#    as they stood (TERMS-X.Y.Z.md), SHA256SUMS.txt, its minisign signature,
+#    and a build attestation over every one of those files.
+
+# 4. Verify notarization on the artifact, not on the workflow's exit code.
+#    tauri-action degrades to an unsigned build rather than failing when the
+#    Apple secrets are missing or expired, and nothing in the log flags it.
+mkdir -p /tmp/sovatela-release && cd /tmp/sovatela-release
+gh release download vX.Y.Z --repo jacobla1/sovatela
 ../../scripts/verify-notarization.sh Sovatela_X.Y.Z_universal.dmg X.Y.Z
 #    expect: PASS, with the version, the signing identity and the timestamp.
 #
@@ -46,45 +80,20 @@ gh release download vX.Y.Z --repo jacobla1/Scale
 #    the previous release still mounted — the normal state after checking the
 #    last one — macOS mounts the new image at "/Volumes/Sovatela 1", and those
 #    commands validated the OLD app while appearing to pass for the new one.
-#    That happened during the 1.3.0 release. The script mounts to a private
-#    temporary point and refuses to report on an image whose version does not
-#    match the one you named, so a stale disk cannot answer for a new build.
+#    That happened during the 1.3.0 release.
 
-# 3. Publish the SOURCE for this version, into the public `jacobla1/sovatela`
-#    repo. This comes before the release, for two reasons — the second found
-#    the hard way:
-#
-#    - the moment the installers are public, SECURITY.md § "Verifying the
-#      claims" points every reader at whatever version that repo last received.
-#      For 1.3.0 it was pointing at 1.2.0 — true of the old release and quietly
-#      false of the one people were downloading;
-#    - `gh release create` CREATES THE TAG on the public repo, at whatever main
-#      is at that moment. Tag before the source is published and vX.Y.Z on the
-#      mirror contains X.Y.(Z-1). That is what put the previous version's
-#      installers on v1.3.0, v1.3.1 and v1.4.0: the mirror ran its own copy of
-#      release.yml against that stale tag and uploaded what it built. The
-#      workflows are now guarded with `if: github.repository == 'jacobla1/Scale'`,
-#      so the mirror no longer builds — but the tag would still be wrong.
-#
-#    The script assembles the tree, withholds the maintainer-facing documents,
-#    and unwraps links into them so the public repo has no link a reader
-#    cannot follow. It refuses to run against a dirty working tree.
-node deploy/publish-source.mjs ../sovatela
-(cd ../sovatela && git add -A && git commit -m "Sovatela X.Y.Z — source" && git push)
+# 5. Check the signature and the provenance the way a reader would, before
+#    telling readers to. A verification command nobody has run is a claim.
+minisign -Vm SHA256SUMS.txt -p ../../minisign.pub
+gh attestation verify Sovatela_X.Y.Z_universal.dmg --repo jacobla1/sovatela
 
-# 4. Publish the PUBLIC release. This must happen before step 5: the build
-#    fetches every asset URL it writes and refuses if one is not downloadable.
-shasum -a 256 Sovatela_X.Y.Z_* Sovatela-X.Y.Z-*.rpm > SHA256SUMS.txt
-gh release create vX.Y.Z --repo jacobla1/sovatela \
-  --title "Sovatela X.Y.Z" --notes-file <notes> --latest \
-  SHA256SUMS.txt Sovatela_X.Y.Z_universal.dmg Sovatela_X.Y.Z_x64-setup.exe \
-  Sovatela_X.Y.Z_x64_en-US.msi Sovatela_X.Y.Z_amd64.deb \
-  Sovatela_X.Y.Z_amd64.AppImage Sovatela-X.Y.Z-1.x86_64.rpm
+# 6. Publish the draft.
+gh release edit vX.Y.Z --repo jacobla1/sovatela --draft=false --latest
 
-# 5. Build the site.
+# 7. Build the site from the published artifacts.
 node deploy/web/build.mjs /tmp/sovatela-release
 
-# 6. Publish the pages — commit dist/ into the separate `sovatela-web` repo,
+# 8. Publish the pages — commit dist/ into the separate `sovatela-web` repo,
 #    which GitHub Pages serves at sovatela.eu. That repo is the publish
 #    target; do not edit its HTML by hand.
 #
@@ -100,15 +109,13 @@ node deploy/web/build.mjs /tmp/sovatela-release
 #    survive. Retiring a page is therefore a manual `git rm` in sovatela-web.
 cp -R deploy/web/dist/. ../sovatela-web/
 
-# 6b. Look at what changed before publishing it. Every page the build touched
-#     should appear; a page you expected and do not see is step 6 having gone
+# 8b. Look at what changed before publishing it. Every page the build touched
+#     should appear; a page you expected and do not see is step 8 having gone
 #     wrong again.
 (cd ../sovatela-web && git add -A && git status --short)
 (cd ../sovatela-web && git commit && git push)
 
-# 6c. Prove the live pages are the built pages, not "the ones I meant to copy".
-#     Fetch each back and diff it against dist/. This is the check that would
-#     have caught the stale policy pages the moment they happened.
+# 8c. Prove the live pages are the built pages, not "the ones I meant to copy".
 for p in "" privacy/ security/ terms/ accessibility/ security-note-claude-glm/; do
   curl -fsS "https://sovatela.eu/$p" \
     | diff -q - "deploy/web/dist/${p}index.html" >/dev/null \
@@ -116,9 +123,41 @@ for p in "" privacy/ security/ terms/ accessibility/ security-note-claude-glm/; 
 done
 curl -fsS https://sovatela.eu/version.json | diff -q - deploy/web/dist/version.json \
   >/dev/null && echo "  ok   /version.json" || echo "  DIFF /version.json"
-
-# 7. Verify from OUTSIDE your own machine. See the warning below.
 ```
+
+## First-time setup for the public build
+
+Once, on `jacobla1/sovatela`:
+
+```sh
+# The environment that holds the signing credentials. Add yourself as a
+# required reviewer: that is what turns "a merged workflow change could spend
+# the certificate" into "a merged workflow change produces an approval request".
+#   Settings → Environments → New environment → "release"
+#   → Required reviewers → add yourself
+#
+# Then attach the seven Apple secrets to THAT ENVIRONMENT, not to the
+# repository: APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD,
+# APPLE_SIGNING_IDENTITY, KEYCHAIN_PASSWORD, APPLE_ID, APPLE_PASSWORD,
+# APPLE_TEAM_ID.
+
+# The checksum signing key. Generated on your machine, never in CI.
+# -W means no password: the private half is already protected as a GitHub
+# secret, and a password CI cannot type protects nothing.
+minisign -G -W -p minisign.pub -s minisign.key
+
+# The private half becomes a REPOSITORY secret. It is deliberately not in the
+# `release` environment: that would mean a second approval per release, and
+# this key is replaceable by publishing a new public one, where the Apple
+# certificate is tied to an identity and a fee.
+gh secret set MINISIGN_SECRET_KEY --repo jacobla1/sovatela < minisign.key
+shred -u minisign.key   # GitHub has it now; a second copy is a second thing to lose
+
+# The public half is committed, published on the site, and is what readers
+# verify against. Losing it is not a secret leak; losing the private half means
+# publishing a new public key and saying so.
+```
+
 
 `Sovatela_universal.app.tar.gz` is removed automatically. It is Tauri's updater
 bundle, there is no updater, and it only confuses anyone reading the asset list.

@@ -95,6 +95,18 @@ It contains:
 | `conversations/` | One JSON file per chat, plus `index.json` and an assets folder for attachments |
 | `projects/` | One JSON file per project |
 | `compactions/` | Cached summaries of long conversations |
+| `templates/` | **Copies of the document templates you supplied** in *Settings → Document templates*. These are your own files — a letterhead, a corporate deck — copied here when you chose them, and *Delete all chats, projects & memory* does **not** remove them |
+
+> **On Linux, `templates/` is not in the folder above.** The other files are
+> configuration and live under `~/.config/`; templates are application data and
+> live under `~/.local/share/com.anaubi.sovatela/templates/`, so removing only
+> the path in the table leaves your own documents behind. On macOS and Windows
+> both resolve to the single folder above and there is nothing extra to do.
+>
+> ```sh
+> # Linux only — the templates you supplied
+> rm -rf ~/.local/share/com.anaubi.sovatela
+> ```
 
 You can delete that folder in Finder if you prefer — on macOS, *Go → Go to
 Folder* (<kbd>⇧</kbd> + <kbd>⌘</kbd> + <kbd>G</kbd>) and paste the path. Or in

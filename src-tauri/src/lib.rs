@@ -829,6 +829,21 @@ struct AppSettings {
     auto_memory: bool, // suggest remembered facts when a chat wraps up (opt-in)
     #[serde(default)]
     workspace_dir: String, // folder the agent may read/write (empty = feature off)
+    // Opt-in, and off by default, for the same reason `auto_memory` is: a
+    // default that starts making a network call is not one a new user chose.
+    //
+    // This exists because a security fix reaches nobody who does not press
+    // *Check for updates*. The alternative — a mailing list — would mean
+    // holding a pile of email addresses to solve a notification problem, for an
+    // application whose entire claim is that it holds nothing about anyone.
+    // This holds nothing: it fetches the same static version.json the button
+    // fetches, sends no query string and nothing about the machine, and there
+    // is no account, no registration and no list. What it costs is that the app
+    // now makes a second automatic call when it is switched on, which is why it
+    // is off until someone switches it on and why the privacy policy counts the
+    // automatic calls rather than naming one.
+    #[serde(default)]
+    check_updates_on_launch: bool,
 }
 
 fn default_true() -> bool {
@@ -1325,6 +1340,19 @@ struct HistorySettings {
     dir: String, // custom folder; empty = default (app config dir)
 }
 
+/// Whether the app should ask sovatela.eu for the current version at launch.
+#[tauri::command]
+fn get_update_check_on_launch(app: tauri::AppHandle) -> Result<bool, String> {
+    Ok(load_settings(&app)?.check_updates_on_launch)
+}
+
+#[tauri::command]
+fn set_update_check_on_launch(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let mut s = load_settings(&app)?;
+    s.check_updates_on_launch = enabled;
+    save_settings(&app, &s)
+}
+
 #[tauri::command]
 fn get_history_settings(app: tauri::AppHandle) -> Result<HistorySettings, String> {
     let s = load_settings(&app)?;
@@ -1396,7 +1424,15 @@ struct MemorySettings {
     about_you: String,
     #[serde(default)]
     custom_instructions: String,
-    #[serde(default = "default_true")]
+    // `default`, not `default_true`, and the difference is not cosmetic: this
+    // struct is *deserialized from the renderer* and written straight into
+    // settings by `set_memory_settings`, so a payload that simply omits the
+    // field used to turn auto-memory on. The same reasoning is already
+    // recorded on `check_updates_on_launch` — a default nobody chose is the
+    // thing to avoid — and it applies harder here, because what this one
+    // starts is the collection of durable personal facts rather than a
+    // request for a static file.
+    #[serde(default)]
     auto_memory: bool,
 }
 
@@ -2657,9 +2693,12 @@ async fn update_pricing() -> Result<pricing::PricingInfo, String> {
     pricing::set_active(table)
 }
 
-/// Ask the download site what the current version is. Runs only when the user
-/// presses **Check for updates** in Settings → About — there is no call on
-/// launch, no schedule, and nothing is sent but the request itself.
+/// Ask the download site what the current version is. Runs when the user
+/// presses **Check for updates** in Settings → About, and at launch only if
+/// the opt-in check under the same heading is switched on — there is no
+/// schedule, and nothing is sent but the request itself. This comment said
+/// "there is no call on launch" after the opt-in launch check had made that
+/// conditional; a claim in a doc comment drifts as easily as one on a page.
 ///
 /// A failure here is reported as a failure rather than as "you are up to
 /// date": telling someone they have the latest version when the check never
@@ -5370,13 +5409,40 @@ struct ToolCallAccum {
     arguments: String,
 }
 
+/// Most tool calls one round may accumulate.
+///
+/// `index` arrives from the provider and the accumulator grew its vector until
+/// it reached that index. A single field — `"index": 4000000000` — was
+/// therefore an allocation primitive, not gradual growth: one number, and the
+/// process is gone. The real ceiling is the number of tools this app exposes,
+/// which is a handful, so an index past this is not a big request but a
+/// malformed or hostile one. A custom endpoint is configurable, so "the
+/// provider would not do that" is not an argument available here.
+const MAX_TOOL_CALLS_PER_ROUND: usize = 32;
+
+/// Most bytes of arguments one tool call may accumulate. Arguments arrive in
+/// fragments and were appended without a ceiling.
+const MAX_TOOL_ARGUMENT_BYTES: usize = 1024 * 1024;
+
+/// Most bytes for a tool call's id or function name. Both are short by
+/// construction; neither was bounded.
+const MAX_TOOL_FIELD_BYTES: usize = 512;
+
 /// Accumulates one streamed completion round: the content text plus any tool
 /// calls, which arrive as fragments (`index`-keyed, arguments in pieces).
+///
+/// **Every field here grows from provider-supplied data**, which is why each
+/// one is bounded. 1.6.2 capped the plain-chat decoder in `glm.rs` and left
+/// this one — the tool-enabled path — untouched, so the caps that release
+/// announced applied to the simpler route only.
 #[derive(Default)]
 struct RoundAccum {
     content: String,
     tool_calls: Vec<ToolCallAccum>,
     truncated: bool, // finish_reason == "length": hit the token cap mid-answer
+    /// Set when a cap is hit. The round stops and the caller reports it rather
+    /// than returning a silently-truncated answer as though it were complete.
+    overflow: Option<String>,
 }
 
 /// Pull complete lines out of an SSE buffer, leaving any partial one behind.
@@ -5413,6 +5479,11 @@ impl RoundAccum {
     /// Fold one parsed SSE chunk in. Returns the new content token, if any,
     /// so the caller can forward it to the UI as it arrives.
     fn feed(&mut self, v: &serde_json::Value) -> Option<String> {
+        // Once a cap is hit the round is over; keep folding and the thing the
+        // cap exists to prevent happens anyway, one chunk later.
+        if self.overflow.is_some() {
+            return None;
+        }
         if v["choices"][0]["finish_reason"] == "length" {
             self.truncated = true;
         }
@@ -5420,6 +5491,14 @@ impl RoundAccum {
         let mut token = None;
         if let Some(c) = delta["content"].as_str() {
             if !c.is_empty() {
+                if self.content.len() + c.len() > glm::MAX_STREAM_CONTENT_BYTES {
+                    self.overflow = Some(
+                        "The model sent a reply larger than this app will hold, so it was \
+                         stopped. What arrived before that is kept."
+                            .into(),
+                    );
+                    return None;
+                }
                 self.content.push_str(c);
                 token = Some(c.to_string());
             }
@@ -5427,27 +5506,153 @@ impl RoundAccum {
         if let Some(calls) = delta["tool_calls"].as_array() {
             for tc in calls {
                 let idx = tc["index"].as_u64().unwrap_or(0) as usize;
+                // Checked before the vector is grown, not after. Growing to the
+                // index and then noticing is the bug.
+                if idx >= MAX_TOOL_CALLS_PER_ROUND {
+                    self.overflow = Some(format!(
+                        "The model asked for tool call number {idx}, and this app allows \
+                         {MAX_TOOL_CALLS_PER_ROUND} in one turn. The reply has been stopped."
+                    ));
+                    return token;
+                }
                 while self.tool_calls.len() <= idx {
                     self.tool_calls.push(ToolCallAccum::default());
                 }
                 let slot = &mut self.tool_calls[idx];
                 // id and name arrive once (first fragment); arguments in pieces.
                 if let Some(id) = tc["id"].as_str() {
-                    if slot.id.is_empty() {
+                    if slot.id.is_empty() && id.len() <= MAX_TOOL_FIELD_BYTES {
                         slot.id = id.to_string();
                     }
                 }
                 if let Some(n) = tc["function"]["name"].as_str() {
-                    if slot.name.is_empty() {
+                    if slot.name.is_empty() && n.len() <= MAX_TOOL_FIELD_BYTES {
                         slot.name = n.to_string();
                     }
                 }
                 if let Some(a) = tc["function"]["arguments"].as_str() {
+                    if slot.arguments.len() + a.len() > MAX_TOOL_ARGUMENT_BYTES {
+                        self.overflow = Some(
+                            "The model sent a tool call larger than this app will hold, \
+                             so the reply has been stopped."
+                                .into(),
+                        );
+                        return token;
+                    }
                     slot.arguments.push_str(a);
                 }
             }
         }
         token
+    }
+}
+
+#[cfg(test)]
+mod round_accum_limits {
+    use super::*;
+
+    // The sharp one. `index` came from provider JSON and the vector was grown
+    // until it reached that index, so one number was an allocation primitive.
+    // This test would not have finished before — it would have taken the
+    // machine down — which is the point.
+    #[test]
+    fn a_huge_tool_call_index_is_refused_rather_than_allocated() {
+        let mut acc = RoundAccum::default();
+        acc.feed(&serde_json::json!({"choices":[{"delta":{"tool_calls":[
+            {"index": 4_000_000_000u64, "id": "x", "function": {"name": "web_search"}}
+        ]}}]}));
+        assert!(acc.overflow.is_some(), "a 4-billion index was accepted");
+        assert!(
+            acc.tool_calls.len() < MAX_TOOL_CALLS_PER_ROUND + 1,
+            "the vector was grown anyway: {}",
+            acc.tool_calls.len()
+        );
+    }
+
+    #[test]
+    fn an_index_just_past_the_ceiling_is_refused() {
+        let mut acc = RoundAccum::default();
+        acc.feed(&serde_json::json!({"choices":[{"delta":{"tool_calls":[
+            {"index": MAX_TOOL_CALLS_PER_ROUND, "function": {"name": "x"}}
+        ]}}]}));
+        assert!(acc.overflow.is_some());
+    }
+
+    // Ordinary tool use must be untouched, or this gets reverted rather than
+    // fixed. Two parallel calls with fragmented arguments is the normal shape.
+    #[test]
+    fn ordinary_tool_calls_still_accumulate() {
+        let mut acc = RoundAccum::default();
+        acc.feed(&serde_json::json!({"choices":[{"delta":{"tool_calls":[
+            {"index": 0, "id": "a", "function": {"name": "web_search", "arguments": "{\"q\":"}}
+        ]}}]}));
+        acc.feed(&serde_json::json!({"choices":[{"delta":{"tool_calls":[
+            {"index": 1, "id": "b", "function": {"name": "calculate", "arguments": "{\"e\":"}}
+        ]}}]}));
+        acc.feed(&serde_json::json!({"choices":[{"delta":{"tool_calls":[
+            {"index": 0, "function": {"arguments": "\"eu\"}"}}
+        ]}}]}));
+        assert!(acc.overflow.is_none(), "{:?}", acc.overflow);
+        assert_eq!(acc.tool_calls.len(), 2);
+        assert_eq!(acc.tool_calls[0].name, "web_search");
+        assert_eq!(acc.tool_calls[0].arguments, "{\"q\":\"eu\"}");
+        assert_eq!(acc.tool_calls[1].id, "b");
+    }
+
+    #[test]
+    fn tool_arguments_stop_at_a_ceiling() {
+        let mut acc = RoundAccum::default();
+        let big = "x".repeat(256 * 1024);
+        for _ in 0..8 {
+            acc.feed(&serde_json::json!({"choices":[{"delta":{"tool_calls":[
+                {"index": 0, "function": {"arguments": big}}
+            ]}}]}));
+        }
+        assert!(acc.overflow.is_some(), "arguments grew without limit");
+        assert!(acc.tool_calls[0].arguments.len() <= MAX_TOOL_ARGUMENT_BYTES);
+    }
+
+    #[test]
+    fn content_stops_at_a_ceiling_and_keeps_what_arrived() {
+        let mut acc = RoundAccum::default();
+        let chunk = "y".repeat(1024 * 1024);
+        for _ in 0..16 {
+            acc.feed(&serde_json::json!({"choices":[{"delta":{"content": chunk}}]}));
+        }
+        assert!(acc.overflow.is_some(), "content grew without limit");
+        assert!(acc.content.len() <= glm::MAX_STREAM_CONTENT_BYTES);
+        assert!(
+            !acc.content.is_empty(),
+            "what arrived before the cap was discarded"
+        );
+    }
+
+    // An absurd id or name is dropped rather than stored, and dropping it must
+    // not take the ordinary case with it.
+    #[test]
+    fn oversized_ids_and_names_are_dropped_not_stored() {
+        let mut acc = RoundAccum::default();
+        acc.feed(&serde_json::json!({"choices":[{"delta":{"tool_calls":[
+            {"index": 0, "id": "z".repeat(MAX_TOOL_FIELD_BYTES + 1),
+             "function": {"name": "n".repeat(MAX_TOOL_FIELD_BYTES + 1)}}
+        ]}}]}));
+        assert!(acc.tool_calls[0].id.is_empty());
+        assert!(acc.tool_calls[0].name.is_empty());
+    }
+
+    // Once a cap trips, folding more chunks would do the thing the cap
+    // prevents, one chunk later.
+    #[test]
+    fn nothing_more_is_folded_after_an_overflow() {
+        let mut acc = RoundAccum::default();
+        acc.feed(&serde_json::json!({"choices":[{"delta":{"tool_calls":[
+            {"index": 9_999_999u64}
+        ]}}]}));
+        let before = acc.content.len();
+        assert!(acc
+            .feed(&serde_json::json!({"choices":[{"delta":{"content":"more"}}]}))
+            .is_none());
+        assert_eq!(acc.content.len(), before);
     }
 }
 
@@ -5486,6 +5691,17 @@ async fn stream_tool_round(
                 }
                 let chunk = chunk.map_err(stream_read_error)?;
                 buf.push_str(&String::from_utf8_lossy(&chunk));
+                // `buf` is only drained when a newline arrives, so a stream
+                // that sends bytes and never a newline is an unbounded
+                // allocation that looks like a slow reply. Same cap as the
+                // plain-chat decoder, which got it in 1.6.2 while this did not.
+                if buf.len() > glm::MAX_SSE_LINE_BYTES {
+                    let msg = "The model sent a single line of reply larger than this app \
+                               will hold. The reply has been stopped."
+                        .to_string();
+                    let _ = on_event.send(StreamEvent::Error(msg.clone()));
+                    return Err(msg);
+                }
                 drain_sse_lines(&mut buf, false)
             }
             None => {
@@ -5518,6 +5734,13 @@ async fn stream_tool_round(
                         let _ = on_event.send(StreamEvent::Error(RUNAWAY_MSG.into()));
                         return Ok(acc);
                     }
+                }
+                // A cap was hit while folding this chunk. Stop the round and
+                // say so: what arrived is kept, because a truncated answer the
+                // user can see beats an error that discards a long one.
+                if let Some(msg) = acc.overflow.clone() {
+                    let _ = on_event.send(StreamEvent::Error(msg));
+                    return Ok(acc);
                 }
                 if !thinking_shown
                     && v["choices"][0]["delta"]["reasoning_content"]
@@ -9284,6 +9507,52 @@ mod tests {
         let url = image_data_url(b"\x89PNG\r\n\x1a\nrest", "test").unwrap();
         assert!(url.starts_with("data:image/png;base64,"));
         assert!(image_data_url(b"<html>", "test").is_err());
+    }
+
+    // The guard above scans for `.json()`, `.text()` and `.bytes()`. The
+    // tool-enabled chat path uses none of them: it takes a byte stream and
+    // accumulates by hand, so the guard was blind to it and said nothing while
+    // `stream_tool_round` grew content, a line buffer, tool arguments and a
+    // vector indexed by a provider-chosen number. 1.6.2 shipped caps for the
+    // plain-chat decoder and a guard shaped around the instances I had already
+    // found, which is the same mistake this project keeps making in prose.
+    //
+    // So: every function that takes a byte stream must mention a ceiling.
+    #[test]
+    fn every_stream_reader_has_a_ceiling() {
+        let stream_call = ["bytes_", "stream()"].concat();
+        for (name, src) in [
+            ("lib.rs", lib_source()),
+            ("glm.rs", include_str!("glm.rs").replace("\r\n", "\n")),
+        ] {
+            let code = &src[..src.find("\nmod tests {").unwrap_or(src.len())];
+            let mut from = 0usize;
+            let mut seen = 0usize;
+            while let Some(rel) = code[from..].find(&stream_call) {
+                let at = from + rel;
+                // The enclosing function: back to the nearest `fn`, forward to
+                // the first line that closes at column zero.
+                let start = code[..at].rfind("\nfn ").unwrap_or(0);
+                let start = code[..at].rfind("\nasync fn ").unwrap_or(start).max(start);
+                let end = code[at..]
+                    .find("\n}\n")
+                    .map(|e| at + e)
+                    .unwrap_or(code.len());
+                let body = &code[start..end];
+                assert!(
+                    body.contains("MAX_"),
+                    "{name}: a function reads a byte stream with no ceiling in sight — \
+                     accumulating from a stream needs a cap, not just a reader:\n{}",
+                    body.lines().take(3).collect::<Vec<_>>().join("\n")
+                );
+                seen += 1;
+                from = at + stream_call.len();
+            }
+            assert!(
+                seen > 0 || name == "glm.rs",
+                "{name}: no stream readers found — has the pattern moved?"
+            );
+        }
     }
 
     #[test]
@@ -14047,6 +14316,8 @@ pub fn run() {
             reset_usage,
             update_pricing,
             check_for_update,
+            get_update_check_on_launch,
+            set_update_check_on_launch,
             save_conversation,
             list_conversations,
             load_conversation,

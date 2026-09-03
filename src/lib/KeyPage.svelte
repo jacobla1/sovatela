@@ -47,6 +47,24 @@
   let updateUrl = $state("");
   let updateError = $state("");
 
+  // Opt-in check at launch. Off unless switched on: a default that starts
+  // making a network call is not one a new user chose, which is the same rule
+  // `auto_memory` follows.
+  let checkOnLaunch = $state(false);
+  invoke("get_update_check_on_launch")
+    .then((v) => (checkOnLaunch = !!v))
+    .catch(() => {});
+
+  async function toggleCheckOnLaunch(enabled) {
+    checkOnLaunch = enabled;
+    try {
+      await invoke("set_update_check_on_launch", { enabled });
+    } catch (e) {
+      checkOnLaunch = !enabled; // put the switch back where the setting is
+      console.error("Could not save the update preference:", e);
+    }
+  }
+
   async function checkForUpdate() {
     updateState = "checking";
     updateError = "";
@@ -401,7 +419,16 @@
   // ----- Memory (personalization applied to every chat) -----
   let aboutYou = $state("");
   let customInstructions = $state("");
-  let autoMemory = $state(true);
+  // Off until the load below says otherwise, because the backend default is
+  // off and this value is what Save writes back. It was `true`: on a fresh
+  // install the toggle rendered as on while auto-memory was off, so saving
+  // anything in this panel — a line of "About you" — switched on the
+  // collection of durable personal facts, showing an already-on toggle to
+  // someone who had never chosen it. The load's failure path swallows its
+  // error, so this is also what a settings read that fails falls back to.
+  // Starting from off gets the direction right either way: the worst a stale
+  // value can now do is turn a feature off, not start collecting.
+  let autoMemory = $state(false);
   let memorySaved = $state(false);
   let memories = $state([]); // remembered facts (auto-captured or manually added)
   let newMemory = $state("");
@@ -2170,6 +2197,23 @@
         {/if}
       </span>
     </dd>
+    <dt>At launch</dt>
+    <dd>
+      <label class="check">
+        <input
+          type="checkbox"
+          checked={checkOnLaunch}
+          onchange={(e) => toggleCheckOnLaunch(e.currentTarget.checked)}
+        />
+        Check for a new version when Sovatela starts
+      </label>
+      <span class="hint">
+        Off by default. It reads the same version number as the button above and
+        sends nothing — no account, no sign-up, and nothing about you or this
+        machine is recorded anywhere. It exists because a security fix otherwise
+        reaches only people who think to press the button.
+      </span>
+    </dd>
     <dt>Licence</dt>
     <dd>MIT — free to use, modify and share</dd>
     <dt>Third-party notices</dt>
@@ -2193,9 +2237,10 @@
     {store}. You do not have to take that on trust — the source above is the
     same code these builds are made from.
     <strong>Check for updates</strong> is the one button here that uses the
-    network: it reads a version number from sovatela.eu and sends nothing. It
-    runs only when you press it — there is no check on launch and no automatic
-    update.
+    network: it reads a version number from sovatela.eu and sends nothing.
+    It runs when you press it, and — only if you switch on <em>Check for a new
+    version when Sovatela starts</em> above — once when the app opens. Nothing
+    installs itself either way: updating is always a download you choose.
   </p>
   <!-- README and TERMS §10 both carry this, but neither is reachable from
        inside the app, and Settings names every one of these companies while

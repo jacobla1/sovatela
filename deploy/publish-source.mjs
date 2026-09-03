@@ -38,6 +38,7 @@ const WITHHELD = [
   "deploy/searxng/",
   "docs/ACCESSIBILITY.md",
   "docs/LEGAL-CHECKLIST.md",
+  "docs/PRODUCT-GAPS.md",
   "docs/PRODUCT-SPEC.md",
   "docs/PUBLISHER.md",
   "docs/UX-SPEC.md",

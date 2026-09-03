@@ -291,11 +291,19 @@ carrying *"Apple checked it for malicious software"*, not the blocking
 to the Apple ID method: swap `APPLE_ID`/`APPLE_PASSWORD`/`APPLE_TEAM_ID` for
 `APPLE_API_ISSUER`/`APPLE_API_KEY`/`APPLE_API_KEY_PATH`.)
 
-**Windows** builds are still unsigned (users click through SmartScreen).
-Authenticode signing needs a purchased OV/EV certificate or
-[Azure Trusted Signing](https://learn.microsoft.com/azure/trusted-signing/);
-wire it in later via `tauri.conf.json` → `bundle.windows` when a certificate is
-available. **Linux** packages don't use OS-level code signing.
+**Windows** builds are unsigned, and that is a decision rather than a backlog
+item — `SECURITY.md` § Release integrity records it. Authenticode needs a
+purchased OV/EV certificate or
+[Azure Trusted Signing](https://learn.microsoft.com/azure/trusted-signing/), a
+recurring cost the publisher is not willing to carry for a free application, so
+the SmartScreen warning is permanent. If that ever changes it would be wired in
+via `tauri.conf.json` → `bundle.windows`.
+
+**Linux** packages don't use OS-level code signing either. What both platforms
+do carry, from the first release built in the public repository, is a minisign
+signature over `SHA256SUMS.txt` and a build attestation binding each installer
+to the commit that produced it — neither of which is code signing, and neither
+of which stops SmartScreen.
 
 ## Providers (what a user needs)
 
@@ -351,15 +359,18 @@ Full index: [`docs/README.md`](docs/README.md).
 
 ## Roadmap
 
-- Accessibility: screen-reader testing on each platform — the open items in the
-  [accessibility statement](https://sovatela.eu/accessibility). Text scaling to 200%,
-  keyboard shortcuts, focus management and landmark roles have shipped.
-- Windows code signing, so SmartScreen stops warning. macOS is signed and
-  notarized already.
 - A local/OpenAI-compatible chat endpoint (Ollama, llama.cpp, LM Studio) as an
   alternative provider — the fully-offline end of the sovereignty scale.
   `ChatOptions.endpoint` is already a field, so this is a settings surface more
   than a rewrite.
+
+Accessibility is deliberately not a roadmap item. Text scaling to 200%,
+keyboard shortcuts, focus management and landmark roles have shipped;
+screen-reader verification on each platform remains open and is **not
+scheduled** — the [accessibility statement](https://sovatela.eu/accessibility) says so and
+records what is unknown, rather than promising a date. This section used to
+list that testing as if a pass were coming, which the statement itself had
+already stopped implying.
 
 > **Terminal/agent use of GLM-5.2** is handled by pointing Claude Code at
 > Scaleway through a local LiteLLM proxy (a `claude-glm` launcher), rather than

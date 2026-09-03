@@ -227,3 +227,27 @@ describe("releases can be subscribed to without collecting anything", () => {
     );
   });
 });
+
+// The release notes called Windows and Linux experimental; the download cards
+// presented them as ordinary downloads. The disclosure has to be where the
+// button is, not one page away from it.
+describe("the download page says which platforms are experimental", () => {
+  const index = read("deploy/web/index.html");
+
+  it("marks both unsigned platforms at the download itself", () => {
+    const cards = index.split(/<!--\s*(?:Windows|Linux)\s*-->/);
+    expect(cards.length, "the Windows and Linux cards moved").toBeGreaterThan(2);
+    for (const platform of ["Windows", "Linux"]) {
+      const at = index.indexOf(`<span class="dl-title">${platform}</span>`);
+      expect(at, `${platform} download card is gone`).toBeGreaterThan(-1);
+      const card = index.slice(at, at + 400);
+      expect(card, `the ${platform} card does not say it is experimental`).toMatch(
+        /experimental/i,
+      );
+    }
+  });
+
+  it("says why, near the downloads", () => {
+    expect(index).toMatch(/never been installed, upgraded and removed on a\s+clean machine/);
+  });
+});
