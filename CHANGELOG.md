@@ -1,5 +1,101 @@
 # Changelog
 
+## 1.7.1 — 2026-09-04
+
+### Security
+- **Auto-memory's fix in 1.7.0 was incomplete, and the release notes overstated
+  it.** The memory panel was corrected; the chat view kept its own copy of the
+  same flag, initialised on, and that is the copy deciding whether a
+  conversation is sent for extraction when you leave it. A slow settings read
+  therefore still produced a billed request against a setting the user had
+  declined. Both now stay off until the stored value has been read — "not read
+  yet" and "turned off" are distinguished, so a read that fails never runs the
+  scan — and the guard sweeps every file instead of the one the first fix
+  touched.
+- **A reply could paint a fake interface over the app.** Assistant markdown was
+  sanitised against a list of forbidden tags, which caught `<style>` and missed
+  the `style` *attribute* — and the window's policy permits inline style, so
+  `position:fixed;inset:0` covered the whole window. No script and no sandbox
+  escape: what it produced was a pixel-accurate impersonation of an app whose
+  point is that you can trust what it shows you, and a poisoned search result
+  or uploaded document is enough to ask the model for it. Replies are now
+  filtered against an allowlist — `style`, `class` and `id` cannot survive —
+  and the demonstrated payload is a regression test.
+- **A rejected endpoint could keep the replacement token.** Web search and
+  image settings stored the new secrets first and validated the address
+  afterwards, while the comment beside them claimed the reverse. Paste a new
+  token, mistype the URL, and the save was refused — with the new token already
+  stored against the old address, so the next request sent it there. For the
+  shared SearXNG this app documents, that address belongs to someone else, and
+  rotating away from them is exactly when both fields get retyped. Nothing is
+  written now until the whole configuration is accepted.
+- **The interface reported work it had not done.** Removing the Scaleway key
+  showed the welcome screen whether or not the keychain accepted the deletion,
+  so a refused write looked exactly like success to someone clearing a machine.
+  It now says what happened and stays put. Web search, image generation,
+  terminal-key and memory saves each surface their own failure instead of
+  logging to a console nobody opens.
+
+### New
+- **A dot beside *Settings* when a new version exists.** It appears only if the
+  launch check is switched on, reads the result that check already fetched — no
+  second network call — and stays until you have the newer version, where the
+  banner was dismissible and gone for the session. The setting now says what
+  declining it costs: with it off, there is no route by which a security fix can
+  reach you, because there is no updater and no mailing list.
+- **Sovatela asks, once, whether to check for updates at launch.** On the first
+  start after this version, and never again whichever way it is answered. Both
+  buttons are answers and there is no dismiss — a dismissal would leave the
+  question open and bring it back next launch, which is how people learn to
+  click past things. It leads with the reason: there is no updater and no
+  mailing list, so declining means nothing can tell you about a security fix.
+- **Keys that expire, and an app that explains them.** The setup steps now
+  recommend giving a Scaleway key an expiry date rather than choosing *Never*.
+  Nothing here can leak a key, but keys escape in ways an application has no say
+  over — a screenshot, an old backup, a machine you no longer have — and a date
+  limits how long that matters. When a key is refused, the app now says so where
+  you are reading, names expiry as the likeliest cause for a key that worked
+  yesterday, and points at generating a new one. It does not claim the key
+  expired: Scaleway answers identically for expired, revoked and mistyped, and
+  the app cannot see the date. Choosing *Never* is still offered, as a trade
+  rather than an oversight.
+
+  The previous advice was *choose Never*, justified by the error not mentioning
+  the key. That justification is what this release removes.
+
+### Release engineering
+- **Publication runs from an allowlist.** Every tracked file must be classified
+  as public or withheld; anything on neither list names itself and stops the
+  publish. The previous denylist shipped whatever nobody remembered to exclude,
+  in a tree that holds compliance notes and security assessments — and pushing
+  one of those cannot be undone. `--force`, which waived the clean-tree
+  guarantee, is removed.
+- **Notarization is verified by the workflow, not by remembering to.** A macOS
+  job runs `verify-notarization.sh` against the artifact on the draft release,
+  and the checksums, signature and attestations do not run without it.
+
+### Interface
+- **Button rows have spacing again.** `.actions` carried no vertical margin, so
+  a Save button sat flush against the field above it and against the paragraph
+  below — fixed once for all eleven uses rather than per panel.
+- **One type scale, two font families.** The monospace stack had drifted into
+  three near-copies, one carrying Consolas and the others not, so a code span in
+  Settings and one in a reply could resolve to different fonts on the same
+  machine. Both families are tokens now.
+- **The launch-check notice rendered as a coloured bar mid-sentence**, being an
+  inline element among inline siblings. It is a paragraph, like every other hint
+  in that panel.
+- **Two banners ignored the text-size setting.** The update and key-removal
+  notices were sized in pixels, so they did not grow with the 200% scaling the
+  rest of the app honours, and their colours were fixed light-theme values that
+  would have looked wrong in dark mode. Both now use the shared scale and derive
+  their colours from the theme.
+
+### Documentation
+- The download page said the checksum list is not signed, two paragraphs above
+  the section explaining its signature. The stale paragraph is gone, and a test
+  fails on any page that claims both.
+
 ## 1.7.0 — 2026-09-03
 
 ### Security

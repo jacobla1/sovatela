@@ -251,3 +251,32 @@ describe("the download page says which platforms are experimental", () => {
     expect(index).toMatch(/never been installed, upgraded and removed on a\s+clean machine/);
   });
 });
+
+// The page gained a signature section when releases started carrying one, and
+// kept the paragraph saying the list was unsigned. Both were live together:
+// a reader who met the older one first had been told, on the page itself, not
+// to bother with the check the release exists to offer.
+describe("the download page does not contradict itself about the checksums", () => {
+  const index = read("deploy/web/index.html");
+  const flat = index.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ");
+
+  it("never says the checksum list is unsigned", () => {
+    for (const claim of [
+      /list is not signed/i,
+      /checksums? (?:are|is) not signed/i,
+      /unsigned checksum/i,
+      /SHA256SUMS[^.]{0,40}not signed/i,
+    ]) {
+      expect(
+        flat,
+        `the page says the checksum list is unsigned: ${claim}`,
+      ).not.toMatch(claim);
+    }
+  });
+
+  // The positive half, so the section cannot simply be deleted to pass.
+  it("offers the signature and the attestation", () => {
+    expect(flat, "the minisign verification is gone").toMatch(/minisign -Vm SHA256SUMS\.txt/);
+    expect(flat, "the attestation check is gone").toMatch(/gh attestation verify/);
+  });
+});

@@ -1,4 +1,6 @@
 <script>
+  import { credentialStore } from "./settings.js";
+
   // The two Scaleway-side setup steps — open an account, generate a key —
   // shared by the Quick start page and by the Settings key form, which used to
   // carry near-identical copy each. They are the steps that describe someone
@@ -22,6 +24,10 @@
       console.error("Could not open URL:", e);
     }
   }
+
+  // Named for this platform, so the sentence about where the key lives is
+  // true wherever it is read.
+  const store = credentialStore(navigator.userAgent);
 </script>
 
 <li class="setup-step">
@@ -41,9 +47,17 @@
   <div>
     <h2>Create a Scaleway API key</h2>
     <p>
-      Leave the settings as they are, pick <strong>No, skip for now</strong> for
-      Object Storage, and copy the <strong>Secret key</strong> — Scaleway shows
-      it only once, so do it before closing that window.
+      Set an <strong>expiry date</strong> — a year is a good default — pick
+      <strong>No, skip for now</strong> for Object Storage, leave everything
+      else, and copy the <strong>Secret key</strong>. Scaleway shows it only
+      once, so do it before closing that window.
+    </p>
+    <p>
+      The expiry date is a safety net: if the key ever escapes, it stops being
+      worth anything on that date. Chat stops working then too — Sovatela says
+      so plainly and points you at making a new one. Prefer not to be
+      interrupted? Choose <em>Never</em>; that is a fair trade on a machine only
+      you use.
     </p>
     <p>
       Missed it? Generate another. Old keys keep working until you delete them,
@@ -71,9 +85,24 @@
           recognisable if you ever come back to a list of keys.
         </li>
         <li>
-          <strong>Expiration</strong> — choose <strong>Never</strong>. Anything
-          else means chat stops working on the day it lapses, and the error you
-          get then will not mention the key.
+          <strong>Expiration</strong> — set a date. A year is a sensible
+          starting point.
+          <br />
+          A key that expires is a key that stops being useful to anyone who
+          copies it. Nothing here can leak your key — it lives in
+          {store}, is never shown back to you and never leaves this machine
+          except to Scaleway — but keys escape in other ways: a screenshot, a
+          note to yourself, a backup, a machine you no longer control. An expiry
+          date puts a limit on how long any of that matters.
+          <br />
+          The cost is that chat stops on that day. Sovatela will tell you why
+          when it happens and point you at generating a new one, which is the
+          whole of the fix — it takes about a minute, and nothing you have saved
+          is affected.
+          <br />
+          <strong>Choose <em>Never</em> if you would rather not be interrupted.</strong>
+          That is a legitimate choice for a key on a machine only you use; it
+          just means the key stays valid until you revoke it by hand.
         </li>
         <li>
           <strong>Object Storage</strong> — <strong>No, skip for now</strong>.

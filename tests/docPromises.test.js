@@ -596,6 +596,179 @@ describe("the uninstall page accounts for everything stored", () => {
   });
 });
 
+// The badge, and the key-expiry advice that depends on it. Both are the same
+// bargain: the app asks people to accept an interruption it can explain, so it
+// has to actually explain it.
+describe("an update people did not ask for still reaches them", () => {
+  const app = read("src/App.svelte");
+  const chat = read("src/lib/Chat.svelte");
+  const keypage = read("src/lib/KeyPage.svelte");
+
+  // The banner is dismissible and gone for the session. If that were the only
+  // notice, dismissing it once would be the same as never being told.
+  it("survives the banner being dismissed", () => {
+    expect(app, "the persistent update state is gone").toMatch(/updateAvailable/);
+    expect(app, "the badge state is not passed to the chat view").toMatch(
+      /<Chat[\s\S]{0,200}\{updateAvailable\}/,
+    );
+    const dismiss = app.slice(app.indexOf("update-banner-close"));
+    expect(
+      dismiss.slice(0, 200),
+      "dismissing the banner also clears the badge",
+    ).not.toMatch(/updateAvailable\s*=\s*null/);
+  });
+
+  it("shows beside Settings, and says so in words as well as colour", () => {
+    expect(chat, "the badge is gone from the header").toMatch(/update-dot/);
+    expect(
+      chat,
+      "the badge is colour only — nothing announces it",
+    ).toMatch(/sr-only[\s\S]{0,200}is available/);
+  });
+
+  // The setting has a consequence, and the consequence is the reason to turn it
+  // on. Describing the feature without it leaves people declining a security
+  // notice they did not know they were declining.
+  it("says what declining it costs", () => {
+    const flat = keypage.replace(/\s+/g, " ");
+    expect(
+      flat,
+      "the update setting no longer says that security fixes will not reach you",
+    ).toMatch(/you will not hear about security fixes/i);
+    expect(flat, "it no longer says updating stays manual").toMatch(
+      /nothing installs itself|updating is still manual/i,
+    );
+  });
+});
+
+// A key with an expiry date is the app's own recommendation, so a key that has
+// expired has to be explained by the app rather than discovered by the user.
+// The previous advice was the opposite — "choose Never" — and its stated reason
+// was that the error would not mention the key. That reason no longer holds.
+describe("an expired key explains itself", () => {
+  const chat = read("src/lib/Chat.svelte");
+  const steps = read("src/lib/ScalewayKeySteps.svelte");
+  const quickstart = read("docs/QUICKSTART.md");
+  const troubleshooting = read("docs/TROUBLESHOOTING.md");
+
+  // Comments are stripped first. The negative assertion below is about what a
+  // user is shown, and the comment beside the code quotes the very phrase it
+  // exists to forbid — which the first version of this test duly caught, in the
+  // explanation rather than in the copy.
+  const withoutComments = (src) =>
+    src
+      .replace(/<!--[\s\S]*?-->/g, " ")
+      .replace(/\/\*[\s\S]*?\*\//g, " ")
+      .replace(/(^|[^:])\/\/.*$/gm, "$1 ")
+      .replace(/\s+/g, " ");
+
+  it("names expiry as a cause when Scaleway refuses the key", () => {
+    const copy = withoutComments(chat);
+    expect(copy, "the rejected-key state no longer mentions expiry").toMatch(
+      /expir/i,
+    );
+    // And it must not assert expiry, because a 401 cannot distinguish it from a
+    // revoked or mistyped key.
+    expect(
+      copy,
+      "the app states the key has expired, which Scaleway's answer cannot tell it",
+    ).not.toMatch(/your key has expired|the key has expired\b/i);
+  });
+
+  it("shows that state where the user is, not only as a tooltip", () => {
+    expect(
+      chat,
+      "a refused key is signalled by the status dot alone",
+    ).toMatch(/connState === "auth"/);
+  });
+
+  it("recommends an expiry date, and offers the way out", () => {
+    const flat = steps.replace(/\s+/g, " ");
+    expect(flat, "the setup steps no longer suggest an expiry date").toMatch(
+      /expiry date|Expiration<\/strong> — set a date/i,
+    );
+    expect(
+      flat,
+      "the setup steps no longer tell people they may choose Never instead",
+    ).toMatch(/Never/);
+    expect(
+      flat,
+      "the steps still tell people to choose Never as the default",
+    ).not.toMatch(/Expiration<\/strong> — choose <strong>Never/);
+  });
+
+  it("documents renewal where someone lands when chat stops", () => {
+    for (const [name, doc] of [
+      ["QUICKSTART.md", quickstart],
+      ["TROUBLESHOOTING.md", troubleshooting],
+    ]) {
+      const flat = doc.replace(/\s+/g, " ");
+      expect(flat, `${name} does not explain an expired key`).toMatch(/expir/i);
+      expect(flat, `${name} does not say how to renew`).toMatch(
+        /iam\/api-keys|IAM → API keys/i,
+      );
+    }
+  });
+});
+
+// A save that fails and says nothing is worse than one that fails loudly: the
+// user believes the thing happened. The sharpest case was removing the key —
+// the screen changed to the welcome page whether or not the keychain accepted
+// the deletion, so "my key is gone" was what a failure looked like.
+describe("settings failures reach the user, not the console", () => {
+  const app = read("src/App.svelte");
+  const keypage = read("src/lib/KeyPage.svelte");
+
+  it("a failed key removal does not show the welcome screen", () => {
+    const fn = app.slice(app.indexOf("async function removeKey"));
+    const body = fn.slice(0, fn.indexOf("\n  }"));
+    expect(body, "the key removal catch is gone").toMatch(/catch/);
+    const cat = body.slice(body.indexOf("catch"));
+    expect(
+      cat,
+      "removing the key fails silently again — it must not log and carry on",
+    ).not.toMatch(/console\.error/);
+    expect(cat, "the failure is not surfaced to the user").toMatch(/keyRemovalError/);
+    // The navigation must not happen on the failure path.
+    expect(
+      cat.slice(0, cat.indexOf("}")),
+      "the welcome screen is still shown after a failed removal",
+    ).not.toMatch(/view\s*=\s*"welcome"/);
+  });
+
+  it("is rendered with an alert role so a screen reader announces it", () => {
+    expect(app).toMatch(/role="alert"[\s\S]{0,80}keyRemovalError|keyRemovalError[\s\S]{0,120}role="alert"/);
+  });
+
+  // The settings saves that used to log and leave the button unchanged, which
+  // is indistinguishable from a slow save.
+  it("each settings save surfaces its own failure", () => {
+    for (const [fn, state] of [
+      ["saveSearch", "searchError"],
+      ["saveImage", "imageError"],
+      ["saveTerminalKey", "terminalKeyError"],
+      ["clearTerminalKey", "terminalKeyError"],
+      ["saveMemory", "memoryError"],
+    ]) {
+      const at = keypage.indexOf(`async function ${fn}(`);
+      expect(at, `${fn} is gone`).toBeGreaterThan(-1);
+      const body = keypage.slice(at, keypage.indexOf("\n  }", at));
+      const cat = body.slice(body.indexOf("catch"));
+      expect(cat, `${fn} logs its failure instead of showing it`).not.toMatch(
+        /console\.error/,
+      );
+      expect(cat, `${fn} does not set ${state}`).toMatch(new RegExp(state));
+    }
+    // And each one is actually rendered somewhere, with an alert role.
+    for (const state of ["searchError", "imageError", "terminalKeyError", "memoryError"]) {
+      expect(
+        keypage,
+        `${state} is set but never rendered`,
+      ).toMatch(new RegExp(`\\{#if ${state}\\}[\\s\\S]{0,120}role="alert"`));
+    }
+  });
+});
+
 // Auto-memory is the app's other opt-in, and the one whose default decides
 // whether personal facts start being collected. The stored setting was off by
 // default and correct; the two values that *write* it were not, which is how a
@@ -634,12 +807,43 @@ describe("auto-memory stays opt-in", () => {
   // The interface's own starting value, which is what Save sends. Rendering an
   // on toggle to someone who has the feature off is how they end up enabling
   // it by saving something else on the same panel.
-  it("starts off in the interface, so a stale value cannot enable it", () => {
-    const decl = keypage.match(/let autoMemory = \$state\((true|false)\)/);
-    expect(decl, "the autoMemory state is gone").toBeTruthy();
+  //
+  // This sweeps every component rather than the one file the fix was made in.
+  // The first version of this test checked KeyPage alone, passed, and was
+  // quoted in the release notes as holding the property — while Chat.svelte
+  // still initialised the same flag to true, and that copy is the one gating
+  // the billed extraction request. A guard that names its file only guards
+  // that file.
+  it("starts off everywhere it is declared", () => {
+    const files = execFileSync("git", ["ls-files", "-z", "src"], { cwd: repo, encoding: "utf8" })
+      .split("\0")
+      .filter((f) => /\.(svelte|js)$/.test(f));
+    const declaring = [];
+    for (const f of files) {
+      const src = read(f);
+      for (const m of src.matchAll(/let autoMemory\s*=\s*\$state\((true|false)\)/g)) {
+        declaring.push(f);
+        expect(
+          m[1],
+          `${f} starts auto-memory on, before the stored value has been read`,
+        ).toBe("false");
+      }
+    }
+    expect(declaring.length, "no component declares autoMemory any more").toBeGreaterThan(1);
+  });
+
+  // False also means "not read yet", so the component that acts on the setting
+  // must know the difference. Without this, a settings read that never returns
+  // is indistinguishable from a user who turned the feature off — which is the
+  // safe direction here, but only by accident.
+  it("does not act on the setting before it has been read", () => {
+    const chat = read("src/lib/Chat.svelte");
+    expect(chat, "the loaded flag is gone").toMatch(/autoMemoryLoaded/);
+    const fn = chat.slice(chat.indexOf("function wrapUpMemory"));
+    const guard = fn.slice(0, fn.indexOf("\n  }"));
     expect(
-      decl[1],
-      "the memory panel starts with auto-memory on, before the stored value is read",
-    ).toBe("false");
+      guard,
+      "the memory scan runs without confirming the setting was loaded",
+    ).toMatch(/!autoMemoryLoaded/);
   });
 });

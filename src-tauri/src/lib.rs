@@ -844,6 +844,18 @@ struct AppSettings {
     // automatic calls rather than naming one.
     #[serde(default)]
     check_updates_on_launch: bool,
+    // Whether the question has been put to the user at all.
+    //
+    // `check_updates_on_launch` alone cannot say: false means both "declined"
+    // and "never asked", and acting on that difference is the whole point of
+    // asking once. Without this the prompt would either reappear for someone
+    // who already said no — teaching them to dismiss it — or never appear for
+    // anyone upgrading from a version that had no such setting.
+    //
+    // Default false, so existing installs are asked once and nothing is
+    // assumed on their behalf.
+    #[serde(default)]
+    update_check_asked: bool,
 }
 
 fn default_true() -> bool {
@@ -1186,11 +1198,32 @@ async fn set_search_settings(
     app: tauri::AppHandle,
     settings: SearchSettings,
 ) -> Result<(), String> {
+    // **Validate the whole prospective configuration before writing any of it.**
+    //
+    // This used to store the secrets first and check the address afterwards,
+    // while the comment below claimed the opposite. The consequence was
+    // specific and silent: paste a replacement token, mistype the URL, and the
+    // save was refused — but the new token had already replaced the old one,
+    // against the address that was still stored. The next request, or the
+    // "Save & test" button, then sent the fresh credential to the previous
+    // host. For the shared-SearXNG setup this app documents, that host belongs
+    // to somebody else, and rotating away from it is exactly when a person
+    // retypes both fields.
+    //
+    // So: refuse first, and let the keychain keep what it has.
+    endpoint_transport_ok(&settings.url)?;
+
+    let mut s = load_settings(&app)?;
+
+    // Decided before anything is written, from the *stored* url rather than
+    // from one already half-replaced.
+    let keep_token = token_survives_url_change(&s.url, &settings.url, &settings.token);
+
     // Blank secret fields mean "keep what's stored" (the UI never echoes them).
-    if !settings.linkup_key.trim().is_empty()
+    let has_new_secret = !settings.linkup_key.trim().is_empty()
         || !settings.staan_key.trim().is_empty()
-        || !settings.token.trim().is_empty()
-    {
+        || !settings.token.trim().is_empty();
+    if has_new_secret || !keep_token {
         update_secrets(|sec| {
             if let Some(v) = trimmed_nonempty(&settings.linkup_key) {
                 sec.linkup_key = v;
@@ -1201,15 +1234,14 @@ async fn set_search_settings(
             if let Some(v) = trimmed_nonempty(&settings.token) {
                 sec.searxng_token = v;
             }
+            // The origin moved and no replacement was supplied: the stored
+            // token belonged to the old host and must not follow the new one.
+            if !keep_token {
+                sec.searxng_token.clear();
+            }
         })?;
     }
-    // Refused before the key is stored against it, so a rejected endpoint never
-    // becomes the address a token is held for.
-    endpoint_transport_ok(&settings.url)?;
-    let mut s = load_settings(&app)?;
-    if !token_survives_url_change(&s.url, &settings.url, &settings.token) {
-        update_secrets(|sec| sec.searxng_token.clear())?;
-    }
+
     s.search_provider = settings.provider;
     s.url = settings.url;
     save_settings(&app, &s)
@@ -1302,10 +1334,18 @@ async fn get_image_settings(app: tauri::AppHandle) -> Result<ImageSettings, Stri
 
 #[tauri::command]
 async fn set_image_settings(app: tauri::AppHandle, settings: ImageSettings) -> Result<(), String> {
-    if !settings.bfl_key.trim().is_empty()
+    // Refused before anything is written — same ordering, and the same reason,
+    // as `set_search_settings` above. A rejected address must never leave a
+    // replacement token stored against the address it is replacing.
+    endpoint_transport_ok(&settings.url)?;
+
+    let mut s = load_settings(&app)?;
+    let keep_token = token_survives_url_change(&s.image_url, &settings.url, &settings.token);
+
+    let has_new_secret = !settings.bfl_key.trim().is_empty()
         || !settings.ovh_key.trim().is_empty()
-        || !settings.token.trim().is_empty()
-    {
+        || !settings.token.trim().is_empty();
+    if has_new_secret || !keep_token {
         update_secrets(|sec| {
             if let Some(v) = trimmed_nonempty(&settings.bfl_key) {
                 sec.bfl_key = v;
@@ -1316,13 +1356,12 @@ async fn set_image_settings(app: tauri::AppHandle, settings: ImageSettings) -> R
             if let Some(v) = trimmed_nonempty(&settings.token) {
                 sec.image_token = v;
             }
+            if !keep_token {
+                sec.image_token.clear();
+            }
         })?;
     }
-    endpoint_transport_ok(&settings.url)?;
-    let mut s = load_settings(&app)?;
-    if !token_survives_url_change(&s.image_url, &settings.url, &settings.token) {
-        update_secrets(|sec| sec.image_token.clear())?;
-    }
+
     s.image_provider = settings.provider;
     s.bfl_model = settings.bfl_model;
     s.image_url = settings.url;
@@ -1350,7 +1389,16 @@ fn get_update_check_on_launch(app: tauri::AppHandle) -> Result<bool, String> {
 fn set_update_check_on_launch(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     let mut s = load_settings(&app)?;
     s.check_updates_on_launch = enabled;
+    // Answering the prompt is answering it, whichever way. Recording only the
+    // "yes" would leave everyone who declined being asked again.
+    s.update_check_asked = true;
     save_settings(&app, &s)
+}
+
+/// Whether the launch-update question still needs putting to this user.
+#[tauri::command]
+fn update_check_needs_asking(app: tauri::AppHandle) -> Result<bool, String> {
+    Ok(!load_settings(&app)?.update_check_asked)
 }
 
 #[tauri::command]
@@ -10418,6 +10466,46 @@ mod tests {
         let _ = std::fs::remove_dir_all(&b);
     }
 
+    /// A rejected endpoint must not have already replaced the stored token.
+    ///
+    /// Both settings commands wrote the secrets first and validated the address
+    /// afterwards, while the comment beside them claimed the reverse. Pasting a
+    /// replacement token with a mistyped URL therefore left the new token
+    /// stored against the *old* host — and the shared-SearXNG arrangement this
+    /// app documents means that host is somebody else's.
+    #[test]
+    fn an_endpoint_is_accepted_before_any_secret_is_written() {
+        let src = lib_source();
+        for f in [
+            "\nasync fn set_search_settings",
+            "\nasync fn set_image_settings",
+        ] {
+            let at = src.find(f).unwrap_or_else(|| panic!("{f} is gone"));
+            let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
+            let checked = body
+                .find("endpoint_transport_ok")
+                .unwrap_or_else(|| panic!("{f} no longer validates the endpoint"));
+            let wrote = body
+                .find("update_secrets")
+                .unwrap_or_else(|| panic!("{f} no longer writes any secret"));
+            assert!(
+                checked < wrote,
+                "{f} writes the secret before it accepts the endpoint, so a \
+                 rejected address leaves the replacement token stored against \
+                 the previous host"
+            );
+            // And the decision about whether the old token survives is taken
+            // from the stored url, which means before the write too.
+            let decided = body
+                .find("token_survives_url_change")
+                .unwrap_or_else(|| panic!("{f} no longer decides whether the token survives"));
+            assert!(
+                decided < wrote,
+                "{f} decides whether the token survives after already replacing it"
+            );
+        }
+    }
+
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     #[test]
     fn the_two_irreversible_deletions_ask_in_rust() {
@@ -14318,6 +14406,7 @@ pub fn run() {
             check_for_update,
             get_update_check_on_launch,
             set_update_check_on_launch,
+            update_check_needs_asking,
             save_conversation,
             list_conversations,
             load_conversation,

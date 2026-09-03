@@ -25,7 +25,7 @@
     extractDocument,
   } from "./files.js";
 
-  let { onOpenSettings, onOpenGuide, onQuickStart } = $props();
+  let { onOpenSettings, onOpenGuide, onQuickStart, updateAvailable = null } = $props();
 
   // Each message: { role, text, attachments: [{ kind:"image"|"text", name, dataUrl?|content? }] }
   let messages = $state([]);
@@ -137,7 +137,11 @@
   const CONN_TITLE = {
     checking: "Checking connection to Scaleway…",
     ok: "Connected to Scaleway",
-    auth: "Key rejected — check your Scaleway API key in Settings",
+    // Scaleway answers 401/403 the same way whether a key expired, was
+    // revoked, or was mistyped, so this names all three rather than guessing at
+    // one. Saying "your key has expired" would be a guess, and the wrong guess
+    // sends someone to the wrong page.
+    auth: "Key rejected — it may have expired, been revoked, or been mistyped. Open Settings to replace it",
     error: "Scaleway returned an error — try again shortly",
     offline: "Can't reach Scaleway — check your internet connection",
     nokey: "No API key connected — add one in Settings",
@@ -297,20 +301,33 @@
   }
 
   // ---------- Auto-memory (propose facts to remember when a chat wraps up) ----------
-  let autoMemory = $state(true);
+  // Off until the stored setting has actually been read, which is what
+  // `autoMemoryLoaded` records. This started as `true`, so a slow or failed
+  // settings read left the feature on for someone who had turned it off:
+  // leaving a two-turn conversation then sent the transcript for extraction —
+  // a billed request, against a setting they had declined.
+  //
+  // Defaulting to false is not enough on its own, because false is also "not
+  // read yet". The flag separates the two, so a read that never completes
+  // leaves the scan off rather than guessing at it.
+  let autoMemory = $state(false);
+  let autoMemoryLoaded = $state(false);
   let memoryFacts = $state([]); // pending candidate facts awaiting the user's approval
   const scannedIds = new Set(); // conversation ids already scanned this session
 
   invoke("get_memory_settings")
     .then((s) => {
       if (s) autoMemory = s.auto_memory;
+      autoMemoryLoaded = true;
     })
-    .catch(() => {});
+    .catch(() => {
+      // Stays unloaded, so the scan stays off.
+    });
 
   // Scan the conversation the user is leaving for durable facts worth remembering.
   // Snapshots the messages synchronously, then extracts in the background.
   function wrapUpMemory() {
-    if (!autoMemory) return;
+    if (!autoMemoryLoaded || !autoMemory) return;
     const cid = conversationId;
     if (scannedIds.has(cid)) return;
     const turns = messages.filter((m) => m.role === "user" && m.text && m.text.trim());
@@ -1352,7 +1369,29 @@
       >Shortcuts</button>
       <button class="ghost" onclick={() => onQuickStart?.()}>Quick start</button>
       <button class="ghost" onclick={() => onOpenGuide?.()}>Guide</button>
-      <button class="ghost" onclick={() => onOpenSettings()}>Settings</button>
+      <!-- The badge exists because a security fix reaches nobody who does not
+           go looking. It appears only when the launch check is switched on and
+           found a newer version, adds no network call of its own, and stays
+           until the version changes — unlike the banner, which is dismissible
+           and would otherwise be the only notice anyone ever saw. -->
+      <button
+        class="ghost {updateAvailable ? 'has-update' : ''}"
+        onclick={() => onOpenSettings()}
+        title={updateAvailable
+          ? `Sovatela ${updateAvailable.latest} is available. Updating is manual.`
+          : null}
+      >
+        Settings{#if updateAvailable}<span class="update-dot" aria-hidden="true"
+          ></span>{/if}
+      </button>
+      {#if updateAvailable}
+        <!-- Announced once, out of the button's own label: a screen reader
+             should not have to infer a coloured dot. -->
+        <span class="sr-only" role="status"
+          >Sovatela {updateAvailable.latest} is available. Open Settings, then
+          About, to see what changed.</span
+        >
+      {/if}
     </div>
   </header>
 
@@ -1399,6 +1438,24 @@
         🔑 You're exploring without a Scaleway key — replies are off until you add
         one (it's the only thing required).
         <button class="link" onclick={() => onOpenSettings()}>Add your key in Settings →</button>
+      </div>
+    {:else if connState === "auth"}
+      <!-- A key that has stopped working used to show as a coloured dot with a
+           tooltip, which is not where anyone looks when a reply fails. Expiry
+           is the likeliest cause for a key that worked yesterday, and it is the
+           one the setup steps now recommend choosing — so the app has to be the
+           thing that explains it, rather than leaving someone to work out that
+           "unauthorized" means "the date you picked has passed". -->
+      <div class="no-key-banner" role="status">
+        🔑 <strong>Scaleway is refusing this key.</strong> If you gave it an
+        expiry date when you created it, that date has probably passed — which is
+        the security measure working, not a fault. It can also mean the key was
+        revoked or pasted incorrectly; Scaleway answers the same way for all
+        three, so the app cannot tell them apart.
+        <br />
+        Generate a replacement under <em>IAM → API keys</em>, then paste it in
+        Settings. Your chats, memory and projects are untouched.
+        <button class="link" onclick={() => onOpenSettings()}>Replace the key in Settings →</button>
       </div>
     {/if}
     {#if messages.length === 0}

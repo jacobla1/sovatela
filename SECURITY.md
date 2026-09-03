@@ -155,9 +155,26 @@ the interface, unlike an artifact, can call privileged commands. It allowed
 inline script until 1.5.3, and the automatic nonce injection that would have
 made that unnecessary was switched off; no inline script was ever needed, as
 the built page is a module tag and a stylesheet link. Inline *style* is still
-allowed, because two components size elements with a style attribute, and an
-injected style is a far smaller problem than injected code. `eval` is refused
-in both the shipped and the development policy.
+allowed in the policy, because two of the app's own components size elements
+with a style attribute. `eval` is refused in both the shipped and the
+development policy.
+
+**That last allowance used to be defended here with a sentence that was
+wrong.** This page said "an injected style is a far smaller problem than
+injected code", and left it there. Smaller is not the same as small: because
+the policy permits inline style, a reply carrying
+`style="position:fixed;inset:0;z-index:999999"` covered the entire window. No
+script is involved, so nothing was executing and nothing escaped a sandbox —
+what it produced was a convincing fake of an application whose whole claim is
+that you can trust what it shows you. A plausible "your key has expired" and a
+link, and the phishing page is the app. A poisoned search result or an
+uploaded document is enough to ask the model for that markup.
+
+Rendered replies are now filtered against an allowlist of tags and attributes
+rather than a list of forbidden ones: `style`, `class` and `id` cannot survive
+sanitisation, so the CSP's permission for inline style no longer has anything
+in an assistant reply to apply to. The review's exact payload is a test
+(`tests/text.test.js`), along with the spellings that evade a naive filter.
 
 ### A custom image endpoint you host yourself
 

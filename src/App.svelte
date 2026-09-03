@@ -13,6 +13,10 @@
   // Drives the Guide's quick start: shown only while there is no key to paste.
   let hasKey = $state(false);
 
+  // Set when removing the key fails. Rendered where the user is standing,
+  // rather than logged to a console they will never open.
+  let keyRemovalError = $state("");
+
   // Opt-in update check. Off unless the user turned it on in Settings ▸ About.
   //
   // It exists because a security fix reaches nobody who does not press the
@@ -27,13 +31,56 @@
   // app" — which it is not.
   let updateBanner = $state(null); // { latest, url } when a newer version exists
 
+  // The same result, kept after the banner is dismissed. The banner is a
+  // one-time interruption; this is what the badge beside Settings reads, and it
+  // has to outlive the dismissal or the badge would vanish with it.
+  //
+  // There is no auto-updater and never a second network call for this: both
+  // come from the one fetch below.
+  let updateAvailable = $state(null); // { latest, url } | null
+
+  // Asked once, on the first launch after this version, and never again
+  // whichever way it is answered. It is a question rather than a default
+  // because turning the check on for someone silently would be making a
+  // network call they did not choose — and leaving it off silently, which is
+  // what shipped before, means a security fix has no route to them at all.
+  let askUpdateCheck = $state(false);
+
+  async function maybeAskAboutUpdates() {
+    try {
+      askUpdateCheck = await invoke("update_check_needs_asking");
+    } catch {
+      // If settings cannot be read, do not ask. A prompt shown on every launch
+      // because the answer cannot be stored is worse than not asking.
+    }
+  }
+
+  async function answerUpdateCheck(enabled) {
+    askUpdateCheck = false;
+    try {
+      await invoke("set_update_check_on_launch", { enabled });
+      if (enabled) await checkForUpdateOnLaunch();
+    } catch (e) {
+      // The answer could not be stored, so the question stands. Say so rather
+      // than pretending it was recorded — otherwise it silently returns next
+      // launch and looks like the app ignoring them.
+      keyRemovalError =
+        `That preference could not be saved: ${e?.message ?? e}. You can set it ` +
+        `under Settings → About.`;
+    }
+  }
+
   async function checkForUpdateOnLaunch() {
     try {
       if (!(await invoke("get_update_check_on_launch"))) return;
       const r = await invoke("check_for_update");
-      if (r?.update_available) updateBanner = { latest: r.latest, url: r.url };
+      if (r?.update_available) {
+        updateAvailable = { latest: r.latest, url: r.url };
+        updateBanner = updateAvailable;
+      }
     } catch {
-      // Offline, or the site is unreachable. Nothing to say about it.
+      // Offline, or the site is unreachable. Nothing to say about it — and in
+      // particular, nothing that could be mistaken for "you are up to date".
     }
   }
 
@@ -79,6 +126,7 @@
       // the key form itself is one step further in, under Settings.
       view = hasKey || skippedOnboarding() ? "chat" : "splash";
       checkForUpdateOnLaunch();
+      maybeAskAboutUpdates();
     } catch (e) {
       console.error("Failed to read stored key:", e);
       view = "welcome";
@@ -147,7 +195,18 @@
       await invoke("delete_api_key");
       hasKey = false; // the quick start applies again
     } catch (e) {
-      console.error("Failed to delete key:", e);
+      // The screen used to change regardless. A keychain write can be refused
+      // — a locked keychain, a declined prompt, a damaged item — and the user
+      // was then shown the welcome screen, which is what "your key is gone"
+      // looks like, while the key was still stored. Someone selling or
+      // returning the machine had every reason to believe they had removed it.
+      //
+      // So: say so, stay put, and leave the app in the state it is actually in.
+      keyRemovalError =
+        `The key could not be removed: ${e?.message ?? e}. It is still stored ` +
+        `on this computer. If it may be compromised, revoke it in the Scaleway ` +
+        `console (IAM → API keys), which works regardless of this app.`;
+      return;
     }
     view = "welcome";
   }
@@ -169,6 +228,51 @@
       class="update-banner-close"
       aria-label="Dismiss the update notice"
       onclick={() => (updateBanner = null)}
+    >✕</button>
+  </div>
+{/if}
+
+{#if askUpdateCheck && view !== "loading"}
+  <!-- Asked once. Both buttons are answers: there is no dismiss, because a
+       dismissal would leave the question unanswered and it would return next
+       launch, which is how people learn to click past things without reading.
+       Declining is a real choice and is recorded as one. -->
+  <div class="ask-updates" role="dialog" aria-labelledby="ask-updates-title">
+    <div class="ask-updates-body">
+      <strong id="ask-updates-title">Should Sovatela check for a new version when it starts?</strong>
+      <p>
+        This app cannot tell you about a security fix any other way. There is no
+        automatic updater, and no mailing list — deliberately, because a list
+        would mean holding your email address. If you say no, the only way to
+        find out is to check yourself under <em>Settings ▸ About</em>.
+      </p>
+      <p>
+        Saying yes reads one small file from sovatela.eu at launch. It sends
+        nothing — no account, no sign-up, nothing about you or this machine.
+        Updating stays manual either way; nothing installs itself.
+      </p>
+    </div>
+    <div class="ask-updates-actions">
+      <button class="primary" onclick={() => answerUpdateCheck(true)}>
+        Yes, check at launch
+      </button>
+      <button class="ghost" onclick={() => answerUpdateCheck(false)}>
+        No, I'll check myself
+      </button>
+    </div>
+  </div>
+{/if}
+
+{#if keyRemovalError}
+  <!-- Not dismissible on a timer and not a console line: removing a key is a
+       security action, and being wrong about whether it happened is the whole
+       problem. It clears when the user acknowledges it or tries again. -->
+  <div class="removal-error" role="alert">
+    <span>{keyRemovalError}</span>
+    <button
+      class="removal-error-close"
+      aria-label="Dismiss"
+      onclick={() => (keyRemovalError = "")}
     >✕</button>
   </div>
 {/if}
@@ -203,18 +307,23 @@
     scrollTo={settingsTarget}
   />
 {:else}
-  <Chat onOpenSettings={goSettings} onOpenGuide={goGuide} onQuickStart={goQuickStart} />
+  <Chat
+    onOpenSettings={goSettings}
+    onOpenGuide={goGuide}
+    onQuickStart={goQuickStart}
+    {updateAvailable}
+  />
 {/if}
 
 <style>
   .update-banner {
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 10px 16px;
-    background: var(--accent-soft, #eef2ff);
-    border-bottom: 1px solid var(--border, #d7dbe7);
-    font-size: 14px;
+    gap: var(--sp-3);
+    padding: var(--sp-3) var(--sp-4);
+    background: color-mix(in srgb, var(--accent) 12%, var(--bg));
+    border-bottom: 1px solid var(--border);
+    font-size: var(--fs-base);
   }
   .update-banner span {
     flex: 1;
@@ -223,7 +332,7 @@
     background: none;
     border: none;
     padding: 0;
-    color: var(--accent, #3b53c4);
+    color: var(--accent);
     font: inherit;
     text-decoration: underline;
     cursor: pointer;
@@ -232,7 +341,57 @@
     background: none;
     border: none;
     padding: 2px 6px;
-    color: var(--muted, #5b6178);
+    color: var(--muted);
+    font: inherit;
+    cursor: pointer;
+  }
+  .ask-updates {
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in srgb, var(--accent) 8%, var(--bg));
+    padding: var(--sp-4);
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-4);
+    align-items: flex-start;
+    font-size: var(--fs-base);
+  }
+  .ask-updates-body {
+    flex: 1;
+    min-width: 18rem;
+  }
+  .ask-updates-body p {
+    margin: var(--sp-2) 0 0;
+    color: var(--muted);
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+  }
+  .ask-updates-actions {
+    display: flex;
+    gap: var(--sp-3);
+    flex-wrap: wrap;
+  }
+
+  .removal-error {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--sp-3);
+    padding: var(--sp-3) var(--sp-4);
+    background: color-mix(in srgb, var(--error) 12%, var(--bg));
+    border-bottom: 1px solid var(--error);
+    color: var(--error);
+    font-size: var(--fs-base);
+  }
+  .removal-error span {
+    flex: 1;
+  }
+  .removal-error-close {
+    background: none;
+    border: none;
+    /* 24x24 minimum hit area — an icon-only control needs one. */
+    min-width: 24px;
+    min-height: 24px;
+    padding: 2px 6px;
+    color: inherit;
     font: inherit;
     cursor: pointer;
   }

@@ -70,9 +70,48 @@ export function parseParts(text) {
 // artifacts first — so this handles prose: headings, lists, inline code,
 // links, tables. Output is sanitized (HTML profile only, no SVG/MathML)
 // before {@html}; the strict window CSP is the second line of defense.
+//
+// **The `style` attribute is forbidden, and that is the point of this list.**
+// Forbidding the <style> element alone was not enough: the attribute survived,
+// and the window's CSP allows inline style, so a reply could carry
+// `style="position:fixed;inset:0;z-index:999999;background:#fff"` and paint
+// itself over the whole application. No script is involved, so nothing here
+// was a sandbox escape — it was something better suited to the attacker:
+// a pixel-perfect fake of an app whose entire proposition is that you can
+// trust what it shows you. Put a plausible "your key has expired, sign in
+// again" on it and a link beside it, and the phishing page is the app itself.
+//
+// This is reachable without a compromised provider. A poisoned search result
+// or an uploaded document can instruct the model to emit that markup, and the
+// model has no reason to refuse.
+//
+// So the attributes below are an allowlist of what prose actually needs.
+// `class` and `id` go too: `class` would let injected markup borrow the app's
+// own styling to look native, and `id` can collide with real elements and
+// break `aria-*`/label associations. Layout attributes on tables go for the
+// same reason as `style` — they position things.
+const ALLOWED_TAGS = [
+  "p", "br", "hr", "span", "div", "blockquote", "pre", "code",
+  "strong", "em", "b", "i", "u", "s", "del", "ins", "mark", "sub", "sup",
+  "h1", "h2", "h3", "h4", "h5", "h6",
+  "ul", "ol", "li", "dl", "dt", "dd",
+  "table", "thead", "tbody", "tfoot", "tr", "th", "td", "caption",
+  "a", "img",
+];
+
+// Deliberately short. `href`/`src` are still filtered by DOMPurify's own URI
+// scheme checks, and the renderer cannot open a non-http(s) URL anyway —
+// `open_external` in Rust refuses anything else.
+const ALLOWED_ATTR = ["href", "title", "alt", "src", "colspan", "rowspan", "lang", "dir"];
+
 export function renderMd(text) {
   return DOMPurify.sanitize(marked.parse(text, { async: false }), {
     USE_PROFILES: { html: true },
-    FORBID_TAGS: ["style"],
+    ALLOWED_TAGS,
+    ALLOWED_ATTR,
+    // Belt and braces: these are already absent from the allowlist, but naming
+    // them means a future widening of ALLOWED_TAGS cannot quietly readmit them.
+    FORBID_TAGS: ["style", "form", "input", "button", "select", "textarea", "iframe"],
+    FORBID_ATTR: ["style", "class", "id", "width", "height", "align", "bgcolor", "target"],
   });
 }

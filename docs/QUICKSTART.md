@@ -15,10 +15,42 @@ other feature is optional.
    [console.scaleway.com/register](https://console.scaleway.com/register).
 2. Go to **IAM → API keys** and create a key
    ([console.scaleway.com/iam/api-keys](https://console.scaleway.com/iam/api-keys)).
-   Leave the defaults as they are, and pick **No** for Object Storage.
+   Leave **Myself** as the bearer, pick **No** for Object Storage, and set an
+   **expiry date** — a year is a good default. See *A key that expires* below
+   for why, and for the case against.
 3. Copy the **secret key** — Scaleway shows it once, so do it before closing
    that window. Missed it? Generate another; old keys keep working until you
    delete them, so a spare costs nothing.
+
+### A key that expires
+
+Scaleway lets you give a key an expiry date, and it is worth using one.
+
+Sovatela cannot leak your key — it lives in the operating system's credential
+store, is never shown back to you after saving, and is sent only to Scaleway.
+But keys get out in ways an application has no say over: a screenshot, a note
+you left yourself, an old backup, a laptop you no longer have. An expiry date
+is what limits how long any of that is worth anything to whoever finds it.
+
+**The cost is that chat stops on that day**, and the app cannot warn you in
+advance, because it never sees the expiry date — only Scaleway knows it. What
+it does instead is explain the failure when it happens: the status dot turns
+red and a message says the key was refused, that an expiry date is the likeliest
+reason, and that the fix is to generate a new one. Nothing you have saved is
+affected, and it takes about a minute.
+
+**Scaleway answers the same way for a key that expired, one that was revoked,
+and one that was mistyped**, so the app names all three rather than guessing.
+
+**Prefer not to be interrupted?** Choose **Never**. That is a reasonable
+choice on a machine only you use — it just means the key stays valid until you
+delete it yourself, so deleting it is then the only thing that stops it being
+used.
+
+**To renew:** open
+[console.scaleway.com/iam/api-keys](https://console.scaleway.com/iam/api-keys),
+generate a new key, paste it into *Settings → Scaleway API key*, and delete the
+old one. Old keys keep working until deleted, so there is no gap.
 
 > **What this costs.** You pay Scaleway per token, not a subscription. Typical
 > chat use runs to a few cents a day. Sovatela's **Settings → Usage & cost**
@@ -122,7 +154,7 @@ check. Hover it for the exact message, or click it to re-check:
 | Dot | Meaning |
 | --- | --- |
 | Green | Connected to Scaleway |
-| Red | Key rejected, or Scaleway returned an error |
+| Red | Key rejected — expired, revoked or mistyped — or Scaleway returned an error |
 | Amber | Can't reach Scaleway — check your internet connection |
 | Amber, pulsing | Checking now |
 | Grey | No API key connected — add one in Settings |

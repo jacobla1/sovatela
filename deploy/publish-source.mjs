@@ -50,20 +50,113 @@ const WITHHELD = [
 const isWithheld = (p) =>
   WITHHELD.some((w) => (w.endsWith("/") ? p.startsWith(w) : p === w));
 
+// ---------------------------------------------------------------------------
+// The gate that decides what may ship, as distinct from what must not.
+//
+// WITHHELD alone was a denylist, and a denylist publishes anything nobody
+// remembered to add to it. That is the wrong way round for this repository:
+// the private tree holds compliance notes, publisher notes with infrastructure
+// detail, unpublished marketing, and — the case that would actually hurt —
+// security assessments describing defects that are not fixed yet. Publishing
+// one of those is not a mistake you can take back: the public repository is
+// cloned, and git history keeps what was pushed.
+//
+// So every tracked file must be classified. A path is published only if it
+// matches PUBLIC below; anything matching neither PUBLIC nor WITHHELD stops
+// the publish and is named, so the decision is made deliberately by a person
+// rather than by default.
+//
+// The trees are listed rather than the files, because the product's own source
+// is what this repository is for and 200-odd individual entries would be
+// maintained by nobody. Documents are the exception: `docs/` is where private
+// material actually lands, so every document is named one by one.
+const PUBLIC = [
+  // The product.
+  "src/",
+  "src-tauri/",
+  "tests/",
+  "scripts/",
+  ".github/",
+  "assets/",
+  "pricing/",
+  "qa/",
+  // Deployment recipes that are meant to be followed by users. `deploy/searxng/`
+  // is deliberately absent — running a server for other people is arranged with
+  // the maintainer, so the app never advertises the path.
+  "deploy/claude-glm/",
+  "deploy/flux-litellm/",
+  "deploy/searxng-local/",
+  "deploy/web/",
+  "deploy/publish-source.mjs",
+  // Root files. Named individually: the repository root is where a stray
+  // assessment or working note is most likely to be dropped.
+  ".env.integration.example",
+  ".gitattributes",
+  ".gitignore",
+  ".nvmrc",
+  "CHANGELOG.md",
+  "LICENSE",
+  "README.md",
+  "SECURITY.md",
+  "THIRD-PARTY-LICENSES.md",
+  "app-icon.svg",
+  "index.html",
+  "minisign.pub",
+  "package-lock.json",
+  "package.json",
+  "svelte.config.js",
+  "vite.config.js",
+  "vitest.config.js",
+  // Documents, one by one. Adding a file to `docs/` does not publish it; it
+  // fails the publish until someone decides which list it belongs on.
+  "docs/README.md",
+  "docs/INSTALL.md",
+  "docs/QUICKSTART.md",
+  "docs/FAQ.md",
+  "docs/TROUBLESHOOTING.md",
+  "docs/UNINSTALL.md",
+  "docs/SUPPORT.md",
+  "docs/PRIVACY.md",
+  "docs/TERMS.md",
+  "docs/TECHNICAL-SPEC.md",
+  // Release records. QA records are published on purpose — they are the
+  // evidence for what each release was checked against.
+  "docs/release/RELEASE-NOTES.md",
+  "docs/release/REMEDIATION-REGISTER.md",
+  "docs/release/SECURITY-NOTE-2026-08-30-claude-glm.md",
+  "docs/release/QA-1.6.0.md",
+  "docs/release/QA-1.6.1.md",
+  "docs/release/QA-1.6.2.md",
+  "docs/release/QA-1.7.0.md",
+];
+
+const isPublic = (p) =>
+  PUBLIC.some((w) => (w.endsWith("/") ? p.startsWith(w) : p === w));
+
 const target = process.argv[2];
-const force = process.argv.includes("--force");
 if (!target) {
-  console.error("usage: node deploy/publish-source.mjs <target-dir> [--force]");
+  console.error("usage: node deploy/publish-source.mjs <target-dir>");
   process.exit(1);
 }
 
-// Refuse to publish a dirty tree. What ships must correspond to a commit, or
-// the public history claims a state that never existed here.
+// `--force` used to skip the clean-tree check. It is gone rather than
+// deprecated: the one guarantee this script offers is that what ships
+// corresponds to a commit somebody can look up, and a flag that waives it on
+// the day a release is running late waives it exactly when the record matters
+// most. If the tree is dirty, commit it or stash it.
+if (process.argv.includes("--force")) {
+  console.error("--force is no longer accepted. Commit or stash the changes instead:");
+  console.error("what ships has to correspond to a commit, or the public history");
+  console.error("claims a state that never existed here.");
+  process.exit(1);
+}
+
+// Refuse to publish a dirty tree.
 const dirty = execFileSync("git", ["-C", repo, "status", "--porcelain"], { encoding: "utf8" }).trim();
-if (dirty && !force) {
+if (dirty) {
   console.error("Refusing to publish: the working tree has uncommitted changes.\n");
   console.error(dirty);
-  console.error("\nCommit them, or pass --force if you know what you are doing.");
+  console.error("\nCommit or stash them, then publish.");
   process.exit(1);
 }
 
@@ -79,6 +172,30 @@ if (missing.length) {
   missing.forEach((p) => console.error(`  ${p}`));
   console.error("\nA renamed or deleted file would otherwise be withheld in name only.");
   process.exit(1);
+}
+
+// Every tracked file must be on exactly one list. Anything on neither stops
+// the publish: a file nobody has classified is, by default, one nobody has
+// decided to make public.
+const unclassified = tracked.filter((p) => !isWithheld(p) && !isPublic(p));
+if (unclassified.length) {
+  console.error("Refusing to publish: these tracked files are classified as neither");
+  console.error("public nor withheld, and publishing cannot be undone.\n");
+  unclassified.forEach((p) => console.error(`  ${p}`));
+  console.error("\nAdd each to PUBLIC or to WITHHELD in this script, then publish.");
+  process.exit(2);
+}
+
+// A PUBLIC entry that matches nothing is a stale rule, and a stale rule is how
+// a list stops describing the tree it governs.
+const deadRules = PUBLIC.filter((w) =>
+  w.endsWith("/") ? !tracked.some((p) => p.startsWith(w)) : !tracked.includes(w),
+);
+if (deadRules.length) {
+  console.error("Refusing to publish: these PUBLIC entries match nothing tracked.");
+  deadRules.forEach((p) => console.error(`  ${p}`));
+  console.error("\nA renamed or deleted file leaves a rule that quietly covers nothing.");
+  process.exit(2);
 }
 
 const shipping = tracked.filter((p) => !isWithheld(p));

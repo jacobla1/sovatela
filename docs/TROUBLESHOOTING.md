@@ -26,6 +26,22 @@ didn't copy it, create a new key rather than hunting for the old one.
 
 The key reached Scaleway and Scaleway refused it. In order of likelihood:
 
+0. **The key expired.** If you gave it an expiry date when you created it — the
+   setup steps suggest a year — this is what reaching that date looks like. It
+   is the security measure doing its job, not a fault. **The fix:** open
+   [IAM → API keys](https://console.scaleway.com/iam/api-keys), generate a new
+   key, paste it into *Settings → Scaleway API key*, and delete the old one.
+   Your chats, memory and projects are untouched.
+
+   Sovatela cannot warn you before the date, because it never sees it — the
+   expiry lives in your Scaleway account and is not part of the key. It also
+   cannot tell an expired key apart from a revoked or mistyped one, because
+   Scaleway answers all three the same way. If the key worked yesterday and you
+   have changed nothing, expiry is the likeliest of them.
+
+   If being interrupted is worse for you than the protection is worth, generate
+   the replacement with **Expiration: Never** and delete it by hand when you are
+   done with it.
 1. **Wrong value pasted** — an access key ID instead of the secret key, or a
    stray space. Re-copy and save again.
 2. **Key deleted or rotated** in the Scaleway console.

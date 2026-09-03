@@ -31,17 +31,26 @@ jobs:
 
       - run: npm ci
 
-      # What ships to users. dompurify is the whole defence between
-      # model-generated markdown and {@html}, so `moderate` is the bar here
-      # rather than `high`: the advisory that prompted this scanning was a
-      # moderate-severity XSS in exactly that library.
+      # `npm audit` exits 1 both when it finds an advisory and when it cannot
+      # reach the registry at all, and the second happens: this job failed on
+      # 2026-09-03 because npmjs.org returned 503 for seven minutes. A red run
+      # that means "npm was down" looks exactly like one that means "you have a
+      # vulnerability", and a signal that cries wolf is one people stop reading.
+      #
+      # So: retry the transient case, and if the scan still cannot run, say so
+      # in those words. It still fails — a scan that did not happen is not a
+      # clean scan — but it fails saying something different.
       - name: Production dependencies
-        run: npm audit --omit=dev --audit-level=moderate
+        # What ships to users. dompurify is the whole defence between
+        # model-generated markdown and {@html}, so `moderate` is the bar here
+        # rather than `high`: the advisory that prompted this scanning was a
+        # moderate-severity XSS in exactly that library.
+        run: .github/scripts/npm-audit.sh --omit=dev --audit-level=moderate
 
       # Build-time only. These do not reach a user's machine, but a compromised
       # build chain reaches every user, so it fails rather than warns.
       - name: Build and development dependencies
-        run: npm audit --audit-level=high
+        run: .github/scripts/npm-audit.sh --audit-level=high
 
   cargo:
     if: github.repository == 'jacobla1/Scale'

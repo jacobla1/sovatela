@@ -66,6 +66,14 @@
 
      Values are the old pixel sizes at a 16px root, so the default rendering is
      unchanged. */
+  /* Two families, declared once. The monospace stack had drifted into three
+     near-copies — one of them carrying Consolas and the others not — so a code
+     span in Settings and one in a reply could resolve to different fonts on the
+     same machine. */
+  --font-sans: "Inter Variable", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
   --sp-0: 0.125rem; /* 2px  */
   --sp-1: 0.25rem; /*  4px  */
   --sp-2: 0.5rem; /*   8px  */
@@ -122,8 +130,7 @@ body,
 }
 
 body {
-  font-family: "Inter Variable", -apple-system, BlinkMacSystemFont, "Segoe UI",
-    Roboto, sans-serif;
+  font-family: var(--font-sans);
   background: var(--bg);
   color: var(--text);
   -webkit-font-smoothing: antialiased;
@@ -277,11 +284,25 @@ button.mini {
   margin: 4px 0 8px;
 }
 
+/* A row of buttons. The vertical margins are part of the contract: without
+   them the row sat flush against the input above it and against the paragraph
+   below, which read as the button belonging to the wrong thing. Every settings
+   panel uses this class, so the rhythm is fixed once here rather than patched
+   per section. */
 .actions {
   display: flex;
   gap: var(--sp-3);
   align-items: center;
   flex-wrap: wrap;
+  margin: var(--sp-3) 0 var(--sp-4);
+}
+
+/* Text that explains the buttons it follows needs to clear them. `.hint` only
+   carries a bottom margin, so after an action row it had none at all. */
+.actions + .hint,
+.actions + .warn-text,
+.actions + p {
+  margin-top: 0;
 }
 
 button.danger {
@@ -1590,7 +1611,7 @@ button.ghost:hover {
 
 .folder-label {
   font-size: var(--fs-sm);
-  color: var(--muted, #888);
+  color: var(--muted);
 }
 
 .folder-path {
@@ -1608,6 +1629,22 @@ button.ghost:hover {
    `pre-line` because the backend reports these as a short paragraph with the
    affected paths on their own lines, and collapsing them into one run makes a
    list of files unreadable. */
+/* Standing caution: copy that is always there because the *setting* has a
+   consequence, not because something has gone wrong. Deliberately not
+   .warn-text — that one marks a transient failure, and a test asserts none is
+   on screen after a clean run, which is a distinction worth keeping. */
+/* Standing caution: copy that is always there because the *setting* has a
+   consequence, not because something has gone wrong.
+   `display: block` matters — this sits inside a <dd> among inline <span
+   class="hint"> siblings, and as an inline element the rule appeared as a
+   coloured bar dropped into the middle of a sentence. */
+.standing-caution {
+  display: block;
+  margin-top: var(--sp-3);
+  border-left: 3px solid var(--accent);
+  padding-left: var(--sp-3);
+}
+
 .warn-text {
   font-size: var(--fs-sm);
   color: var(--error);
@@ -1906,7 +1943,7 @@ button.ghost:hover {
   border: 1px solid var(--border);
   border-radius: var(--r-xs);
   background: var(--surface-2, rgba(127, 127, 127, 0.08));
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: var(--fs-xs);
   line-height: 1.45;
   white-space: pre-wrap;
@@ -2028,7 +2065,7 @@ button.ghost:hover {
 }
 
 .msg-text.md code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 0.9em;
   background: color-mix(in srgb, var(--text) 8%, transparent);
   border-radius: var(--r-xs);
@@ -2152,6 +2189,30 @@ button.ghost:hover {
   gap: var(--sp-2);
 }
 
+/* "An update is available" beside Settings. A dot rather than a word, because
+   the header is the one place in the app that must stay quiet — but it is not
+   colour alone: the button carries a title, and a screen-reader status message
+   next to it says the version in words. */
+.update-dot {
+  display: inline-block;
+  width: 0.44rem;
+  height: 0.44rem;
+  margin-left: var(--sp-2);
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+}
+.ghost.has-update {
+  /* A quiet outline, so the dot is not the only signal for anyone who cannot
+     distinguish it from the surrounding text. */
+  border-color: var(--accent);
+}
+@media (prefers-contrast: more) {
+  .update-dot {
+    outline: 1px solid var(--text);
+  }
+}
+
 .artifact-select {
   flex: 1;
   min-width: 0;
@@ -2237,7 +2298,7 @@ button.mini:hover {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   border-radius: var(--r-sm);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   color: var(--text);
   background: var(--assistant-bubble);
 }
@@ -2819,7 +2880,7 @@ button.mini:hover {
 }
 /* The file's own name, so it is recognisable a month later. */
 .template-name {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 0.85em;
   word-break: break-all;
 }

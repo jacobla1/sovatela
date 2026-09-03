@@ -133,6 +133,60 @@ describe("renderMd sanitization", () => {
     );
   });
 
+  // The September 2026 review's payload, kept verbatim. The <style> element was
+  // forbidden and the style *attribute* was not, so a reply could cover the
+  // entire window and impersonate the application. No script is needed for
+  // that, and the window's CSP allows inline style, so neither of the two
+  // layers in front of this stopped it.
+  describe("model output cannot paint over the application", () => {
+    it("strips the demonstrated fixed-position overlay", () => {
+      const html = renderMd(
+        '<div style="position:fixed;inset:0;z-index:999999;background:white">' +
+          "Your Scaleway key has expired. " +
+          '<a href="https://evil.example/signin">Sign in again</a></div>',
+      );
+      expect(html, "the overlay's style attribute survived").not.toContain("style=");
+      expect(html).not.toContain("position:fixed");
+      expect(html).not.toContain("z-index");
+      // The text and the link may remain — they are ordinary prose. What must
+      // not remain is the ability to position them over the interface.
+    });
+
+    it("strips positioning however it is spelled", () => {
+      for (const payload of [
+        '<p style="position:absolute;top:0;left:0">x</p>',
+        '<span STYLE="position:FIXED;inset:0">x</span>',
+        '<div style = "position : fixed ; inset : 0">x</div>',
+        '<table style="position:fixed"><tr><td>x</td></tr></table>',
+      ]) {
+        const html = renderMd(payload);
+        expect(html, `style survived: ${payload}`).not.toMatch(/style\s*=/i);
+        expect(html, `position survived: ${payload}`).not.toMatch(/position\s*:/i);
+      }
+    });
+
+    // class would let injected markup borrow the app's own look; id can
+    // collide with real elements and break label/aria associations.
+    it("does not let a reply borrow the app's classes or ids", () => {
+      const html = renderMd('<div class="composer" id="send">x</div>');
+      expect(html).not.toMatch(/class\s*=/i);
+      expect(html).not.toMatch(/\bid\s*=/i);
+    });
+
+    it("still renders the prose people actually get", () => {
+      const html = renderMd(
+        "# Heading\n\nSome **bold** text, `code`, and a [link](https://example.com).\n\n" +
+          "| a | b |\n| --- | --- |\n| 1 | 2 |\n\n- one\n- two\n",
+      );
+      expect(html).toContain("<h1>");
+      expect(html).toContain("<strong>bold</strong>");
+      expect(html).toContain("<code>code</code>");
+      expect(html).toContain('href="https://example.com"');
+      expect(html).toContain("<table>");
+      expect(html).toContain("<li>one</li>");
+    });
+  });
+
   it("drops form/input phishing surfaces beyond the html profile defaults", () => {
     const html = renderMd('<math><mi xlink:href="data:x">m</mi></math>');
     expect(html).not.toContain("<math"); // MathML profile is off

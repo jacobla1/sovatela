@@ -261,6 +261,34 @@ describe("the release builds where its provenance can be published", () => {
     ).not.toMatch(/github\.repository == 'jacobla1\/Scale'/);
   });
 
+  // Notarization used to be verified by the maintainer running a script by hand
+  // between the build and the publish. That is a step, and steps get skipped on
+  // the release someone is in a hurry for — while the failure it exists to
+  // catch, an unsigned build from a lapsed certificate, is exactly the one that
+  // looks fine in the log.
+  it("verifies notarization on the artifact, in the workflow", () => {
+    expect(release, "nothing in the release runs the notarization check").toMatch(
+      /verify-notarization\.sh/,
+    );
+
+    const jobs = release.split(/\n  (?=[a-z][a-z0-9-]*:\n)/);
+    const verifier = jobs.find((j) => /verify-notarization\.sh/.test(j));
+    expect(verifier, "the notarization check is not inside a job").toBeTruthy();
+    expect(
+      verifier,
+      "the notarization check does not run on macOS, where spctl exists",
+    ).toMatch(/runs-on:\s*macos/);
+
+    // It also has to gate something, or it is a job whose failure nobody waits
+    // for before publishing.
+    const assets = jobs.find((j) => /^\s*verify-release-assets:/m.test(j));
+    expect(assets, "verify-release-assets is gone").toBeTruthy();
+    expect(
+      assets,
+      "the checksums and attestations no longer wait for the signature check",
+    ).toMatch(/needs:.*verify-macos-signature/);
+  });
+
   // The one that matters most. A secret is only as scoped as the number of
   // jobs that can read it.
   it("lets exactly one job see the Apple certificate", () => {

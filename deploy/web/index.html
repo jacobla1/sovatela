@@ -313,10 +313,13 @@
     </p>
 
     <p class="signing">
-      Checking the SHA-256 below tells you the file arrived intact — not that we
-      are who we say we are. The list is not signed, so it proves the download
-      matches what was published, not who published it. On macOS, notarization is
-      the check that does more: it is verified against Apple, not against us.
+      Checking the SHA-256 below tells you the file arrived intact. On its own it
+      proves the download matches what was published, not who published it — so
+      the list is <strong>signed</strong>, and the signature is what says the
+      publisher vouches for it. Every installer also carries a build attestation
+      binding it to the commit that produced it. All three commands are under
+      <em>Verify your download</em> below. On macOS, notarization is the check
+      that needs none of them: it is verified against Apple, not against us.
     </p>
 
     <p class="secondary">

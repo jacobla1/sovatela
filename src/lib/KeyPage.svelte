@@ -215,11 +215,15 @@
   let searxToken = $state(""); // shared-server bearer token
   let searxTokenSet = $state(false);
   let searchSaved = $state(false);
+  // A save that failed used to reach only the console: the button simply
+  // did not turn into "Saved", which is indistinguishable from a slow one.
+  let searchError = $state("");
   let testingSearch = $state(false);
   let testResult = $state(null); // { ok, text } | null
 
   async function saveSearch() {
     testResult = null;
+    searchError = "";
     try {
       await invoke("set_search_settings", {
         settings: {
@@ -243,7 +247,7 @@
       setTimeout(() => (searchSaved = false), 2000);
       return true;
     } catch (e) {
-      console.error("Could not save search settings:", e);
+      searchError = `Web search settings were not saved: ${e?.message ?? e}`;
       return false;
     }
   }
@@ -285,8 +289,10 @@
   let imageTokenSet = $state(false);
   let imageModel = $state("");
   let imageSaved = $state(false);
+  let imageError = $state("");
 
   async function saveImage() {
+    imageError = "";
     try {
       await invoke("set_image_settings", {
         settings: {
@@ -308,7 +314,7 @@
       imageSaved = true;
       setTimeout(() => (imageSaved = false), 2000);
     } catch (e) {
-      console.error("Could not save image settings:", e);
+      imageError = `Image settings were not saved: ${e?.message ?? e}`;
     }
   }
 
@@ -363,6 +369,7 @@
   let terminalKeySet = $state(false);
   let terminalKeyHint = $state(null);
   let terminalKeySaved = $state(false);
+  let terminalKeyError = $state("");
 
   async function refreshTerminalKey() {
     try {
@@ -375,6 +382,7 @@
   }
 
   async function saveTerminalKey() {
+    terminalKeyError = "";
     try {
       await invoke("set_terminal_key", { key: terminalKey });
       terminalKey = "";
@@ -383,18 +391,19 @@
       await refreshTerminalKey();
       await refreshClaudeGlm();
     } catch (e) {
-      console.error("Could not save the terminal key:", e);
+      terminalKeyError = `The terminal key was not saved: ${e?.message ?? e}`;
     }
   }
 
   async function clearTerminalKey() {
     terminalKey = "";
+    terminalKeyError = "";
     try {
       await invoke("set_terminal_key", { key: "" });
       await refreshTerminalKey();
       await refreshClaudeGlm();
     } catch (e) {
-      console.error("Could not clear the terminal key:", e);
+      terminalKeyError = `The terminal key was not cleared, and is still stored: ${e?.message ?? e}`;
     }
   }
 
@@ -430,10 +439,12 @@
   // value can now do is turn a feature off, not start collecting.
   let autoMemory = $state(false);
   let memorySaved = $state(false);
+  let memoryError = $state("");
   let memories = $state([]); // remembered facts (auto-captured or manually added)
   let newMemory = $state("");
 
   async function saveMemory() {
+    memoryError = "";
     try {
       await invoke("set_memory_settings", {
         settings: {
@@ -445,7 +456,7 @@
       memorySaved = true;
       setTimeout(() => (memorySaved = false), 2000);
     } catch (e) {
-      console.error("Could not save memory settings:", e);
+      memoryError = `Memory settings were not saved: ${e?.message ?? e}`;
     }
   }
 
@@ -822,9 +833,12 @@
       </button>
     </li>
     <li>
-      <span>Leave the defaults as they are (<strong>Myself</strong> as the
-      bearer), pick <strong>No</strong> for Object Storage, and click through to
-      generate.</span>
+      <span>Leave <strong>Myself</strong> as the bearer and pick
+      <strong>No</strong> for Object Storage. Set an <strong>expiry
+      date</strong> — a year is a good default — so the key stops being useful
+      if it ever escapes. Sovatela tells you when it lapses and how to replace
+      it; choose <strong>Never</strong> if you would rather not be
+      interrupted.</span>
     </li>
     <li>
       <span>Copy the <strong>Secret Key</strong> — Scaleway shows it only once —
@@ -919,6 +933,9 @@
   <button class="primary" onclick={saveMemory}>
     {memorySaved ? "Saved ✓" : "Save memory"}
   </button>
+  {#if memoryError}
+    <p class="warn-text" role="alert">{memoryError}</p>
+  {/if}
 
   <div class="mem-divider"></div>
 
@@ -1177,6 +1194,9 @@
       {testingSearch ? "Testing…" : "Save & test"}
     </button>
   </div>
+  {#if searchError}
+    <p class="warn-text" role="alert">{searchError}</p>
+  {/if}
   {#if testResult}
     <p class={testResult.ok ? "hint" : "error"}>{testResult.text}</p>
   {/if}
@@ -1399,6 +1419,9 @@
   <button class="primary" onclick={saveImage}>
     {imageSaved ? "Saved ✓" : "Save image settings"}
   </button>
+  {#if imageError}
+    <p class="warn-text" role="alert">{imageError}</p>
+  {/if}
 {/snippet}
 
 {#snippet templatesSection()}
@@ -1566,6 +1589,9 @@
       {/if}
       {#if terminalKeySaved}<span class="saved-note">Saved</span>{/if}
     </div>
+    {#if terminalKeyError}
+      <p class="warn-text" role="alert">{terminalKeyError}</p>
+    {/if}
     <p class="hint">
       Stored in {store} alongside your other keys, and read fresh each time
       <code>claude-glm</code> starts. A launcher installed before this version
@@ -2207,12 +2233,20 @@
         />
         Check for a new version when Sovatela starts
       </label>
-      <span class="hint">
+      <p class="hint">
         Off by default. It reads the same version number as the button above and
         sends nothing — no account, no sign-up, and nothing about you or this
-        machine is recorded anywhere. It exists because a security fix otherwise
-        reaches only people who think to press the button.
-      </span>
+        machine is recorded anywhere.
+      </p>
+      <p class="hint standing-caution">
+        <strong>With this off, you will not hear about security fixes.</strong>
+        This app has no automatic updates and no mailing list — deliberately,
+        because a list would mean holding your address. So there is no other way
+        for it to reach you: if a flaw is found in a version you are running,
+        nothing will tell you unless you press the button above yourself. When
+        this is on, a dot appears beside <em>Settings</em> and stays until you
+        have a newer version. Updating is still manual — nothing installs itself.
+      </p>
     </dd>
     <dt>Licence</dt>
     <dd>MIT — free to use, modify and share</dd>

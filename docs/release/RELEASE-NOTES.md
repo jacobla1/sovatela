@@ -1,3 +1,75 @@
+# Release notes — Sovatela 1.7.1
+
+Release date: 2026-09-04 · [All releases](https://github.com/jacobla1/sovatela/releases)
+
+A correctness release following an independent review of 1.7.0. Nothing here
+changes what the app does; it changes what it will let a reply, a mistyped
+address, or a failed save do to you — and what it tells you when something goes
+wrong.
+
+**If you are on 1.7.0, this is worth installing.** Two of the fixes below
+affect anyone using it.
+
+## Fixed in 1.7.1
+
+- **A reply could paint a fake interface over the app.** Assistant text was
+  filtered against a list of forbidden tags, which caught `<style>` and missed
+  the `style` *attribute* — so a reply could cover the whole window and
+  impersonate Sovatela, for instance with a convincing request to re-enter your
+  key. Nothing was executing and nothing escaped the sandbox; it was
+  impersonation, which for an app whose point is that you can trust what it
+  shows you is bad enough. A poisoned search result or an uploaded document was
+  enough to ask the model for it. Replies are now filtered against an allowlist.
+- **Auto-memory could switch itself on.** The fix in 1.7.0 was incomplete and
+  its release note overstated it. The chat view kept its own copy of the
+  setting, initialised on, and that is the copy deciding whether a conversation
+  is sent for extraction when you leave it — so a slow settings read could still
+  produce a billed request against a setting you had declined. Both copies stay
+  off until the stored value has actually been read.
+- **A rejected endpoint kept your replacement token.** Saving web-search or
+  image settings stored the new secret *before* checking the address, so a
+  mistyped URL left the new token stored against the old one — and the next
+  request sent it there. Nothing is written now until the whole configuration is
+  accepted.
+- **Removing your key said it worked when it had not.** The screen changed to
+  the welcome page whether or not the credential store accepted the deletion, so
+  a refused write looked exactly like success — which matters most to anyone
+  clearing a machine before selling or returning it. It now says what happened
+  and stays put. Web search, image, terminal-key and memory saves each report
+  their own failures too, instead of writing to a console you cannot see.
+
+## New in 1.7.1
+
+- **Sovatela asks, once, whether to check for a new version at launch.** There
+  is no automatic updater and no mailing list — deliberately, since a list would
+  mean holding your address — so if you decline, nothing can tell you about a
+  security fix and you would need to check yourself. The question is asked once
+  and answered either way; it is not a notice that keeps coming back.
+- **A dot beside *Settings*** when a newer version exists, so the notice does
+  not disappear the moment you dismiss a banner. It reads the same file the
+  button reads and sends nothing.
+- **Guidance for keys that expire.** The setup steps now suggest giving your
+  Scaleway key an expiry date rather than *Never*: a key that expires stops
+  being useful to anyone who copies it. When a key is refused, the app now says
+  so where you are reading, names expiry as the likeliest cause for a key that
+  worked yesterday, and points at generating a new one. It cannot claim the key
+  expired — Scaleway answers identically for expired, revoked and mistyped keys,
+  and the expiry date is not part of the key — so it names all three. Choosing
+  *Never* is still offered.
+
+## Also
+
+- Button rows, fonts and text sizes are consistent across the app; two notices
+  added in 1.7.0 ignored the text-size setting and are now on the same scale as
+  everything else.
+- Releases verify macOS notarization in the build itself rather than relying on
+  someone remembering to check, and publishing the public source now refuses any
+  file that has not been explicitly classified.
+
+Known limitations and accepted risks: `docs/TECHNICAL-SPEC.md` § 7.
+
+---
+
 # Release notes — Sovatela 1.7.0
 
 Release date: 2026-09-03 · [All releases](https://github.com/jacobla1/sovatela/releases)
@@ -12,8 +84,16 @@ possible while the build was private.
   remembered facts are personal data kept on your device — but the memory panel
   showed its toggle as *on* before reading the stored value, so saving anything
   on that screen switched it on. If you never chose auto-memory and found it
-  enabled, this is why. It is off unless you turn it on, and three checks now
-  hold that.
+  enabled, this is why.
+
+  **This fix was incomplete in 1.7.0, and the note above overstated it.** A
+  second copy of the same flag, in the chat view, still started on — and that
+  is the one that decides whether a conversation is sent for extraction when
+  you leave it. So on a slow settings read, ending a chat could still make a
+  billed extraction request against a setting you had turned off. Both are off
+  until the stored value has actually been read, and the check that was
+  supposed to hold this now looks at every file rather than the one the first
+  fix was made in.
 - **One field from a provider could take the app down.** A reply naming an
   absurd position in a list of tool calls made the app reserve memory for all of
   it. Every part of a streamed reply is bounded now. The previous release capped
