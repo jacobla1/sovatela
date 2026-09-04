@@ -300,7 +300,12 @@ jobs:
     if: github.repository == 'jacobla1/sovatela'
     runs-on: macos-latest
     permissions:
-      contents: read # a draft release is visible to the workflow's own token
+      # `write`, not `read`, and the job below has carried the reason in a
+      # comment since before this one existed: a draft release is not visible
+      # to a read-only token. With `read` this failed on its first live run
+      # with "release not found" — the check could not see the artifact it
+      # exists to check.
+      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
