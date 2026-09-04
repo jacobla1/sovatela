@@ -95,10 +95,12 @@
           note to yourself, a backup, a machine you no longer control. An expiry
           date puts a limit on how long any of that matters.
           <br />
-          The cost is that chat stops on that day. Sovatela will tell you why
-          when it happens and point you at generating a new one, which is the
-          whole of the fix — it takes about a minute, and nothing you have saved
-          is affected.
+          The cost is that chat stops on that day. Sovatela cannot see the date
+          — it is held by Scaleway, not carried in the key — so it cannot warn
+          you in advance. What it does is say that the key was refused, name an
+          expiry as the likeliest reason for one that worked yesterday, and
+          point you at generating a new one. That takes about a minute, and
+          nothing you have saved is affected.
           <br />
           <strong>Choose <em>Never</em> if you would rather not be interrupted.</strong>
           That is a legitimate choice for a key on a machine only you use; it

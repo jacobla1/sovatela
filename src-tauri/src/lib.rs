@@ -245,6 +245,23 @@ struct Secrets {
     searxng_token: String,
     #[serde(default)]
     image_token: String,
+    /// The origin each endpoint token was stored *for*.
+    ///
+    /// A token is issued by one host and is worthless to any other, so it
+    /// should never travel to a second one. Ordering the writes carefully is
+    /// not enough to guarantee that: the token lives in the keychain and the
+    /// address lives in settings.json, so any failure between the two writes
+    /// leaves them describing different hosts, and the next request would
+    /// attach the new token to the old address. Validating before writing
+    /// fixed the case we could think of; this fixes the class.
+    ///
+    /// Empty means a token stored before this binding existed. Those are
+    /// allowed and are bound on the next successful save, because refusing
+    /// them would break every working search and image endpoint on upgrade.
+    #[serde(default)]
+    searxng_token_origin: String,
+    #[serde(default)]
+    image_token_origin: String,
     /// Optional second Scaleway key used only by the claude-glm installer.
     /// Empty means "share the chat key", which is what every install before
     /// 1.2.0 did — and why terminal usage and app usage are indistinguishable
@@ -1044,6 +1061,18 @@ fn origin_of(url: &str) -> Option<String> {
     })
 }
 
+/// May a stored endpoint token be sent to `url`?
+///
+/// Only if it was stored for that same origin. An empty stored origin is a
+/// token from before the binding existed — see `Secrets::searxng_token_origin`.
+fn token_belongs_to(stored_origin: &str, url: &str) -> bool {
+    let stored = stored_origin.trim();
+    if stored.is_empty() {
+        return true;
+    }
+    origin_of(url).as_deref() == Some(stored)
+}
+
 /// Whether a Black Forest Labs polling address is one this app will send the
 /// key to.
 ///
@@ -1239,6 +1268,15 @@ async fn set_search_settings(
             if !keep_token {
                 sec.searxng_token.clear();
             }
+            // Bind whatever token now stands to the address it is for, so a
+            // failure before settings.json is written cannot leave it usable
+            // against the previous host. Written in the same keychain update
+            // as the token itself, so the two cannot disagree.
+            sec.searxng_token_origin = if sec.searxng_token.trim().is_empty() {
+                String::new()
+            } else {
+                origin_of(&settings.url).unwrap_or_default()
+            };
         })?;
     }
 
@@ -1359,6 +1397,12 @@ async fn set_image_settings(app: tauri::AppHandle, settings: ImageSettings) -> R
             if !keep_token {
                 sec.image_token.clear();
             }
+            // Same binding as the search token above, same reason.
+            sec.image_token_origin = if sec.image_token.trim().is_empty() {
+                String::new()
+            } else {
+                origin_of(&settings.url).unwrap_or_default()
+            };
         })?;
     }
 
@@ -2641,10 +2685,13 @@ async fn custom_image_generate(s: &AppSettings, prompt: &str) -> Result<String, 
         body["model"] = serde_json::Value::String(s.image_model.trim().to_string());
     }
     let mut req = client.post(s.image_url.trim()).json(&body);
-    if let Some(token) = load_secrets()
-        .ok()
-        .and_then(|sec| trimmed_nonempty(&sec.image_token))
-    {
+    // Same rule as the search token: attached only if it was stored for this
+    // endpoint's origin.
+    if let Some(token) = load_secrets().ok().and_then(|sec| {
+        token_belongs_to(&sec.image_token_origin, &s.image_url)
+            .then(|| trimmed_nonempty(&sec.image_token))
+            .flatten()
+    }) {
         req = req.bearer_auth(token);
     }
     let resp = req.send().await.map_err(|e| e.to_string())?;
@@ -3307,7 +3354,14 @@ fn resolve_search(s: &AppSettings) -> Option<SearchBackend> {
     match provider {
         "searxng" if !s.url.trim().is_empty() => Some(SearchBackend::Searxng(
             s.url.trim().to_string(),
-            sec.searxng_token.trim().to_string(),
+            // Sent only if it was stored for this address. A mismatch means a
+            // half-written change, so the request goes without a token and is
+            // refused by the endpoint — which is the safe way to be wrong.
+            if token_belongs_to(&sec.searxng_token_origin, &s.url) {
+                sec.searxng_token.trim().to_string()
+            } else {
+                String::new()
+            },
         )),
         "linkup" => trimmed_nonempty(&sec.linkup_key).map(SearchBackend::Linkup),
         "staan" => trimmed_nonempty(&sec.staan_key).map(SearchBackend::Staan),
@@ -10464,6 +10518,89 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&a);
         let _ = std::fs::remove_dir_all(&b);
+    }
+
+    /// A token stored for one endpoint must never be sent to another.
+    ///
+    /// The ordering fix alone could not guarantee this. The token lives in the
+    /// keychain and the address in settings.json, so *any* failure between the
+    /// two writes leaves them describing different hosts — a full disk, a
+    /// read-only data directory, a failed rename, a crash. The reviewed
+    /// scenario was: valid new endpoint B accepted, token B written, settings
+    /// write fails, endpoint A still stored, next request sends token B to A.
+    ///
+    /// So the token carries the origin it was stored for and is withheld when
+    /// that disagrees with the address in use, whichever write failed.
+    #[test]
+    fn a_token_is_not_sent_to_an_endpoint_it_was_not_stored_for() {
+        // The exact partial-write state: token bound to B, settings still A.
+        assert!(
+            !token_belongs_to("https://b.example", "https://a.example/search"),
+            "a token stored for B would be sent to A"
+        );
+
+        // The ordinary case still works.
+        assert!(token_belongs_to(
+            "https://b.example",
+            "https://b.example/search"
+        ));
+
+        // Origin is scheme, host and port — a token is not shared across them.
+        assert!(!token_belongs_to("https://b.example", "http://b.example/s"));
+        assert!(!token_belongs_to(
+            "https://b.example:8888",
+            "https://b.example:9999/s"
+        ));
+        assert!(!token_belongs_to(
+            "https://b.example",
+            "https://b.example.evil.test/s"
+        ));
+
+        // Unparseable addresses cannot match a stored origin.
+        assert!(!token_belongs_to("https://b.example", "not a url"));
+
+        // A token from before the binding existed is allowed, or upgrading
+        // would break every working endpoint. It is bound on the next save.
+        assert!(token_belongs_to("", "https://anything.example/s"));
+        assert!(token_belongs_to("   ", "https://anything.example/s"));
+    }
+
+    /// Both writes record the origin, and both readers check it.
+    ///
+    /// A source assertion because these commands need an AppHandle. It is the
+    /// pairing that matters: binding on save with no check on use protects
+    /// nothing, and a check with nothing writing the origin withholds every
+    /// token.
+    #[test]
+    fn both_endpoint_tokens_are_bound_and_checked() {
+        let src = lib_source();
+        for (setter, field) in [
+            ("\nasync fn set_search_settings", "searxng_token_origin"),
+            ("\nasync fn set_image_settings", "image_token_origin"),
+        ] {
+            let at = src
+                .find(setter)
+                .unwrap_or_else(|| panic!("{setter} is gone"));
+            let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
+            assert!(
+                body.contains(field),
+                "{setter} stores a token without recording the origin it is for"
+            );
+        }
+        // And the two functions that *attach* a token each consult the
+        // binding. Counting occurrences across the file was the first version
+        // of this and proved nothing: `lib_source()` includes these tests, so
+        // the assertions below satisfied the count on their own and the check
+        // passed with both call sites stripped out.
+        for f in ["\nfn resolve_search", "\nasync fn custom_image_generate"] {
+            let at = src.find(f).unwrap_or_else(|| panic!("{f} is gone"));
+            let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
+            assert!(
+                body.contains("token_belongs_to("),
+                "{f} attaches a stored token without checking the origin it \
+                 was stored for"
+            );
+        }
     }
 
     /// A rejected endpoint must not have already replaced the stored token.

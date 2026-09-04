@@ -1351,7 +1351,10 @@
           onclick={checkConnection}
           onkeydown={(e) => (e.key === "Enter" || e.key === " ") && checkConnection()}
         ></span>
-        GLM-5.2 · Scaleway
+        <!-- Wrapped so it can truncate. As a bare text node in a flex row it
+             could not, so at a narrow window it ran straight through the
+             buttons on the other side of the header. -->
+        <span class="title-label">GLM-5.2 · Scaleway</span>
       </div>
     </div>
     <div class="header-actions">

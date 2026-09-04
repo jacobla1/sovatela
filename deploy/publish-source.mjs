@@ -128,6 +128,7 @@ const PUBLIC = [
   "docs/release/QA-1.6.1.md",
   "docs/release/QA-1.6.2.md",
   "docs/release/QA-1.7.0.md",
+  "docs/release/QA-1.7.1.md",
 ];
 
 const isPublic = (p) =>

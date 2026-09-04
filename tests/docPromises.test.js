@@ -596,6 +596,98 @@ describe("the uninstall page accounts for everything stored", () => {
   });
 });
 
+// Turning the workspace off is a security decision, so the interface must not
+// report it before the backend has done it. This one was missed when the other
+// console-only failures were fixed, and it is the worst of the set: the others
+// misreport a preference, this one misreported a control while the agent could
+// still read and write the folder.
+describe("revoking workspace access cannot report success it did not get", () => {
+  const keypage = read("src/lib/KeyPage.svelte");
+
+  it("clears the displayed folder only after the backend confirms", () => {
+    const at = keypage.indexOf("async function clearWorkspaceFolder");
+    expect(at, "clearWorkspaceFolder is gone").toBeGreaterThan(-1);
+    const body = keypage.slice(at, keypage.indexOf("\n  }", at));
+    expect(body, "the revocation failure is logged rather than shown").not.toMatch(
+      /console\.error/,
+    );
+    expect(body, "nothing tells the user the revocation failed").toMatch(
+      /workspaceError\s*=/,
+    );
+    // The assignment that empties the field must come after the await, not
+    // before it.
+    const invokeAt = body.indexOf('invoke("clear_workspace_dir")');
+    const clearAt = body.indexOf('workspaceDir = ""');
+    expect(invokeAt, "the clear command is gone").toBeGreaterThan(-1);
+    expect(
+      clearAt,
+      "the folder is cleared in the interface before the backend confirms it",
+    ).toBeGreaterThan(invokeAt);
+  });
+});
+
+// A role is a promise about behaviour. modalFocus.js exists because the
+// project made this mistake once already, and its comment says so.
+describe("nothing claims to be a dialog without behaving like one", () => {
+  const app = read("src/App.svelte");
+
+  // Comments stripped first. The second time this file has needed that: a
+  // comment explaining why a claim is not made contains the claim, and a guard
+  // that reads comments as markup fires on the explanation.
+  const markup = app
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/(^|[^:])\/\/.*$/gm, "$1 ");
+
+  it("the update prompt does not declare a role it does not implement", () => {
+    if (!/role="dialog"|aria-modal/.test(markup)) return; // nothing claims it
+    expect(
+      markup,
+      "App.svelte declares a dialog but never uses the modalFocus action, so " +
+        "focus is never moved, trapped or restored",
+    ).toMatch(/use:modalFocus/);
+  });
+});
+
+// The update check is the one network call a user is asked to opt into, so the
+// consent copy is held to the standard the policy documents already meet: no
+// application data is sent, and the request itself is still a request.
+describe("the update-check copy does not overstate", () => {
+  const flat = (f) => read(f).replace(/<[^>]*>/g, " ").replace(/\s+/g, " ");
+
+  it("does not claim the request sends nothing at all", () => {
+    for (const f of ["src/App.svelte", "src/lib/KeyPage.svelte"]) {
+      expect(
+        flat(f),
+        `${f} says the update check "sends nothing", which is not true of the ` +
+          "request itself — GitHub hosts the page and sees the IP",
+      ).not.toMatch(/sends nothing[.,—]|sends nothing\s+—\s+no/i);
+    }
+  });
+
+  // Found by launching the packaged app and looking at it: `button.ghost`
+  // borders itself with --border, which is within a few percent of this
+  // banner's tinted background, so "No" rendered as bare text beside a solid
+  // primary. Refusing must not look unavailable in a consent prompt.
+  it("makes declining look like a button", () => {
+    const app = read("src/App.svelte");
+    const at = app.indexOf(".ask-updates-actions");
+    expect(at, "the prompt's action row is gone").toBeGreaterThan(-1);
+    expect(
+      app.slice(at),
+      "the decline button has no border override, so it inherits --border and " +
+        "disappears against the banner's own background",
+    ).toMatch(/button\.ghost\)?\s*\{[^}]*border-color/);
+  });
+
+  it("says who sees the request instead", () => {
+    expect(
+      flat("src/App.svelte"),
+      "the prompt no longer discloses that GitHub sees the request",
+    ).toMatch(/GitHub[^.]{0,60}(sees|hosts)/i);
+  });
+});
+
 // The badge, and the key-expiry advice that depends on it. Both are the same
 // bargain: the app asks people to accept an interruption it can explain, so it
 // has to actually explain it.
@@ -673,6 +765,38 @@ describe("an expired key explains itself", () => {
       copy,
       "the app states the key has expired, which Scaleway's answer cannot tell it",
     ).not.toMatch(/your key has expired|the key has expired\b/i);
+  });
+
+  // The setup copy is where this slipped: "Sovatela tells you when it lapses"
+  // and "will tell you why" both claim the app detects expiry. It detects a
+  // refusal. The expiry date lives in the Scaleway account and is not part of
+  // the key, so the app never sees it and cannot warn ahead of the day.
+  it("never claims the app can detect or foresee expiry", () => {
+    for (const f of ["src/lib/KeyPage.svelte", "src/lib/ScalewayKeySteps.svelte", "src/lib/Chat.svelte"]) {
+      const copy = withoutComments(read(f));
+      // Affirmative claims only. "cannot warn you in advance" is the honest
+      // sentence and contains the same words as the claim it denies, so a
+      // pattern that ignores the negation fires on the correction — which is
+      // what happened when this was first written.
+      const claims = [
+        /tells? you when it (?:lapses|expires)/gi,
+        /will tell you why/gi,
+        /warns? you (?:before|in advance|when it expires)/gi,
+        /lets? you know when (?:it|the key) (?:lapses|expires)/gi,
+      ];
+      const NEGATED = /(?:cannot|can't|does not|doesn't|will not|won't|never|no way to)\s+(?:\w+\s+){0,3}$/i;
+      for (const claim of claims) {
+        for (const m of copy.matchAll(claim)) {
+          const before = copy.slice(Math.max(0, m.index - 40), m.index);
+          if (NEGATED.test(before)) continue; // a denial, not a promise
+          expect.fail(
+            `${f} says the app knows the key expired — "${m[0]}". It only ` +
+              "knows the key was refused, and cannot tell expiry from a " +
+              "revoked or mistyped one",
+          );
+        }
+      }
+    }
   });
 
   it("shows that state where the user is, not only as a tooltip", () => {

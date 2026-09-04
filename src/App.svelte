@@ -237,19 +237,31 @@
        dismissal would leave the question unanswered and it would return next
        launch, which is how people learn to click past things without reading.
        Declining is a real choice and is recorded as one. -->
-  <div class="ask-updates" role="dialog" aria-labelledby="ask-updates-title">
+  <!-- Not a dialog. It says role="dialog" nowhere any more, because it is a
+       banner across the top of the app rather than an overlay: nothing behind
+       it is inert, and trapping the keyboard inside a strip the user can
+       simply ignore would be a worse lie than the one it replaces. It is a
+       labelled region containing a question, announced once, reachable by Tab
+       like anything else — modalFocus.js exists for the two real dialogs and
+       says why declaring the role without the behaviour is wrong. -->
+  <section class="ask-updates" aria-labelledby="ask-updates-title">
     <div class="ask-updates-body">
       <strong id="ask-updates-title">Should Sovatela check for a new version when it starts?</strong>
+      <!-- Kept short on purpose. An earlier draft said the same things in
+           twice the words and filled a third of the window on first launch,
+           which is where a person has least patience — and a disclosure nobody
+           reads protects nobody. Every commitment survives the trim: no
+           updater, no list, what is sent, who sees the request, and that
+           updating stays manual. -->
       <p>
-        This app cannot tell you about a security fix any other way. There is no
-        automatic updater, and no mailing list — deliberately, because a list
-        would mean holding your email address. If you say no, the only way to
-        find out is to check yourself under <em>Settings ▸ About</em>.
+        There's no auto-updater and no mailing list, so this is the only way the
+        app can tell you about a security fix. If you say no, check yourself
+        under <em>Settings ▸ About</em>.
       </p>
       <p>
-        Saying yes reads one small file from sovatela.eu at launch. It sends
-        nothing — no account, no sign-up, nothing about you or this machine.
-        Updating stays manual either way; nothing installs itself.
+        It reads one small file from sovatela.eu and sends nothing about you —
+        not even your version. GitHub hosts that page and sees your IP, as any
+        website would. Updating stays manual either way.
       </p>
     </div>
     <div class="ask-updates-actions">
@@ -260,7 +272,7 @@
         No, I'll check myself
       </button>
     </div>
-  </div>
+  </section>
 {/if}
 
 {#if keyRemovalError}
@@ -345,19 +357,30 @@
     font: inherit;
     cursor: pointer;
   }
+  /* Two columns while there is room for both, one when there is not.
+     `align-items: center` rather than flex-start: the buttons are shorter than
+     the text, so pinning them to the top left a visible void beneath them.
+     `flex: 1 1 26rem` is what makes the wrap happen early enough to matter —
+     with an 18rem basis the text column stayed beside the buttons on an
+     ordinary window and wrapped to five lines to do it, so the banner grew
+     taller the narrower the window got. Below that basis the text takes the
+     full width instead and the buttons drop underneath. */
   .ask-updates {
     border-bottom: 1px solid var(--border);
     background: color-mix(in srgb, var(--accent) 8%, var(--bg));
     padding: var(--sp-4);
     display: flex;
     flex-wrap: wrap;
-    gap: var(--sp-4);
-    align-items: flex-start;
+    gap: var(--sp-3) var(--sp-4);
+    align-items: center;
     font-size: var(--fs-base);
   }
   .ask-updates-body {
-    flex: 1;
-    min-width: 18rem;
+    flex: 1 1 26rem;
+    min-width: 0;
+  }
+  .ask-updates-actions {
+    flex: 0 0 auto;
   }
   .ask-updates-body p {
     margin: var(--sp-2) 0 0;
@@ -369,6 +392,23 @@
     display: flex;
     gap: var(--sp-3);
     flex-wrap: wrap;
+    flex: 0 0 auto;
+  }
+  /* Declining has to look like a button.
+     `button.ghost` borders itself with --border, which reads fine on the app's
+     own panels but is within a few percent of this banner's tinted background
+     — so on screen the decline option was bare grey text beside a solid purple
+     primary, and did not look clickable at all. In a consent prompt that is a
+     dark pattern whether or not anyone intended one: the recommendation may be
+     "yes", but refusing must not look unavailable.
+     Derived from the text colour rather than a fixed value, so it holds in
+     both themes and under prefers-contrast. */
+  .ask-updates-actions :global(button.ghost) {
+    border-color: color-mix(in srgb, var(--text) 45%, transparent);
+    color: var(--text);
+  }
+  .ask-updates-actions :global(button.ghost:hover) {
+    border-color: var(--text);
   }
 
   .removal-error {

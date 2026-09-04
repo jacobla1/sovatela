@@ -1,3 +1,64 @@
+# Release notes — Sovatela 1.7.2
+
+Release date: 2026-09-04 · [All releases](https://github.com/jacobla1/sovatela/releases)
+
+The findings from a second independent review of 1.7.1, and the defects found by
+launching the packaged application and looking at it — which is a check this
+project had never actually run.
+
+## Fixed in 1.7.2
+
+- **An endpoint token can no longer reach a host it was not stored for.** 1.7.1
+  checked the address before saving the secret, which fixed the case that had
+  been reported. It did not fix the class: the token is kept in your credential
+  store and the address in a settings file, so any failure between those two
+  writes — a full disk, an unwritable folder, a crash — left them naming
+  different hosts, and the next request would have sent the new token to the old
+  address. For the shared search server this app documents, that address belongs
+  to someone else. Each token now carries the address it was saved for and is
+  withheld if the two disagree. Tokens saved before this keep working and are
+  bound the next time you save.
+- **Turning off the workspace folder could say it worked when it had not.** The
+  panel cleared the folder before the backend confirmed, so a refused write left
+  the interface reporting that the assistant had no access while it still did.
+  Of everything in this release, this is the one worth knowing about if you use
+  a workspace.
+- **Declining the update check did not look like a choice.** The "No" button
+  drew its border in a colour a few percent from the banner behind it, so it
+  read as plain text beside a solid "Yes". In a question about consent that is
+  a dark pattern whether or not anyone intended one.
+- **A notice above the app could push the window's contents off the top**,
+  hiding a heading behind the title bar with no way to scroll it back.
+- **The model name in the header ran through the buttons** at a narrow window,
+  and then, once that was fixed, pushed *Settings* off the edge instead. It
+  gives way first now, and the buttons wrap rather than disappear.
+
+## Said more accurately
+
+- **The setup steps no longer claim the app can tell when a key expires.** It
+  cannot: the date is held in your Scaleway account and is not part of the key,
+  so nothing here can see it or warn you in advance. What it can say is that
+  the key was refused, and that an expiry is the likeliest reason for one that
+  worked yesterday.
+- **The update check does not "send nothing".** No account, no sign-up and
+  nothing this app knows about you — but sovatela.eu is hosted by GitHub, which
+  sees the request as any website would. Three places said the stronger thing;
+  all three now say this one.
+- The update question is about half as long as it was, having become a wall of
+  text at the moment a person has least patience.
+
+## Known limitations
+
+Unchanged and stated rather than buried: Windows and Linux builds are unsigned
+and have never been installed, upgraded and removed on a clean machine; no
+screen-reader pass has been run since the chat-list change; and a compromised
+interface could still reach most of the app's own commands, which is recorded
+in the technical specification rather than fixed here.
+
+Known limitations and accepted risks: `docs/TECHNICAL-SPEC.md` § 7.
+
+---
+
 # Release notes — Sovatela 1.7.1
 
 Release date: 2026-09-04 · [All releases](https://github.com/jacobla1/sovatela/releases)

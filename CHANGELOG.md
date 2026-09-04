@@ -1,5 +1,40 @@
 # Changelog
 
+## 1.7.2 — 2026-09-04
+
+### Security
+- **An endpoint token can no longer reach a host it was not stored for.** 1.7.1
+  validated the address before writing the secret, which fixed the case that was
+  reported. It did not fix the class: the token lives in the credential store
+  and the address in a settings file, so any failure between the two writes — a
+  full disk, an unwritable folder, a crash — left them describing different
+  hosts, and the next request would have sent the new token to the old address.
+  For the shared search server this app documents, that address belongs to
+  somebody else. Each endpoint token now records the origin it was stored for
+  and is withheld when the address in use disagrees, whichever write failed.
+  Tokens saved before this are honoured and bound on the next save, so nothing
+  working stops working.
+- **Turning the workspace folder off could report success it had not got.** The
+  panel cleared the folder before the backend confirmed and logged failure to a
+  console, so a refused write left the interface saying the assistant had no
+  access while it still did.
+- **The update prompt claimed to be a dialog** without moving or trapping focus,
+  which tells a screen reader you have entered something you have not.
+- **The consent copy said the update check "sends nothing".** No application
+  data is sent, but sovatela.eu is hosted by GitHub, which sees the request —
+  as this project's own privacy policy says. All three places now say so.
+
+### Interface
+- The update question is shorter, its decline button looks like a button rather
+  than plain text, and it no longer grows taller as the window gets smaller.
+- **A banner above the view could push the window's contents off the top**,
+  hiding a heading behind the title bar with no way to scroll it back. The app
+  is a flex column now.
+- The model name in the header gives way instead of running through the buttons.
+- The setup steps no longer say the app can tell when a key expires. It cannot:
+  the date is held by Scaleway, and a refusal looks the same whether the key
+  expired, was revoked, or was mistyped.
+
 ## 1.7.1 — 2026-09-04
 
 ### Security

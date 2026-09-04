@@ -568,12 +568,32 @@
     }
   }
 
+  // Revoking is a security decision, so the interface must not claim it
+  // happened first and find out afterwards. This cleared `workspaceDir`
+  // *before* the call and logged failure to the console, so a refused write
+  // left the panel saying the feature was off while Rust still held the grant
+  // — and the agent could still read and write that folder. Of all the
+  // console-only failures, this was the one that misreported a control rather
+  // than a preference.
+  //
+  // The stored value is re-read on failure rather than assumed, so the panel
+  // shows what the backend actually holds.
   async function clearWorkspaceFolder() {
     workspaceError = "";
-    workspaceDir = "";
-    await invoke("clear_workspace_dir").catch((e) =>
-      console.error("Could not clear workspace:", e),
-    );
+    try {
+      await invoke("clear_workspace_dir");
+      workspaceDir = "";
+    } catch (e) {
+      workspaceError =
+        `The workspace folder was not turned off: ${e?.message ?? e}. The ` +
+        `assistant can still read and write it. Try again, or remove the ` +
+        `folder's contents yourself if you need it inaccessible now.`;
+      try {
+        workspaceDir = (await invoke("get_workspace_dir")) || "";
+      } catch {
+        // Leave what is displayed alone rather than guessing at it.
+      }
+    }
   }
 
   function showWorkspaceFolder() {
@@ -836,9 +856,9 @@
       <span>Leave <strong>Myself</strong> as the bearer and pick
       <strong>No</strong> for Object Storage. Set an <strong>expiry
       date</strong> — a year is a good default — so the key stops being useful
-      if it ever escapes. Sovatela tells you when it lapses and how to replace
-      it; choose <strong>Never</strong> if you would rather not be
-      interrupted.</span>
+      if it ever escapes. When the day comes, chat stops and Sovatela says the
+      key was refused and how to replace it; choose <strong>Never</strong> if
+      you would rather not be interrupted.</span>
     </li>
     <li>
       <span>Copy the <strong>Secret Key</strong> — Scaleway shows it only once —
@@ -2235,8 +2255,10 @@
       </label>
       <p class="hint">
         Off by default. It reads the same version number as the button above and
-        sends nothing — no account, no sign-up, and nothing about you or this
-        machine is recorded anywhere.
+        sends no account, no sign-up, and nothing this app knows about you or
+        this machine — not even which version you are on. The request itself is
+        unavoidable: sovatela.eu is hosted by GitHub, which sees your IP address
+        the way any website does.
       </p>
       <p class="hint standing-caution">
         <strong>With this off, you will not hear about security fixes.</strong>
@@ -2271,7 +2293,8 @@
     {store}. You do not have to take that on trust — the source above is the
     same code these builds are made from.
     <strong>Check for updates</strong> is the one button here that uses the
-    network: it reads a version number from sovatela.eu and sends nothing.
+    network: it reads a version number from sovatela.eu and sends nothing this
+    app knows about you, though GitHub, which hosts that page, sees the request.
     It runs when you press it, and — only if you switch on <em>Check for a new
     version when Sovatela starts</em> above — once when the app opens. Nothing
     installs itself either way: updating is always a download you choose.
