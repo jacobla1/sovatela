@@ -655,13 +655,28 @@ describe("nothing claims to be a dialog without behaving like one", () => {
 describe("the update-check copy does not overstate", () => {
   const flat = (f) => read(f).replace(/<[^>]*>/g, " ").replace(/\s+/g, " ");
 
+  // The documents too — and that omission is why this guard passed while
+  // SECURITY.md's own table said the update check sends "Nothing. No query
+  // string, nothing about you or your machine", live on the site, after the
+  // same claim had been narrowed in all three places in the app. A guard that
+  // sweeps the code and not the page it is published on is half a guard.
   it("does not claim the request sends nothing at all", () => {
-    for (const f of ["src/App.svelte", "src/lib/KeyPage.svelte"]) {
+    for (const f of [
+      "src/App.svelte",
+      "src/lib/KeyPage.svelte",
+      "SECURITY.md",
+      "docs/PRIVACY.md",
+      "docs/QUICKSTART.md",
+      "docs/FAQ.md",
+      "docs/TECHNICAL-SPEC.md",
+    ]) {
       expect(
         flat(f),
         `${f} says the update check "sends nothing", which is not true of the ` +
           "request itself — GitHub hosts the page and sees the IP",
-      ).not.toMatch(/sends nothing[.,—]|sends nothing\s+—\s+no/i);
+      ).not.toMatch(
+        /sends nothing[.,—]|sends nothing\s+—\s+no|the same: nothing|\| Nothing\. No query string/i,
+      );
     }
   });
 

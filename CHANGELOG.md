@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.7.3 — 2026-09-05
+
+### Security
+- **An unrelated key save could rebind an endpoint token to another host.** The
+  binding added in 1.7.2 was written whenever anything on the panel was saved,
+  so saving a Linkup or BFL key re-described which host the custom endpoint's
+  token belonged to — and after a failed settings write, that description was
+  the old host. The token being moved away from a server was quietly bound back
+  to it. The origin now changes only when the token it describes changes, and
+  the regression test walks the sequence of saves rather than the check itself.
+- **A memory file that could not be read was treated as no memories at all.**
+  Any error — a permission failure, a locked file, a transient I/O error — meant
+  an empty list, and adding or deleting a fact then wrote that empty list back.
+  One unreadable read could erase everything you had asked it to remember.
+  Only a missing file means empty now; anything else is reported.
+- **Document templates are written atomically.** The file and its details were
+  two ordinary writes, so an interruption could leave a truncated template, or
+  details describing the template it replaced.
+- **Malformed tool arguments are no longer copied into the system log.** They
+  are model output built from your own material — a query, a path, a line of a
+  document — and stderr is captured by the operating system. A length and a
+  shape say as much about a truncated stream, which is what the line is for.
+- **A recovered tool call now counts against the search budget.** When the model
+  emits a search as text instead of a structured call, the app salvages and runs
+  it; that path skipped the counter, so "six searches" could quietly be more.
+
+### Documentation
+- `SECURITY.md`'s network table said the update check sends "nothing". No
+  application data is sent, but the page is hosted by GitHub, which sees the
+  request — as the same document says elsewhere. Corrected, and the correction
+  recorded. The test that guards this class now sweeps the published documents
+  as well as the source, which is why it had not fired.
+
 ## 1.7.2 — 2026-09-04
 
 ### Security

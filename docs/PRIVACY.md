@@ -1,6 +1,6 @@
 # Privacy policy
 
-Last updated: 2026-09-04 · Applies to: Sovatela v1.7.2
+Last updated: 2026-09-05 · Applies to: Sovatela v1.7.3
 
 > **How this was written, since you are entitled to know.** By the publisher,
 > not by a lawyer. It is written to be accurate about what the software does,

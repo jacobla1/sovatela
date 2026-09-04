@@ -59,8 +59,8 @@ Everything the app can contact, and when:
 | **At launch, automatically** | Your Scaleway endpoint — `GET /models` | Your Scaleway key. This is the connection dot in the corner: it asks whether the key still works, and nothing else. It is the only automatic call in the app |
 | While you use it | The providers you configured — chat, vision, search, image generation | What you asked for |
 | After an image is generated | A delivery address the image provider returns, which is not the address you configured | Nothing but the request for your own image |
-| *Settings → About →* **Check for updates** | `https://sovatela.eu/version.json` | Nothing. No query string, nothing about you or your machine. Only on a press |
-| **At launch, only if you switch it on** | `https://sovatela.eu/version.json` | The same: nothing. *Settings → About → Check for a new version when Sovatela starts* is off by default; enabling it makes this the second automatic call, and it is the only setting that adds one |
+| *Settings → About →* **Check for updates** | `https://sovatela.eu/version.json` | No query string, no account, and nothing this app knows about you or your machine — not even which version you are on. The request itself is unavoidable: that page is hosted by GitHub, which sees your IP address the way any website does. Only on a press |
+| **At launch, only if you switch it on** | `https://sovatela.eu/version.json` | The same, and the same caveat. *Settings → About → Check for a new version when Sovatela starts* is off by default; enabling it makes this the second automatic call, and it is the only setting that adds one |
 | *Settings → Usage →* **Check for updated prices** | `raw.githubusercontent.com/jacobla1/sovatela/…/pricing.json` | The same — a static file, only on a press |
 | With **web search on**, during a search | Any public page the model decides to read | The request for that page. The address is chosen by the model, not by you — see below |
 
@@ -71,6 +71,13 @@ constrains it: private and loopback addresses are refused, the resolved address
 is pinned so a name cannot be re-pointed mid-request, and every redirect is
 re-checked (`vetted_ip` in `src-tauri/src/lib.rs`). What is *not* constrained
 is which public site it reads. Turning web search off removes this entirely.
+
+**A third correction, on the same table.** Both update rows said the check
+sends "nothing". No *application* data is sent — no identifier, no version, no
+query string — but a request is a request, and the page is hosted by GitHub
+Pages, which sees an IP address like any host. This page has said elsewhere,
+for months, that GitHub Pages sees a visitor's IP; the rows above now say it
+too rather than leaving the stronger word standing.
 
 **This table is corrected, twice over.** Through 1.4.0 this section said the app
 contacted nothing but the providers you configure — untrue since the price

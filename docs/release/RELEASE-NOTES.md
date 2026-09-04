@@ -1,3 +1,50 @@
+# Release notes — Sovatela 1.7.3
+
+Release date: 2026-09-05 · [All releases](https://github.com/jacobla1/sovatela/releases)
+
+A third independent review, and four recoveries that quietly discarded the thing
+they were meant to protect.
+
+## Fixed in 1.7.3
+
+- **Saving one key could send another to the wrong server.** 1.7.2 tied each
+  custom endpoint token to the address it was stored for. That tie was rewritten
+  whenever *anything* on the same settings panel was saved — so after a failed
+  save, adding an unrelated key could quietly bind your endpoint token back to
+  the server you were moving away from, and the next search would send it there.
+  The tie now changes only with the token it describes.
+- **An unreadable memory file was treated as no memories at all.** Any error —
+  a permission problem, a locked file, a passing I/O failure — meant an empty
+  list, and adding or removing one fact then wrote that empty list back over
+  everything else. If you have ever wondered whether remembered facts could just
+  vanish, this is how. Only a genuinely missing file means empty now.
+- **Document templates are saved atomically**, so an interruption can no longer
+  leave a half-written template, or details describing the one it replaced.
+- **A recovered search now counts against the search limit.** When the model
+  writes a search as text instead of a proper tool call, the app rescues and
+  runs it; that path skipped the counter, so the limit you were shown could
+  quietly be exceeded.
+- **Malformed tool arguments are no longer written to the system log.** They are
+  built from your own material — a query, a file path, a line of a document —
+  and the operating system captures that log.
+
+## Said more accurately
+
+- **The security page said the update check sends "nothing".** No account and
+  nothing this app knows about you, but sovatela.eu is hosted by GitHub, which
+  sees the request like any website. The app already said so; the page now does too.
+
+## Known limitations
+
+Unchanged: Windows and Linux builds are unsigned and have never been installed,
+upgraded and removed on a clean machine; no screen-reader pass has been run
+since the chat-list change; and a compromised interface could still reach most
+of the app's own commands.
+
+Known limitations and accepted risks: `docs/TECHNICAL-SPEC.md` § 7.
+
+---
+
 # Release notes — Sovatela 1.7.2
 
 Release date: 2026-09-04 · [All releases](https://github.com/jacobla1/sovatela/releases)

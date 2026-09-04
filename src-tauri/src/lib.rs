@@ -443,6 +443,11 @@ fn stream_read_error(e: reqwest::Error) -> String {
 /// `rename` alone is atomic against a *process* dying, which is the case this
 /// originally guarded, and says nothing about the machine losing power.
 fn write_atomic(path: &std::path::Path, contents: &str) -> Result<(), String> {
+    write_atomic_bytes(path, contents.as_bytes())
+}
+
+/// The same guarantee for content that is not text — a template's own bytes.
+fn write_atomic_bytes(path: &std::path::Path, contents: &[u8]) -> Result<(), String> {
     use std::io::Write;
 
     let dir = path
@@ -487,9 +492,7 @@ fn write_atomic(path: &std::path::Path, contents: &str) -> Result<(), String> {
             Err(e) => return Err(e.to_string()),
         };
 
-        let written = file
-            .write_all(contents.as_bytes())
-            .and_then(|()| file.sync_all());
+        let written = file.write_all(contents).and_then(|()| file.sync_all());
         if let Err(e) = written {
             drop(file);
             let _ = std::fs::remove_file(&tmp);
@@ -1260,23 +1263,37 @@ async fn set_search_settings(
             if let Some(v) = trimmed_nonempty(&settings.staan_key) {
                 sec.staan_key = v;
             }
+            // **The origin changes only when the token it describes changes.**
+            //
+            // Binding it on every save of this panel was the hole: the panel
+            // carries Linkup and Staan keys too, so saving one of those ran
+            // this closure and rewrote the SearXNG token's origin from
+            // whatever address the form happened to hold. After a partial
+            // save — keychain written, settings write failed — that address is
+            // the *old* one, so the next unrelated key save quietly rebound the
+            // new token to the host it was being moved away from, and the
+            // use-time check then let it through.
             if let Some(v) = trimmed_nonempty(&settings.token) {
                 sec.searxng_token = v;
-            }
-            // The origin moved and no replacement was supplied: the stored
-            // token belonged to the old host and must not follow the new one.
-            if !keep_token {
+                // A new token, and this is the address it was entered for.
+                sec.searxng_token_origin = origin_of(&settings.url).unwrap_or_default();
+            } else if !keep_token {
+                // The origin moved and no replacement was supplied: the stored
+                // token belonged to the old host and must not follow the new
+                // one. Both go, so nothing is left half-described.
                 sec.searxng_token.clear();
+                sec.searxng_token_origin.clear();
+            } else if sec.searxng_token_origin.trim().is_empty()
+                && !sec.searxng_token.trim().is_empty()
+                && origin_of(&settings.url) == origin_of(&s.url)
+            {
+                // A token stored before this binding existed, on a save that
+                // does not move the endpoint: adopt the address it is already
+                // being used against. Only then — binding an unbound token to
+                // an address that is itself changing would repeat the defect
+                // above in a quieter form.
+                sec.searxng_token_origin = origin_of(&settings.url).unwrap_or_default();
             }
-            // Bind whatever token now stands to the address it is for, so a
-            // failure before settings.json is written cannot leave it usable
-            // against the previous host. Written in the same keychain update
-            // as the token itself, so the two cannot disagree.
-            sec.searxng_token_origin = if sec.searxng_token.trim().is_empty() {
-                String::new()
-            } else {
-                origin_of(&settings.url).unwrap_or_default()
-            };
         })?;
     }
 
@@ -1391,18 +1408,21 @@ async fn set_image_settings(app: tauri::AppHandle, settings: ImageSettings) -> R
             if let Some(v) = trimmed_nonempty(&settings.ovh_key) {
                 sec.ovh_key = v;
             }
+            // Same rule as the search token above, same reason: this panel
+            // also carries BFL and OVH keys, and saving one of those must not
+            // re-describe which host the custom endpoint's token belongs to.
             if let Some(v) = trimmed_nonempty(&settings.token) {
                 sec.image_token = v;
-            }
-            if !keep_token {
+                sec.image_token_origin = origin_of(&settings.url).unwrap_or_default();
+            } else if !keep_token {
                 sec.image_token.clear();
+                sec.image_token_origin.clear();
+            } else if sec.image_token_origin.trim().is_empty()
+                && !sec.image_token.trim().is_empty()
+                && origin_of(&settings.url) == origin_of(&s.image_url)
+            {
+                sec.image_token_origin = origin_of(&settings.url).unwrap_or_default();
             }
-            // Same binding as the search token above, same reason.
-            sec.image_token_origin = if sec.image_token.trim().is_empty() {
-                String::new()
-            } else {
-                origin_of(&settings.url).unwrap_or_default()
-            };
         })?;
     }
 
@@ -1673,7 +1693,17 @@ fn memories_path<R: tauri::Runtime>(
 fn load_memories<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Vec<MemoryItem>, String> {
     match std::fs::read_to_string(memories_path(app)?) {
         Ok(s) => serde_json::from_str(&s).map_err(|e| e.to_string()),
-        Err(_) => Ok(Vec::new()),
+        // **Only a missing file means "no memories".**
+        //
+        // Every error used to mean that — a permission failure, a locked file,
+        // a transient I/O error — and callers that add or delete then write the
+        // whole list back. So one unreadable read could replace a full store
+        // with a single new fact, silently, and the user's remembered facts
+        // were gone with nothing said. A read that failed is not an empty
+        // store, and saying so is the difference between losing data and
+        // reporting a problem.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(format!("Could not read your remembered facts: {e}")),
     }
 }
 
@@ -3208,17 +3238,22 @@ async fn set_template(
 
     let dir = templates_dir(&app)?;
     let dest = dir.join(format!("template.{kind}"));
-    std::fs::write(&dest, &bytes).map_err(|e| format!("Could not save the template: {e}"))?;
-
     let added = usage::today();
-    std::fs::write(
-        dir.join(format!("template.{kind}.json")),
-        serde_json::json!({
-            "name": name, "added": added,
-        })
-        .to_string(),
+
+    // Two plain writes left two ways to be half-done: a truncated template if
+    // the first was interrupted, or a template whose recorded name and date
+    // described the one it replaced if the second was. Both are atomic now,
+    // and the details are written *first* — so the only visible orderings are
+    // the old template with the old details, or the new with the new. A
+    // details file that briefly names a template not yet swapped in is the
+    // harmless direction: nothing reads it except to label what is there.
+    write_atomic(
+        &dir.join(format!("template.{kind}.json")),
+        &serde_json::json!({ "name": name, "added": added }).to_string(),
     )
     .map_err(|e| format!("Could not save the template details: {e}"))?;
+
+    write_atomic_bytes(&dest, &bytes).map_err(|e| format!("Could not save the template: {e}"))?;
 
     Ok(TemplateInfo { kind, name, added })
 }
@@ -6671,11 +6706,34 @@ async fn run_chat<R: tauri::Runtime>(
                 // <tool_call> text. Salvage it, run the tool, keep going.
                 if let Some((name, args)) = parse_leaked_tool_call(&acc.content) {
                     eprintln!("[search] round {round}: salvaged leaked {name} call");
-                    let results = match egress_refusal(&name, egress_closed) {
-                        Some(refusal) => refusal,
-                        None => {
-                            execute_tool_cached(&mut tool_cache, &tool_ctx, &name, &args, &on_event)
+                    // A salvaged search costs the user exactly what a structured
+                    // one does, so it is counted the same way. It was not:
+                    // recovery ran the tool and returned to the top of the loop
+                    // without touching the budget, so a model that kept leaking
+                    // calls searched past the limit. The round cap still bounded
+                    // it, which is why this is a cost defect rather than a
+                    // runaway, but "six searches" should mean six.
+                    let results = if name == "web_search" && searches_used >= SEARCH_BUDGET {
+                        let _ = on_event.send(StreamEvent::Status(
+                            "🔎 Reached the search limit — wrapping up".into(),
+                        ));
+                        SEARCH_BUDGET_MSG.to_string()
+                    } else {
+                        match egress_refusal(&name, egress_closed) {
+                            Some(refusal) => refusal,
+                            None => {
+                                if name == "web_search" {
+                                    searches_used += 1;
+                                }
+                                execute_tool_cached(
+                                    &mut tool_cache,
+                                    &tool_ctx,
+                                    &name,
+                                    &args,
+                                    &on_event,
+                                )
                                 .await
+                            }
                         }
                     };
                     if name == "read_workspace_file" && tool_ctx.workspace.is_some() {
@@ -6778,11 +6836,34 @@ async fn run_chat<R: tauri::Runtime>(
                         // trace of a dropped final SSE event, and a length on
                         // its own said nothing about why — the truncation was
                         // only obvious once the text was visible.
+                        // The arguments themselves are no longer printed. They
+                        // are model output built from the user's own material —
+                        // a search query, a path, a filename, a line of a
+                        // document — and stderr is captured by the system log
+                        // on every platform this ships to. A length and a shape
+                        // are enough to tell a truncated stream from a
+                        // malformed one, which is what this line is for; the
+                        // full text is available under a debug build.
+                        let shape = t
+                            .arguments
+                            .chars()
+                            .map(|c| match c {
+                                '{' | '}' | '[' | ']' | ':' | ',' | '"' => c,
+                                c if c.is_whitespace() => ' ',
+                                _ => '·',
+                            })
+                            .take(60)
+                            .collect::<String>();
                         eprintln!(
                             "[search] round {round}: {} call had malformed arguments \
-                             ({}B): {:?}",
+                             ({}B, shape {:?})",
                             t.name,
                             t.arguments.len(),
+                            shape
+                        );
+                        #[cfg(debug_assertions)]
+                        eprintln!(
+                            "[search] round {round}: arguments were {:?}",
                             t.arguments.chars().take(200).collect::<String>()
                         );
                         format!(
@@ -9993,14 +10074,18 @@ mod tests {
         // machine losing power: without the flush, the published name can point
         // at unwritten blocks.
         let src = lib_source();
-        let at = src.find("\nfn write_atomic").unwrap();
+        // The implementation, not the `&str` wrapper that delegates to it —
+        // adding that wrapper made this test read a two-line function with no
+        // flush in it and fail, which is the guard being precise about the
+        // wrong thing rather than wrong about the guarantee.
+        let at = src.find("\nfn write_atomic_bytes").unwrap();
         let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
         let synced = body
             .find("sync_all")
             .expect("the contents are never flushed");
         let renamed = body
             .find("fs::rename")
-            .expect("write_atomic no longer renames");
+            .expect("write_atomic_bytes no longer renames");
         assert!(synced < renamed, "the rename happens before the flush");
         assert!(
             !body.contains("with_extension(\"tmp\")"),
@@ -10563,6 +10648,104 @@ mod tests {
         // would break every working endpoint. It is bound on the next save.
         assert!(token_belongs_to("", "https://anything.example/s"));
         assert!(token_belongs_to("   ", "https://anything.example/s"));
+    }
+
+    /// The sequence, not just the predicate.
+    ///
+    /// The first version of this binding was defeated by an ordinary sequence
+    /// of saves, and the tests missed it because they exercised
+    /// `token_belongs_to` in isolation. This walks the transitions the setters
+    /// actually perform on the secret store.
+    ///
+    ///   1. endpoint A with token A
+    ///   2. save endpoint B with token B — keychain written, settings write
+    ///      fails, so the stored url is still A
+    ///   3. save an unrelated key in the same panel — Linkup, Staan, BFL, OVH
+    ///
+    /// At step 3 the closure used to rewrite the token's origin from the form's
+    /// url, which after the failed save is A. Token B was rebound to A and the
+    /// next request sent it there.
+    #[test]
+    fn an_unrelated_key_save_cannot_rebind_a_token_to_another_host() {
+        // The setters take an AppHandle, so this models the closure's effect on
+        // the secret store: the token field is blank (the UI never echoes it)
+        // and only a sibling provider's key is being supplied.
+        fn unrelated_save(sec: &mut Secrets, submitted_url: &str, stored_url: &str) {
+            let submitted_token = ""; // blank: "keep what is stored"
+            let keep_token = token_survives_url_change(stored_url, submitted_url, submitted_token);
+            if let Some(v) = trimmed_nonempty(submitted_token) {
+                sec.searxng_token = v;
+                sec.searxng_token_origin = origin_of(submitted_url).unwrap_or_default();
+            } else if !keep_token {
+                sec.searxng_token.clear();
+                sec.searxng_token_origin.clear();
+            } else if sec.searxng_token_origin.trim().is_empty()
+                && !sec.searxng_token.trim().is_empty()
+                && origin_of(submitted_url) == origin_of(stored_url)
+            {
+                sec.searxng_token_origin = origin_of(submitted_url).unwrap_or_default();
+            }
+        }
+
+        // After step 2's partial failure: token B bound to B, settings say A.
+        let mut sec = Secrets {
+            searxng_token: "token-B".into(),
+            searxng_token_origin: "https://b.example".into(),
+            ..Default::default()
+        };
+        let stored_url = "https://a.example/search";
+
+        // Step 3: the user saves a Linkup key. The form shows the stored url.
+        unrelated_save(&mut sec, stored_url, stored_url);
+
+        assert_eq!(
+            sec.searxng_token_origin, "https://b.example",
+            "saving an unrelated key rebound the token to the stored endpoint"
+        );
+        assert!(
+            !token_belongs_to(&sec.searxng_token_origin, stored_url),
+            "token B became usable against endpoint A"
+        );
+
+        // And it stays withheld however many unrelated saves happen.
+        for _ in 0..3 {
+            unrelated_save(&mut sec, stored_url, stored_url);
+        }
+        assert!(!token_belongs_to(&sec.searxng_token_origin, stored_url));
+
+        // Recovery: re-saving the endpoint *with* a replacement token binds it.
+        let mut fixed = sec.clone();
+        fixed.searxng_token = "token-B2".into();
+        fixed.searxng_token_origin = origin_of("https://b.example/search").unwrap_or_default();
+        assert!(token_belongs_to(
+            &fixed.searxng_token_origin,
+            "https://b.example/search"
+        ));
+
+        // A legacy token with no origin is adopted only when the endpoint is
+        // not itself moving. Binding it to an address that is changing would
+        // be the same defect in a quieter form.
+        let mut legacy = Secrets {
+            searxng_token: "legacy".into(),
+            searxng_token_origin: String::new(),
+            ..Default::default()
+        };
+        unrelated_save(&mut legacy, "https://a.example/s", "https://a.example/s");
+        assert_eq!(
+            legacy.searxng_token_origin, "https://a.example",
+            "an unbound token was not adopted on a save that keeps the endpoint"
+        );
+
+        let mut moving = Secrets {
+            searxng_token: "legacy".into(),
+            searxng_token_origin: String::new(),
+            ..Default::default()
+        };
+        unrelated_save(&mut moving, "https://c.example/s", "https://a.example/s");
+        assert!(
+            moving.searxng_token.is_empty() && moving.searxng_token_origin.is_empty(),
+            "an unbound token followed the endpoint to a new host"
+        );
     }
 
     /// Both writes record the origin, and both readers check it.
