@@ -1,5 +1,58 @@
 # Changelog
 
+## 1.8.0 — 2026-09-05
+
+### New
+- **Search your saved chats.** A field above the chat list searches what was
+  said, not just the titles — message text, attachment names, and the contents
+  of text you attached — and shows the matching line beside each result, so the
+  list answers "which chat was that" rather than only "which chats matched".
+  It reads the files rather than keeping an index: an index is a second copy of
+  the truth that can go stale, and searching a few hundred conversations is
+  fast enough without one. Image data is skipped, being megabytes of base64
+  that cannot match anything you would type.
+- **Save a chat to a file.** Every row in the chat list has an export button.
+  Choosing a `.md` name writes Markdown to read and keep; choosing `.json`
+  writes the file exactly as the app stores it, so it can be moved to another
+  machine or read back. Images are named rather than embedded — a chat with two
+  screenshots would otherwise open as a wall of encoded bytes. The privacy
+  policy has always said your history is a folder you own; this makes that a
+  button rather than an instruction to go and find the folder.
+
+- **Name your own chats.** Double-click a chat in the list, or press <kbd>F2</kbd>
+  on it, and type. A chat you have named keeps that name from then on; one you
+  have not goes on taking its title from its first message. The name is what the
+  export is called and what the delete dialog asks about.
+- **Read a chat back in from a file.** The ↑ on the chat-list heading imports a
+  chat exported as JSON. It always arrives as a copy under a new name, so an
+  import can never replace a chat you already have, and a name you chose
+  survives the round trip. A Markdown export cannot come back — it is for
+  reading — and choosing one says so rather than reporting a parser error.
+- **Edit a message and ask again.** Hover one of your own messages for *Edit*.
+  Editing discards the messages below it and asks the model again, and the box
+  says how many messages that is before you send. *Try again* on the last reply
+  does the same to that reply alone. Neither can be undone, which is why the
+  count is there. Replies cannot be edited: a saved chat should not misreport
+  what was said.
+
+### Interface
+- The chat list's row controls have a 24×24 minimum target, which the
+  accessibility review noted they did not. Export and delete are separated by a
+  gap, and delete takes a warning colour when you reach it — deleting a chat
+  already asks in a dialog naming the chat, so a mis-click destroys nothing, but
+  the dialog cannot tell you which button you are about to press.
+- <kbd>F2</kbd> is listed in the keyboard shortcuts sheet. Double-click is the
+  familiar way to rename and no keyboard has it, so the shortcut is the half
+  that makes renaming reachable at all.
+
+### Security
+- **An imported file cannot make the app fetch a URL it was handed.** An image
+  attachment's address is also what gets sent to the provider when a chat is
+  continued, and the renderer's content security policy does not reach that. A
+  crafted file could have had Scaleway fetch an arbitrary address on your
+  behalf. Imported images must carry their data inline, and a file that does not
+  is refused rather than repaired.
+
 ## 1.7.3 — 2026-09-05
 
 ### Security

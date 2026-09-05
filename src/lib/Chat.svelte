@@ -1090,6 +1090,152 @@
       .trim();
   }
 
+  // Searching reads the saved files in Rust. Errors are returned to the
+  // sidebar rather than logged: a search that silently finds nothing looks
+  // exactly like a search that found nothing.
+  async function searchConversations(query) {
+    return await invoke("search_conversations", { query });
+  }
+
+  // Saving one conversation to a file the user picks. Declining the dialog
+  // returns null and is not a failure — the same shape as every other native
+  // save here.
+  async function exportConversation(id) {
+    try {
+      const saved = await invoke("export_conversation", { id });
+      // On its own line so the announcement allowlist in tests/announce.test.js
+      // can see it. Tucked onto the `if` it was invisible to that guard, which
+      // is evading a check rather than passing one.
+      if (!saved) return; // the dialog was declined
+      announce(`Conversation exported to ${saved}`);
+    } catch (e) {
+      announce(`The conversation could not be exported: ${e?.message ?? e}`);
+    }
+  }
+
+  // ----- Editing a message, and asking for a different reply -----
+  //
+  // Editing replaces: the messages below the edited one are dropped and a new
+  // reply is streamed. The alternative — keeping both versions behind a ‹1/2›
+  // switcher — turns a conversation from a list into a tree, which every part
+  // of this app that reads one would have to learn: storage, export, import,
+  // search, and the schema version with a migration behind it. Replacing keeps
+  // the stored shape exactly as it is.
+  //
+  // The cost is real and is not hidden: replies you may have wanted are gone
+  // for good. So the edit box says how many messages it is about to replace
+  // before you commit, which is the same courtesy the delete dialog pays.
+  //
+  // Only *user* messages can be edited. Rewriting what the model said would
+  // leave a stored transcript that misrepresents it — and this app keeps its
+  // history precisely so it can be trusted as a record of what happened.
+  let editingIndex = $state(null);
+  let editDraft = $state("");
+
+  function startEdit(mi) {
+    editingIndex = mi;
+    editDraft = messages[mi]?.text || "";
+  }
+
+  function cancelEdit() {
+    editingIndex = null;
+    editDraft = "";
+  }
+
+  // How many messages an edit at `mi` would discard — everything after it.
+  const replacedBy = (mi) => Math.max(0, messages.length - mi - 1);
+
+  // Built here rather than in the markup: the bubble keeps whitespace as typed
+  // (`white-space: pre-wrap`), so a template split over several lines renders
+  // its own indentation.
+  function replaceNote(mi) {
+    const n = replacedBy(mi);
+    if (n === 0) return "Sends this again";
+    return `Replaces the ${n} ${n === 1 ? "message" : "messages"} below`;
+  }
+
+  // Grow the box to the text it holds, so a long message is not edited through
+  // a three-line window. Capped, or rewriting one long message would push the
+  // buttons off the bottom of the view.
+  function autoGrow(node) {
+    const fit = () => {
+      node.style.height = "auto";
+      node.style.height = `${Math.min(node.scrollHeight, 420)}px`;
+    };
+    fit();
+    node.addEventListener("input", fit);
+    return { destroy: () => node.removeEventListener("input", fit) };
+  }
+
+  // Re-run the conversation from `mi`, with `text` in place of what was there.
+  //
+  // Goes back through `send()` rather than beside it. Everything that makes a
+  // send correct — the system prompt, whether tools are offered, the streaming,
+  // the persistence, the per-chat snapshot that survives switching chats — lives
+  // there, and a second copy of it would be a second set of answers to all of
+  // those questions.
+  async function resendFrom(mi, text) {
+    if (sending) return;
+    const original = messages[mi];
+    if (original?.role !== "user") return;
+    cancelEdit();
+    // The attachments come with it: editing the words of a message is not a
+    // reason to drop the file it was asking about.
+    pending = (original.attachments || []).filter((a) => a.kind !== "error");
+    input = text;
+    messages = messages.slice(0, mi);
+    await send();
+  }
+
+  // Regenerate is offered on the last reply only. Anywhere else it would mean
+  // "discard the conversation below this and try again", which is what editing
+  // the message above already does — and doing it from a single button would
+  // need its own warning about what is being thrown away. Here there is nothing
+  // below to lose but the reply being replaced.
+  async function regenerateLast() {
+    const ai = messages.length - 1;
+    if (messages[ai]?.role !== "assistant") return;
+    await resendFrom(ai - 1, messages[ai - 1]?.text || "");
+  }
+
+  // The other direction of export. Rust does the choosing and the checking —
+  // the file is the one input to this app that was written by something else,
+  // so the renderer's part is to ask, then show what came back.
+  async function importConversation() {
+    let meta;
+    try {
+      meta = await invoke("import_conversation");
+    } catch (e) {
+      announce(`That chat could not be imported: ${e?.message ?? e}`);
+      return;
+    }
+    if (!meta) return; // the dialog was declined
+    upsertConversationMeta(meta);
+    // Straight into it, because the reason to import a chat is to read it, and
+    // a new row in a list of similar rows is easy to miss.
+    openConversation(meta.id);
+    announce(`Imported ${meta.title}`);
+  }
+
+  // Renaming. The stored name comes back rather than the typed one: Rust trims
+  // it, drops characters that would break a sidebar row or a delete
+  // confirmation, and caps its length, so the list shows what the file actually
+  // says the chat is called instead of what was typed at it.
+  //
+  // Errors are left to throw. The row is still in its editing state when this
+  // runs, and it can put the message beside the box being typed into — an
+  // announcement alone would leave a failed rename looking like a successful
+  // one that had not refreshed yet.
+  async function renameConversation(id, title) {
+    const stored = await invoke("rename_conversation", { id, title });
+    const meta = conversations.find((c) => c.id === id);
+    if (meta) {
+      upsertConversationMeta({ ...meta, title: stored });
+    }
+    announce(`Chat renamed to ${stored}`);
+    return stored;
+  }
+
   async function copyMessage(m, mi) {
     try {
       await navigator.clipboard.writeText(messageCopyText(m));
@@ -1247,6 +1393,10 @@
     { keys: [`${mod}`, "B"], label: "Show or hide the chat list" },
     { keys: [`${mod}`, "/"], label: "Go to the message box" },
     { keys: [`${mod}`, ","], label: "Settings" },
+    // Renaming is otherwise reachable only by double-clicking a chat, which no
+    // keyboard has. F2 is the rename key everywhere it is a key at all, and
+    // Enter cannot be it here — Enter on a chat in the list opens it.
+    { keys: ["F2"], label: "Rename the chat the list has focus on" },
     { keys: ["Esc"], label: "Close a panel, or stop a reply" },
     { keys: ["Enter"], label: "Send" },
     { keys: ["Shift", "Enter"], label: "New line" },
@@ -1327,6 +1477,10 @@
     onEditProject={openEditProject}
     {runningIds}
     {doneIds}
+    onSearch={searchConversations}
+    onExport={exportConversation}
+    onRename={renameConversation}
+    onImport={importConversation}
   />
 {/if}
 <!-- The one main landmark in this view. History is navigation beside it,
@@ -1473,7 +1627,11 @@
       </div>
     {/if}
     {#each messages as m, mi}
-      <div class="msg {m.role}">
+      <!-- `editing` widens the turn. A user message is normally a card sized to
+           its own text and right-aligned, which is the wrong shape to rewrite a
+           long message in — the box inherited the width of the bubble and gave
+           you three clipped lines to edit a paragraph in. -->
+      <div class="msg {m.role} {editingIndex === mi ? 'editing' : ''}">
         <div class="msg-col">
         <div class="bubble {m.quick ? 'has-badge' : ''}">
           {#if m.quick}
@@ -1541,6 +1699,47 @@
                   <div class="msg-text md" onclick={onTextClick}>{@html renderMd(part.content)}</div>
                 {/if}
               {/each}
+            {:else if editingIndex === mi}
+              <!-- The message becomes the box, in place, so the conversation
+                   around it stays visible: what you are rewriting is a question
+                   asked in a context, and a dialog would cover the context. -->
+              <div class="msg-edit">
+                <label class="sr-only" for="msg-edit-{mi}">Edit your message</label>
+                <textarea
+                  id="msg-edit-{mi}"
+                  class="msg-edit-box"
+                  value={editDraft}
+                  oninput={(e) => (editDraft = e.currentTarget.value)}
+                  onkeydown={(e) => {
+                    if (e.key === "Escape") {
+                      e.stopPropagation();
+                      cancelEdit();
+                    } else if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+                      e.preventDefault();
+                      resendFrom(mi, editDraft);
+                    }
+                  }}
+                  rows="3"
+                  use:autoGrow
+                ></textarea>
+                <div class="msg-edit-actions">
+                  <!-- Said before it happens, not after. Sending from here
+                       discards replies with nothing to undo it.
+
+                       On one line because the bubble around it is
+                       `white-space: pre-wrap`, to keep the line breaks in what
+                       you typed — which also means every newline and indent in
+                       this markup is rendered. Split across lines it came out
+                       as "Replaces the 1" above an indented "message below". -->
+                  <span class="msg-edit-note">{replaceNote(mi)}</span>
+                  <button class="mini" onclick={cancelEdit}>Cancel</button>
+                  <button
+                    class="mini primary"
+                    disabled={sending || !editDraft.trim()}
+                    onclick={() => resendFrom(mi, editDraft)}
+                  >Send</button>
+                </div>
+              </div>
             {:else}
               <div class="msg-text">{m.text}</div>
             {/if}
@@ -1570,8 +1769,34 @@
             </div>
           {/if}
         </div>
+        {#if m.role === "user" && m.text && editingIndex !== mi && !sending}
+          <div class="msg-actions">
+            <button
+              class="msg-action"
+              title="Edit and send again"
+              aria-label="Edit this message and send it again"
+              onclick={() => startEdit(mi)}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+              Edit
+            </button>
+          </div>
+        {/if}
         {#if m.role === "assistant" && m.text && !(sending && mi === messages.length - 1)}
           <div class="msg-actions">
+            <!-- Only on the last reply. See `regenerateLast`: anywhere else it
+                 would silently discard the conversation below it. -->
+            {#if mi === messages.length - 1 && !sending && messages[mi - 1]?.role === "user"}
+              <button
+                class="msg-action"
+                title="Ask for a different reply"
+                aria-label="Ask for a different reply to the message above"
+                onclick={regenerateLast}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>
+                Try again
+              </button>
+            {/if}
             <button
               class="msg-action"
               title="Copy response"

@@ -56,6 +56,26 @@ describe("streaming is announced once, not per token", () => {
       '"Saved."',
       "msg.data",
       "replyAnnouncement(reply)",
+      // Exporting is a deliberate act with a file at the end of it, and its
+      // outcome is otherwise invisible: the save dialog closes and nothing on
+      // screen changes. Both branches are announced, and both are on their own
+      // line so this list can see them — the success one was first written
+      // after an `if` on the same line, where this guard could not.
+      "`Conversation exported to ${saved}`",
+      "`The conversation could not be exported: ${e?.message ?? e}`",
+      // A rename confirms nothing on its own: the edit box closes and the row
+      // redraws with a name that may not be the one that was typed, since Rust
+      // trims and caps it. Saying the stored name is how someone not watching
+      // the list finds out what the chat is now called. Only the success case —
+      // a failure keeps the box open with the reason beside it, which a live
+      // region would only repeat.
+      // Import lands somewhere other than where you were: a new chat opens and
+      // the list gains a row. Both branches, because a refused file is the
+      // likeliest outcome of picking the wrong one and its reason is the whole
+      // value — "that file has no messages in it" tells you what you clicked.
+      "`That chat could not be imported: ${e?.message ?? e}`",
+      "`Imported ${meta.title}`",
+      "`Chat renamed to ${stored}`",
     ]);
     // A status, a finished reply, and a panel appearing — a handful per turn.
     // Nothing announces on a token arriving, which is the whole point.

@@ -7219,11 +7219,40 @@ struct Conversation {
     /// and the two answer different questions.
     #[serde(default)]
     schema: u32,
+    /// True once a person has named this chat by hand, so saving stops writing
+    /// over the name they chose.
+    ///
+    /// The frontend derives a title from the first message on *every* save, not
+    /// once. Without a flag saying "this one was chosen", a rename would last
+    /// exactly until the next reply and then silently revert — the chat would
+    /// appear to accept the new name and quietly discard it, which is worse
+    /// than not offering renaming at all.
+    ///
+    /// It lives in the file and not only in the sidebar index because the index
+    /// is a cache that gets rebuilt from these files; a rebuild must not be able
+    /// to lose the name. Absent means false, which is correct for every chat
+    /// written before renaming existed: none of them was named by hand.
+    ///
+    /// Adding it does not change `CONV_SCHEMA_VERSION`. An older version reading
+    /// a renamed chat ignores the field and re-derives the title on its next
+    /// save — it loses the name, which is a real cost but a recoverable one.
+    /// Bumping the schema instead would make an older version *refuse to open*
+    /// the chat at all, and refusing to open someone's history is not a
+    /// proportionate price for a field that only holds a name.
+    #[serde(default)]
+    title_custom: bool,
 }
 
 /// Current stored-conversation format. Increment only on a breaking change to
 /// the shape, and add the migration in the same commit.
 const CONV_SCHEMA_VERSION: u32 = 1;
+
+/// The longest chat name that is stored. A name is a label in a narrow sidebar,
+/// not a description; past this it is truncated in every view that shows it, so
+/// storing more only hides the difference between two chats that look alike.
+/// Counted in characters rather than bytes, so a name in a non-Latin script gets
+/// the same length as one in English.
+const MAX_TITLE_CHARS: usize = 60;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct ConversationMeta {
@@ -7233,6 +7262,10 @@ struct ConversationMeta {
     updated_at: String,
     #[serde(default)]
     project_id: Option<String>,
+    /// Mirrors `Conversation::title_custom` so `save_conversation` can tell a
+    /// chosen name from a derived one without reopening the conversation file.
+    #[serde(default)]
+    title_custom: bool,
 }
 
 /// Metadata-only view of a saved conversation. Deserializing into this instead
@@ -7246,6 +7279,8 @@ struct ConversationHeader {
     updated_at: String,
     #[serde(default)]
     project_id: Option<String>,
+    #[serde(default)]
+    title_custom: bool,
 }
 
 // The sidebar index: one small file of per-chat metadata, kept up to date on
@@ -7342,6 +7377,15 @@ async fn save_conversation(
     }
     let dir = conversations_dir(&app)?;
     let safe = sanitize_id(&conversation.id)?;
+    // A name someone chose outlives the messages it was chosen for. The caller
+    // derives a title from the first message on every save and has no way to
+    // know this chat was renamed, so the decision is made here, where the
+    // stored answer is — the same reason the recording toggle is enforced here
+    // and not in the caller.
+    if let Some(chosen) = chosen_title(&dir, &conversation.id, &safe) {
+        conversation.title = chosen;
+        conversation.title_custom = true;
+    }
     // Keep the JSON small: large images move to the assets folder.
     externalize_assets(&mut conversation.messages, &dir, &safe)?;
     // Stamp who wrote it, so a file this app made says so rather than being
@@ -7369,9 +7413,31 @@ async fn save_conversation(
             title: conversation.title,
             updated_at: conversation.updated_at,
             project_id: conversation.project_id,
+            title_custom: conversation.title_custom,
         },
     );
     Ok(true)
+}
+
+/// The name a person gave this chat, if they gave it one.
+///
+/// The index answers this for every chat that has been saved since it was
+/// built, which is the ordinary case and costs one small read. The fallback
+/// exists because the index is a cache: it can be deleted, corrupted, or
+/// rebuilt, and the question "was this renamed" must not be answerable only
+/// while the cache survives. That fallback parses the conversation file, so it
+/// is reached only when the index has no entry *and* a file is already there —
+/// never for a new chat, and never once the index has been rebuilt.
+fn chosen_title(dir: &std::path::Path, id: &str, safe: &str) -> Option<String> {
+    let named =
+        |title: &str, custom: bool| (custom && !title.trim().is_empty()).then(|| title.to_string());
+    let index = read_conv_index(dir);
+    if let Some(m) = index.iter().find(|m| m.id == id) {
+        return named(&m.title, m.title_custom);
+    }
+    let s = std::fs::read_to_string(dir.join(format!("{safe}.json"))).ok()?;
+    let h: ConversationHeader = serde_json::from_str(&s).ok()?;
+    named(&h.title, h.title_custom)
 }
 
 #[tauri::command]
@@ -7405,12 +7471,704 @@ async fn list_conversations(app: tauri::AppHandle) -> Result<Vec<ConversationMet
             title: h.title,
             updated_at: h.updated_at,
             project_id: h.project_id,
+            title_custom: h.title_custom,
         })
     });
     if changed {
         write_conv_index(&dir, &out);
     }
     Ok(out)
+}
+
+/// Render one stored conversation as Markdown a person can read.
+///
+/// Images are named, not embedded. A conversation with a few screenshots is
+/// megabytes of base64, and a Markdown file that opens as a wall of encoded
+/// bytes is not an export anyone can use — the JSON format is there for the
+/// exact copy.
+fn conversation_to_markdown(c: &Conversation) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("# {}\n\n", c.title));
+    if !c.updated_at.is_empty() {
+        out.push_str(&format!("*Last updated: {}*\n\n", c.updated_at));
+    }
+    out.push_str("---\n\n");
+
+    for m in c.messages.as_array().into_iter().flatten() {
+        let role = match m.get("role").and_then(|r| r.as_str()) {
+            Some("user") => "You",
+            Some("assistant") => "Sovatela",
+            Some(other) => other,
+            None => continue,
+        };
+        out.push_str(&format!("## {role}\n\n"));
+        if let Some(t) = m.get("text").and_then(|t| t.as_str()) {
+            if !t.trim().is_empty() {
+                out.push_str(t.trim());
+                out.push_str("\n\n");
+            }
+        }
+        let attachments = m.get("attachments").and_then(|a| a.as_array());
+        for a in attachments.into_iter().flatten() {
+            let name = a
+                .get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("attachment");
+            match a.get("kind").and_then(|k| k.as_str()) {
+                Some("image") => out.push_str(&format!("*[image: {name}]*\n\n")),
+                _ => {
+                    out.push_str(&format!("*[attached: {name}]*\n\n"));
+                    if let Some(content) = a.get("content").and_then(|c| c.as_str()) {
+                        out.push_str("```\n");
+                        out.push_str(content.trim_end());
+                        out.push_str("\n```\n\n");
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Write one saved conversation to a file the user picks.
+///
+/// Two formats, and the difference is the point: **Markdown** is for reading
+/// and keeping, **JSON** is the file as this app stores it — the same bytes,
+/// so it can be read back or moved to another machine. The privacy policy says
+/// your history is a folder you own; this makes that a button rather than an
+/// instruction to go and find the folder.
+#[tauri::command]
+async fn export_conversation(app: tauri::AppHandle, id: String) -> Result<Option<String>, String> {
+    // The same loader the interface uses, so an export goes through the schema
+    // check and the asset inlining rather than reading the file raw — an
+    // export that quietly differs from what the app shows is worse than none.
+    let conv = load_conversation(app.clone(), id).await?;
+
+    // The title is the user's own text and becomes a filename, so it goes
+    // through the same sanitising every other download here uses.
+    let suggested = sanitize_download_name(&conv.title, "md");
+
+    // The format follows the name the user saves under, rather than being
+    // chosen in the interface first. That is how a desktop save dialog is
+    // expected to work — pick a name, pick a kind — and it means one button
+    // where a format switch would otherwise need two.
+    let app_for_dialog = app.clone();
+    let chosen = tokio::task::spawn_blocking(move || {
+        use tauri_plugin_dialog::DialogExt;
+        app_for_dialog
+            .dialog()
+            .file()
+            .set_file_name(&suggested)
+            .add_filter("Markdown — for reading and keeping", &["md"])
+            .add_filter("JSON — the file as this app stores it", &["json"])
+            .blocking_save_file()
+            .and_then(|p| p.into_path().ok())
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let Some(path) = chosen else {
+        return Ok(None); // declining a save dialog is not a failure
+    };
+
+    let body = if path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_lowercase)
+        .as_deref()
+        == Some("json")
+    {
+        serde_json::to_string_pretty(&conv).map_err(|e| e.to_string())?
+    } else {
+        conversation_to_markdown(&conv)
+    };
+    write_atomic(&path, &body)?;
+    Ok(Some(path.display().to_string()))
+}
+
+// ---------- Importing a conversation ----------
+//
+// The other direction of `export_conversation`, and the only place in this app
+// where a whole conversation arrives from outside it. Everything else in a
+// chat was either typed here or streamed from the configured provider; an
+// imported file was written by something else, possibly by hand, and is
+// therefore the one input that has to be read as hostile rather than merely
+// malformed.
+//
+// What that buys an attacker is worth naming, because it is not obvious. The
+// dangerous field is an image attachment's `dataUrl`. The interface renders it
+// as `<img src>`, where the content security policy already confines it to
+// `data:` and `blob:` — so a remote URL there is a beacon that does not fire.
+// But the *same field* is put into `image_url` and sent to the provider when
+// the chat is continued, and nothing in the CSP reaches that. A crafted file
+// could make this app hand an arbitrary URL to Scaleway and have it fetched
+// from there, which is both a request the user never made and a signal that
+// they opened the file. So the rule is that an image attachment carries inline
+// image data or the import is refused.
+
+/// Most messages an imported conversation may contain.
+///
+/// A chat written here grows one message at a time and is bounded only by
+/// MAX_CONVERSATION_BYTES; an import arrives whole, and 32 MB of very small
+/// messages is several hundred thousand of them. Rendering that locks the
+/// interface with no way back, so the count is bounded as well as the bytes.
+/// Far above any real conversation.
+const MAX_IMPORT_MESSAGES: usize = 20_000;
+
+/// Whether a file that failed to parse as JSON looks like one of this app's own
+/// Markdown exports.
+///
+/// Only used to choose the wording of a refusal — nothing is imported on the
+/// strength of it — so it can afford to guess, and errs towards the specific
+/// message only when it sees the shape `conversation_to_markdown` writes.
+fn looks_like_markdown(raw: &str) -> bool {
+    let head: String = raw.chars().take(2_000).collect();
+    head.trim_start().starts_with("# ")
+        && (head.contains("\n## You\n")
+            || head.contains("\n## Sovatela\n")
+            || head.contains("*Last updated:"))
+}
+
+/// The current UTC time in the shape the interface writes (`2026-09-05T19:56:20Z`).
+///
+/// Hand-rolled rather than taking a date library as a direct dependency for one
+/// call. The value has two jobs and this format does both: it is compared as a
+/// string to order the sidebar, and parsed as a date to bucket it by day.
+fn now_iso8601() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    iso8601_from_unix(secs)
+}
+
+/// Civil date from a Unix timestamp — Howard Hinnant's `civil_from_days`.
+///
+/// The shift by 719_468 days moves the epoch to 0000-03-01, which puts February
+/// at the end of the year so a leap day is the last day of the cycle and needs
+/// no special case anywhere else in the arithmetic.
+fn iso8601_from_unix(secs: u64) -> String {
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097); // day of era, [0, 146096]
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // month, shifted so March is 0
+    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        rem / 3_600,
+        (rem % 3_600) / 60,
+        rem % 60
+    )
+}
+
+/// A conversation id that no file in the history folder is using.
+///
+/// Uniqueness within the folder is the whole requirement: an id names a file,
+/// it is never a secret, and nothing is authorised by holding one. The loop is
+/// what guarantees it — the clock and the hash only make the first attempt
+/// almost always the right one. This deliberately does not reuse the id in the
+/// imported file: that id may name a chat already here, and importing a file
+/// must never be a way to overwrite one.
+fn unused_conversation_id(dir: &std::path::Path, seed: &[u8]) -> Result<String, String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    unused_conversation_id_at(dir, seed, now)
+}
+
+/// The part of `unused_conversation_id` that does not read the clock.
+///
+/// Split out so the collision loop can be tested at all: called twice, the
+/// public version reads a different nanosecond each time and returns different
+/// ids whether or not it ever checks the folder, so a test written against it
+/// passes with the check deleted.
+fn unused_conversation_id_at(
+    dir: &std::path::Path,
+    seed: &[u8],
+    now: u128,
+) -> Result<String, String> {
+    for attempt in 0..64u64 {
+        let id = format!(
+            "imported-{:x}-{:x}",
+            now as u64 ^ attempt.wrapping_mul(0x9e37_79b9_7f4a_7c15),
+            fnv1a64(seed) ^ attempt
+        );
+        let safe = sanitize_id(&id)?;
+        if !dir.join(format!("{safe}.json")).exists() {
+            return Ok(id);
+        }
+    }
+    Err("could not find an unused name for the imported chat".into())
+}
+
+/// Check an imported attachment, returning why it is refused.
+///
+/// Refusing the file rather than dropping the bad attachment is deliberate. A
+/// file this app exported never contains one, so its presence means the file
+/// was edited — and importing most of an edited file is guessing at which parts
+/// were meant. A refusal that names the problem is the honest answer.
+fn import_attachment_problem(a: &serde_json::Value) -> Option<String> {
+    let Some(obj) = a.as_object() else {
+        return Some("an attachment is not an object".into());
+    };
+    let kind = obj.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+    match kind {
+        "image" => {
+            let url = obj.get("dataUrl").and_then(|d| d.as_str()).unwrap_or("");
+            // Inline image data only. See the note above this section for what
+            // a remote URL here would let a file do.
+            if !url.starts_with("data:image/") {
+                return Some(format!(
+                    "an image attachment points somewhere other than the file itself \
+                     ({}). Images have to be stored in the file to be imported",
+                    url.chars().take(40).collect::<String>()
+                ));
+            }
+            None
+        }
+        "text" => match obj.get("content") {
+            Some(serde_json::Value::String(_)) | None => None,
+            _ => Some("a text attachment's content is not text".into()),
+        },
+        // `error` is this app's own note that an attachment failed to read.
+        "error" => None,
+        other => Some(format!("an attachment is of an unknown kind ({other})")),
+    }
+}
+
+/// Read an untrusted conversation file into one this app is willing to store.
+///
+/// The id and any project are dropped by the caller, not here: this answers
+/// only whether the *contents* can be shown safely.
+fn validate_imported_conversation(v: &serde_json::Value) -> Result<(), String> {
+    let Some(obj) = v.as_object() else {
+        return Err("that file does not contain a conversation".into());
+    };
+    let schema = obj.get("schema").and_then(|s| s.as_u64()).unwrap_or(0) as u32;
+    if schema > CONV_SCHEMA_VERSION {
+        return Err(format!(
+            "that chat was saved by a newer version of Sovatela (format {schema}, this version \
+             reads {CONV_SCHEMA_VERSION}). Update the app to import it."
+        ));
+    }
+    let Some(messages) = obj.get("messages").and_then(|m| m.as_array()) else {
+        return Err(
+            "that file has no messages in it, so it is not a chat this app can open".into(),
+        );
+    };
+    if messages.is_empty() {
+        return Err("that chat has nothing in it to import.".into());
+    }
+    if messages.len() > MAX_IMPORT_MESSAGES {
+        return Err(format!(
+            "that chat has {} messages, more than the {MAX_IMPORT_MESSAGES} this app will open \
+             at once.",
+            messages.len()
+        ));
+    }
+    // Whether anything in this file would actually appear on screen. See the
+    // check after the loop for why that is asked at all.
+    let mut anything_to_show = false;
+    let mut looks_like_another_apps_format = false;
+    for m in messages {
+        let Some(m) = m.as_object() else {
+            return Err("that file has a message in it that is not a message".into());
+        };
+        // The role decides how a message is drawn. An unknown one would render
+        // as neither side of the conversation.
+        match m.get("role").and_then(|r| r.as_str()) {
+            Some("user") | Some("assistant") | Some("system") => {}
+            Some(other) => {
+                return Err(format!(
+                    "that file has a message from \u{201c}{}\u{201d}, which is not a part of a \
+                     conversation this app can show",
+                    other.chars().take(20).collect::<String>()
+                ))
+            }
+            None => return Err("that file has a message with no sender".into()),
+        }
+        match m.get("text") {
+            Some(serde_json::Value::String(t)) => anything_to_show |= !t.trim().is_empty(),
+            Some(serde_json::Value::Null) | None => {}
+            Some(_) => return Err("that file has a message whose text is not text".into()),
+        }
+        // `content` is what the OpenAI and Anthropic API shapes call it, and
+        // what most other exports copy. Noticing it lets the refusal below name
+        // the actual problem instead of describing an empty file.
+        if m.contains_key("content") {
+            looks_like_another_apps_format = true;
+        }
+        match m.get("attachments") {
+            None | Some(serde_json::Value::Null) => {}
+            Some(serde_json::Value::Array(atts)) => {
+                anything_to_show |= !atts.is_empty();
+                for a in atts {
+                    if let Some(why) = import_attachment_problem(a) {
+                        return Err(format!("that chat could not be imported: {why}."));
+                    }
+                }
+            }
+            Some(_) => {
+                return Err("that file has a message whose attachments are not a list".into())
+            }
+        }
+    }
+    // A file can satisfy every rule above and still show nothing: `{"messages":
+    // [{"role":"user","content":"hello"}]}` is the OpenAI and Anthropic API
+    // shape, and it passes — the roles are right, and `text` being absent is
+    // allowed because a message may legitimately be an image with no caption.
+    //
+    // Importing it succeeded silently and opened an empty conversation, which
+    // is the worst of the outcomes here: the user is told their chat is in, and
+    // it is not. An import that cannot show anything is a failed import, so it
+    // says so.
+    if !anything_to_show {
+        return Err(if looks_like_another_apps_format {
+            "that chat's messages use \u{201c}content\u{201d} where this app uses \u{201c}text\u{201d}, \
+             so there would be nothing to show. It looks like an export from a different app, and \
+             only chats exported from Sovatela can be imported."
+                .into()
+        } else {
+            "that chat has no text or attachments in any of its messages, so there would be \
+             nothing to show."
+                .into()
+        });
+    }
+    Ok(())
+}
+
+/// Bring a conversation file back into the history folder.
+///
+/// Always a copy under a new id, never a replacement: the imported file names
+/// a chat that may already be here, and there is no version of "import" that
+/// should be able to destroy one.
+#[tauri::command]
+async fn import_conversation(app: tauri::AppHandle) -> Result<Option<ConversationMeta>, String> {
+    // Refuse before the dialog, not after it. Asking someone to find a file and
+    // then telling them history is switched off wastes the part of the job they
+    // did, and reads as a failure rather than as the setting doing its work.
+    let settings = load_settings(&app)?;
+    if !settings.save_history {
+        return Err(
+            "Saving chat history is switched off, so there is nowhere to import this \
+                    chat to. Turn history on in Settings first."
+                .into(),
+        );
+    }
+
+    let picked = tokio::task::spawn_blocking({
+        let app = app.clone();
+        move || {
+            use tauri_plugin_dialog::DialogExt;
+            app.dialog()
+                .file()
+                .set_title("Choose a chat to import")
+                .add_filter("Sovatela chat (JSON)", &["json"])
+                .blocking_pick_file()
+                .and_then(|p| p.into_path().ok())
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let Some(path) = picked else {
+        return Ok(None); // declining the dialog is not a failure
+    };
+
+    let raw = read_to_string_capped(&path, MAX_CONVERSATION_BYTES, "That chat")?;
+    let v: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
+        // The likeliest mis-click by a distance, because it is the *other* file
+        // this app offers to write. Exporting gives a choice of Markdown or
+        // JSON, and only one of them can come back — so the failure has to name
+        // that rather than report "expected value at line 1 column 1", which
+        // tells someone who chose the wrong file nothing about which file to
+        // choose instead.
+        if looks_like_markdown(&raw) {
+            "that looks like a Markdown export, which is for reading and cannot be imported. \
+             Export the chat again and choose JSON to be able to bring it back."
+                .to_string()
+        } else {
+            format!("that file is not readable as a chat: {e}")
+        }
+    })?;
+    validate_imported_conversation(&v)?;
+
+    let dir = history_dir_for(&app, &settings)?;
+    if !claim_history_dir(&settings.history_dir, &dir) {
+        return Err("the history folder holds files this app did not write".into());
+    }
+    let dir = conversations_dir(&app)?;
+
+    let title = v
+        .get("title")
+        .and_then(|t| t.as_str())
+        .and_then(clean_title)
+        .unwrap_or_else(|| "Imported chat".to_string());
+    // A name that survived an export is a name someone chose, so it survives
+    // the import too — otherwise a renamed chat would come back and then be
+    // retitled from its first message by the next reply, and the round trip
+    // would quietly lose the thing that made the chat findable.
+    let title_custom = v
+        .get("title_custom")
+        .and_then(|t| t.as_bool())
+        .unwrap_or(false);
+
+    let conversation = Conversation {
+        id: unused_conversation_id(&dir, raw.as_bytes())?,
+        title,
+        // Imported now, because that is when it entered this history. Keeping
+        // the original timestamp would file it under a date the user was
+        // somewhere else, in a sidebar grouped by recency.
+        updated_at: now_iso8601(),
+        messages: v
+            .get("messages")
+            .cloned()
+            .unwrap_or(serde_json::Value::Array(vec![])),
+        // Any project the file names belongs to the machine it came from. An id
+        // that happened to match a project here would silently file the chat
+        // into it.
+        project_id: None,
+        app: APP_FORMAT_TAG.to_string(),
+        schema: CONV_SCHEMA_VERSION,
+        title_custom,
+    };
+
+    // Through the ordinary save, so an import is written, externalized and
+    // indexed by exactly the code that writes every other chat. A second write
+    // path is a second set of rules about what a stored chat looks like.
+    let meta = ConversationMeta {
+        id: conversation.id.clone(),
+        title: conversation.title.clone(),
+        updated_at: conversation.updated_at.clone(),
+        project_id: None,
+        title_custom,
+    };
+    if !save_conversation(app, conversation).await? {
+        return Err("that chat could not be saved into the history folder".into());
+    }
+    Ok(Some(meta))
+}
+
+/// How much of one conversation file search will read.
+///
+/// A conversation is capped at MAX_CONVERSATION_BYTES (32 MB) and older ones
+/// carry base64 images inline, so "read every file" is not a bound. This is:
+/// past it, the file is searched as far as this and reported as searched, not
+/// silently skipped — a partial search that says so beats a complete one that
+/// takes a minute.
+const MAX_SEARCH_BYTES_PER_FILE: usize = 2 * 1024 * 1024;
+
+/// Most hits returned. The sidebar cannot usefully show more, and an unbounded
+/// result set is an unbounded allocation driven by whatever is on disk.
+const MAX_SEARCH_HITS: usize = 200;
+
+/// Characters of context on either side of a match.
+///
+/// Tight on purpose. The sidebar clamps a snippet to two lines, which is around
+/// ninety characters — so a wide window puts the matched word *past* what is
+/// shown, and the result reads as though it has nothing to do with the search.
+/// That is what the first version did.
+const SNIPPET_BEFORE: usize = 24;
+const SNIPPET_AFTER: usize = 64;
+
+/// One conversation that matched, with enough context to recognise it.
+#[derive(serde::Serialize)]
+struct SearchHit {
+    id: String,
+    title: String,
+    updated_at: String,
+    project_id: Option<String>,
+    /// The matched line, split so the interface can mark the match itself
+    /// rather than leaving the reader to find it. Empty when only the title
+    /// matched — the caller shows the title either way.
+    ///
+    /// Three fields rather than one string with markup in it: the snippet is
+    /// the user's own text, and putting `<mark>` into it would mean either
+    /// escaping everything else or trusting a conversation not to contain
+    /// angle brackets.
+    snippet_before: String,
+    snippet_match: String,
+    snippet_after: String,
+    /// Whether the title itself matched, so the interface can say why a chat
+    /// with no snippet is in the list.
+    title_matched: bool,
+}
+
+/// Take `SNIPPET_CHARS` around a byte offset, on character boundaries.
+///
+/// Slicing a `String` at an arbitrary byte offset panics on multibyte text, and
+/// this searches conversations in any language. Everything here walks
+/// characters rather than bytes for that reason.
+fn snippet_around(haystack: &str, at: usize, match_len: usize) -> (String, String, String) {
+    let match_end = (at + match_len).min(haystack.len());
+    let start = haystack[..at]
+        .char_indices()
+        .rev()
+        .take(SNIPPET_BEFORE)
+        .last()
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    let end = haystack[match_end..]
+        .char_indices()
+        .take(SNIPPET_AFTER)
+        .last()
+        .map(|(i, c)| match_end + i + c.len_utf8())
+        .unwrap_or(haystack.len());
+
+    // Whitespace is collapsed so a snippet spanning a paragraph break does not
+    // arrive as a column of blank lines.
+    let squash = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut before = squash(&haystack[start..at]);
+    if start > 0 {
+        before.insert(0, '\u{2026}');
+    }
+    let mut after = squash(&haystack[match_end..end]);
+    if end < haystack.len() {
+        after.push('\u{2026}');
+    }
+    // The match keeps its own spacing: it is what the person typed.
+    (before, haystack[at..match_end].to_string(), after)
+}
+
+/// Offset in `haystack` of the first case-insensitive match of `needle`,
+/// which must already be lowercase.
+///
+/// Not `haystack.to_lowercase().find(needle)` — that offset indexes the
+/// *lowercased* copy, and lowercasing can change a string's length (`\u{130}`
+/// is two bytes and lowercases to three). Slicing the original at that offset
+/// lands in the wrong place, or panics mid-character. So it is mapped back by
+/// walking both in step.
+fn find_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
+    let lower = haystack.to_lowercase();
+    let at_lower = lower.find(needle)?;
+    if lower.len() == haystack.len() {
+        return Some(at_lower); // the common case: nothing changed length
+    }
+    let mut lowered_so_far = 0usize;
+    for (i, c) in haystack.char_indices() {
+        if lowered_so_far >= at_lower {
+            return Some(i);
+        }
+        lowered_so_far += c.to_lowercase().map(|l| l.len_utf8()).sum::<usize>();
+    }
+    Some(haystack.len())
+}
+
+/// Every piece of a stored message worth searching, joined.
+///
+/// The `text` of each message, plus the *content* of text attachments — a
+/// pasted log is as much a part of the conversation as anything typed. Image
+/// data URLs are skipped: they are megabytes of base64 that can never match
+/// anything a person types.
+fn searchable_text(messages: &serde_json::Value) -> String {
+    let mut out = String::new();
+    for m in messages.as_array().into_iter().flatten() {
+        if let Some(t) = m.get("text").and_then(|t| t.as_str()) {
+            out.push_str(t);
+            out.push('\n');
+        }
+        for a in m
+            .get("attachments")
+            .and_then(|a| a.as_array())
+            .into_iter()
+            .flatten()
+        {
+            if let Some(name) = a.get("name").and_then(|n| n.as_str()) {
+                out.push_str(name);
+                out.push('\n');
+            }
+            if let Some(c) = a.get("content").and_then(|c| c.as_str()) {
+                out.push_str(c);
+                out.push('\n');
+            }
+        }
+    }
+    out
+}
+
+/// Find saved conversations containing `query`.
+///
+/// Reads the files rather than maintaining an index. An index is the obvious
+/// optimisation and the wrong first move here: it is a second copy of the
+/// truth that can go stale, and this project has already been bitten by a
+/// cache disagreeing with the thing it described. A few hundred conversations
+/// of ordinary text is a few tens of megabytes, which Rust walks in well under
+/// a second; if that stops being true, an index can be added behind this same
+/// command without the interface knowing.
+#[tauri::command]
+async fn search_conversations(
+    app: tauri::AppHandle,
+    query: String,
+) -> Result<Vec<SearchHit>, String> {
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() {
+        return Ok(Vec::new());
+    }
+    let dir = conversations_dir(&app)?;
+    let mut hits = Vec::new();
+
+    for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
+        if hits.len() >= MAX_SEARCH_HITS {
+            break;
+        }
+        let path = entry.map_err(|e| e.to_string())?.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        if path.file_name().and_then(|n| n.to_str()) == Some(CONV_INDEX_FILE) {
+            continue;
+        }
+        // A file that cannot be read is skipped rather than failing the whole
+        // search: one unreadable conversation should not make the feature
+        // unusable for the rest.
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let raw = if raw.len() > MAX_SEARCH_BYTES_PER_FILE {
+            let cut = (0..=MAX_SEARCH_BYTES_PER_FILE)
+                .rev()
+                .find(|&i| raw.is_char_boundary(i))
+                .unwrap_or(0);
+            &raw[..cut]
+        } else {
+            &raw[..]
+        };
+        let Ok(conv) = serde_json::from_str::<Conversation>(raw) else {
+            continue;
+        };
+
+        let title_matched = conv.title.to_lowercase().contains(&needle);
+        let body = searchable_text(&conv.messages);
+        let body_at = find_case_insensitive(&body, &needle);
+
+        if !title_matched && body_at.is_none() {
+            continue;
+        }
+        let (snippet_before, snippet_match, snippet_after) = body_at
+            .map(|at| snippet_around(&body, at, needle.len()))
+            .unwrap_or_default();
+        hits.push(SearchHit {
+            id: conv.id,
+            title: conv.title,
+            updated_at: conv.updated_at,
+            project_id: conv.project_id,
+            snippet_before,
+            snippet_match,
+            snippet_after,
+            title_matched,
+        });
+    }
+
+    // Newest first, like the sidebar it replaces.
+    hits.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    Ok(hits)
 }
 
 #[tauri::command]
@@ -7435,6 +8193,105 @@ async fn load_conversation(app: tauri::AppHandle, id: String) -> Result<Conversa
     }
     inline_assets(&mut c.messages, &conversations_dir(&app)?);
     Ok(c)
+}
+
+/// Reduce a typed name to what will be stored.
+///
+/// Control characters go first, and the reason is not tidiness: a name is
+/// rendered in the sidebar, written into an exported Markdown heading, and put
+/// in a delete confirmation that asks about it by name. A newline breaks the
+/// first two and a bidirectional override can make the third ask about a
+/// different chat than the one it is about to delete. Whitespace collapses for
+/// the same reason a title of three spaces is not a title.
+///
+/// Returns `None` for a name with nothing left in it, which the caller reports
+/// rather than storing: an empty name would leave the row reading "Untitled"
+/// with no way to tell it from a chat that was never named.
+fn clean_title(raw: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut pending_space = false;
+    for ch in raw.chars() {
+        // Whitespace is tested before controls, and the order is the bug this
+        // was written with: a tab and a newline are both, and dropping them as
+        // controls turns "Ferry\nto Aarhus" into "Ferryto Aarhus" — a rename
+        // that joins two words together.
+        if ch.is_whitespace() {
+            pending_space = !out.is_empty();
+            continue;
+        }
+        // `is_control` does not cover the bidi overrides or the zero-width
+        // characters, and those are precisely the ones that make a name read as
+        // a different name than it is.
+        if ch.is_control()
+            || matches!(ch, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}')
+        {
+            continue;
+        }
+        if pending_space {
+            out.push(' ');
+            pending_space = false;
+        }
+        if out.chars().count() >= MAX_TITLE_CHARS {
+            break;
+        }
+        out.push(ch);
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// Give a saved chat a name of the user's choosing.
+///
+/// Returns the name as stored, not as typed: it is trimmed and capped here, and
+/// showing the caller's version instead would let the sidebar disagree with the
+/// file about what the chat is called.
+///
+/// This edits the stored JSON as a `Value` rather than going through
+/// `load_conversation` + `save_conversation`. That round trip would inline every
+/// image into memory and write them all back out, rewriting a chat's worth of
+/// assets to change one string — and it would drop any field this version's
+/// struct does not model. Renaming should touch the name.
+#[tauri::command]
+async fn rename_conversation(
+    app: tauri::AppHandle,
+    id: String,
+    title: String,
+) -> Result<String, String> {
+    let Some(clean) = clean_title(&title) else {
+        return Err(
+            "A chat needs a name. Type one, or press Escape to keep the current name.".into(),
+        );
+    };
+    let path = conversation_path(&app, &id)?;
+    let s = read_to_string_capped(&path, MAX_CONVERSATION_BYTES, "This chat")?;
+    let mut v: serde_json::Value = serde_json::from_str(&s).map_err(|e| e.to_string())?;
+    // The same refusal `load_conversation` makes, for the same reason: writing
+    // this version's shape over a newer one loses what this version cannot see.
+    let schema = v.get("schema").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
+    if schema > CONV_SCHEMA_VERSION {
+        return Err(format!(
+            "this chat was saved by a newer version of Sovatela (format {schema}, this version \
+             reads {CONV_SCHEMA_VERSION}). Update the app to rename it."
+        ));
+    }
+    let Some(obj) = v.as_object_mut() else {
+        return Err("this chat file is not in a shape this app can rename".into());
+    };
+    obj.insert("title".into(), serde_json::Value::String(clean.clone()));
+    obj.insert("title_custom".into(), serde_json::Value::Bool(true));
+    let json = serde_json::to_string(&v).map_err(|e| e.to_string())?;
+    write_atomic(&path, &json)?;
+
+    // The index carries the name too, and listing reads the index. Updating the
+    // file alone would rename the chat everywhere except the list it is renamed
+    // from — until something happened to rebuild the cache.
+    let dir = conversations_dir(&app)?;
+    let mut index = read_conv_index(&dir);
+    if let Some(m) = index.iter_mut().find(|m| m.id == id) {
+        m.title = clean.clone();
+        m.title_custom = true;
+        write_conv_index(&dir, &index);
+    }
+    Ok(clean)
 }
 
 #[tauri::command]
@@ -9349,6 +10206,7 @@ mod tests {
             project_id: None,
             app: APP_FORMAT_TAG.into(),
             schema: CONV_SCHEMA_VERSION,
+            title_custom: false,
         };
         let json = serde_json::to_string(&c).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -9521,12 +10379,14 @@ mod tests {
                     title: "chat a".into(),
                     updated_at: "2026-08-28T00:00:00Z".into(),
                     project_id: Some("proj-1".into()),
+                    title_custom: false,
                 },
                 ConversationMeta {
                     id: "c".into(),
                     title: "chat c".into(),
                     updated_at: "2026-08-28T00:00:00Z".into(),
                     project_id: Some("proj-2".into()),
+                    title_custom: false,
                 },
             ],
         );
@@ -10603,6 +11463,161 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&a);
         let _ = std::fs::remove_dir_all(&b);
+    }
+
+    /// A case-insensitive match points at the original text, not a lowercased
+    /// copy of it.
+    ///
+    /// `haystack.to_lowercase().find(needle)` returns an offset into the
+    /// *copy*, and lowercasing can change a string's length — `İ` is two bytes
+    /// and lowercases to three. Slicing the original at that offset lands past
+    /// the match, or inside a character. The first version of the search did
+    /// exactly that.
+    #[test]
+    fn a_case_insensitive_match_points_into_the_original_text() {
+        // Plain ASCII: the offsets agree, and the snippet contains the match.
+        let plain = "The ferry to Copenhagen leaves at nine";
+        let at = find_case_insensitive(plain, "copenhagen").expect("no match");
+        assert_eq!(&plain[at..at + 10], "Copenhagen");
+
+        // A string whose lowercase form is *longer* than the original. Every
+        // offset after the İ is shifted in the lowercased copy.
+        let shifted = "İSTANBUL and then Copenhagen";
+        let at = find_case_insensitive(shifted, "copenhagen").expect("no match");
+        assert_eq!(
+            &shifted[at..at + 10],
+            "Copenhagen",
+            "the offset was taken from the lowercased copy, so it points at the wrong place"
+        );
+        assert!(
+            shifted.to_lowercase().len() > shifted.len(),
+            "premise: lowercasing grew it"
+        );
+
+        // And the snippet built from it marks the right span.
+        let (_, matched, _) = snippet_around(shifted, at, "copenhagen".len());
+        assert_eq!(matched, "Copenhagen");
+
+        assert_eq!(find_case_insensitive("nothing here", "absent"), None);
+    }
+
+    /// A Markdown export is readable, and does not carry a megabyte of base64.
+    ///
+    /// Embedding images would make the common case — a chat with two
+    /// screenshots — open as a wall of encoded bytes in any editor. The JSON
+    /// format exists for the exact copy; this one is for reading.
+    #[test]
+    fn a_markdown_export_names_images_rather_than_embedding_them() {
+        let c = Conversation {
+            id: "c1".into(),
+            title: "Trip planning".into(),
+            updated_at: "2026-09-05T10:00:00Z".into(),
+            project_id: None,
+            app: "sovatela".into(),
+            schema: CONV_SCHEMA_VERSION,
+            title_custom: false,
+            messages: serde_json::json!([
+                { "role": "user", "text": "look at this",
+                  "attachments": [
+                      { "kind": "image", "name": "map.png",
+                        "dataUrl": "data:image/png;base64,SHOULDNOTAPPEAR" },
+                      { "kind": "text", "name": "notes.txt", "content": "ferry at 09:40" }
+                  ] },
+                { "role": "assistant", "text": "The ferry leaves at 09:40." }
+            ]),
+        };
+        let md = conversation_to_markdown(&c);
+
+        assert!(md.starts_with("# Trip planning"), "no title heading");
+        assert!(
+            md.contains("## You") && md.contains("## Sovatela"),
+            "roles are not labelled"
+        );
+        assert!(
+            md.contains("The ferry leaves at 09:40."),
+            "reply text is missing"
+        );
+        assert!(md.contains("[image: map.png]"), "the image is not named");
+        assert!(
+            md.contains("ferry at 09:40"),
+            "attached text is not included"
+        );
+        assert!(
+            !md.contains("SHOULDNOTAPPEAR") && !md.contains("base64"),
+            "image bytes were embedded — the export is unreadable"
+        );
+    }
+
+    /// Snippets are cut on character boundaries, in any language.
+    ///
+    /// Slicing a String at an arbitrary byte offset panics on multibyte text,
+    /// and search reads whatever the user has written. A crash here would take
+    /// the whole app down from a search box.
+    #[test]
+    fn a_snippet_never_splits_a_character() {
+        // Scripts whose characters are 2, 3 and 4 bytes, plus combining marks
+        // and an emoji with a zero-width joiner.
+        for text in [
+            "æøå ".repeat(80),
+            "日本語のテキストです ".repeat(40),
+            "🇩🇰 family 👨‍👩‍👧‍👦 flag ".repeat(30),
+            "Ω≈ç√∫˜µ≤≥÷ ".repeat(50),
+            "e\u{0301}combining ".repeat(60),
+        ] {
+            for at in 0..text.len() {
+                if !text.is_char_boundary(at) {
+                    continue; // a match offset is always a boundary
+                }
+                // A one-character match at every position, which is the widest
+                // sweep of start and end offsets the snippet code can see.
+                let len = text[at..].chars().next().map(|c| c.len_utf8()).unwrap_or(0);
+                let (before, matched, after) = snippet_around(&text, at, len);
+                assert_eq!(
+                    matched,
+                    &text[at..at + len],
+                    "the marked span is not the text that matched, at {at}"
+                );
+                // Nothing is lost or invented around it.
+                assert!(
+                    before.chars().count() + after.chars().count() > 0 || text.len() <= len,
+                    "no context at all around {at}"
+                );
+            }
+        }
+    }
+
+    /// The search reads what a person wrote, and skips what they attached as
+    /// bytes: a base64 image is megabytes that can never match a typed word.
+    #[test]
+    fn searchable_text_covers_messages_and_text_attachments_only() {
+        let messages = serde_json::json!([
+            { "role": "user", "text": "what is the capital of Denmark" },
+            { "role": "assistant", "text": "Copenhagen." },
+            {
+                "role": "user",
+                "text": "and this file",
+                "attachments": [
+                    { "kind": "text", "name": "notes.md", "content": "a distinctive phrase" },
+                    { "kind": "image", "name": "photo.png", "dataUrl": "data:image/png;base64,AAAA" }
+                ]
+            }
+        ]);
+        let text = searchable_text(&messages);
+        assert!(text.contains("capital of Denmark"));
+        assert!(text.contains("Copenhagen"));
+        assert!(
+            text.contains("a distinctive phrase"),
+            "text attachments are not searched"
+        );
+        assert!(
+            text.contains("notes.md"),
+            "attachment names are not searched"
+        );
+        assert!(text.contains("photo.png"), "image names are not searched");
+        assert!(
+            !text.contains("base64"),
+            "image data is being searched — megabytes that can never match"
+        );
     }
 
     /// A token stored for one endpoint must never be sent to another.
@@ -13073,6 +14088,7 @@ mod tests {
             title: "T".into(),
             updated_at: updated_at.into(),
             project_id: None,
+            title_custom: false,
         }
     }
 
@@ -13092,6 +14108,447 @@ mod tests {
         // "gone" dropped, "a" kept, "b" added; sorted newest-first.
         let ids: Vec<&str> = out.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(ids, vec!["b", "a"]);
+    }
+
+    // ---- Renaming a chat --------------------------------------------------
+    //
+    // The rename itself is one string assignment; what can go wrong is
+    // everything around it. A name that does not survive the next reply is the
+    // whole feature failing silently, and the frontend cannot prevent it: it
+    // recomputes a title from the first message on every save and has no way to
+    // know a chat was named.
+
+    #[test]
+    fn a_chosen_name_survives_the_next_save() {
+        let dir = temp_dir("rename-survives");
+        // A renamed chat: the flag is set, on disk and in the index.
+        std::fs::write(
+            dir.join("c1.json"),
+            r#"{"id":"c1","title":"Ferry to Aarhus","updated_at":"2026-09-05T10:00:00Z",
+                "messages":[],"title_custom":true}"#,
+        )
+        .unwrap();
+        write_conv_index(
+            &dir,
+            &[ConversationMeta {
+                id: "c1".into(),
+                title: "Ferry to Aarhus".into(),
+                updated_at: "2026-09-05T10:00:00Z".into(),
+                project_id: None,
+                title_custom: true,
+            }],
+        );
+        // What the next save would arrive holding: the title derived from the
+        // first message, which is not the name the user chose.
+        assert_eq!(
+            chosen_title(&dir, "c1", "c1").as_deref(),
+            Some("Ferry to Aarhus"),
+            "a save would have written the derived title over the chosen name"
+        );
+    }
+
+    #[test]
+    fn a_derived_title_is_not_treated_as_chosen() {
+        let dir = temp_dir("rename-derived");
+        write_conv_index(
+            &dir,
+            &[ConversationMeta {
+                id: "c1".into(),
+                title: "what time is the ferry".into(),
+                updated_at: "2026-09-05T10:00:00Z".into(),
+                project_id: None,
+                title_custom: false,
+            }],
+        );
+        // Otherwise the first title a chat ever gets would freeze, and every
+        // chat would keep the wording of its opening message for ever.
+        assert_eq!(chosen_title(&dir, "c1", "c1"), None);
+    }
+
+    #[test]
+    fn losing_the_index_does_not_lose_the_name() {
+        let dir = temp_dir("rename-no-index");
+        std::fs::write(
+            dir.join("c1.json"),
+            r#"{"id":"c1","title":"Ferry to Aarhus","updated_at":"2026-09-05T10:00:00Z",
+                "messages":[],"title_custom":true}"#,
+        )
+        .unwrap();
+        // No index file at all — deleted, corrupt, or not yet rebuilt. The name
+        // is in the conversation file, so the answer must still be found there;
+        // if it were only in the cache, clearing the cache would rename every
+        // chat back on its owner.
+        assert_eq!(
+            chosen_title(&dir, "c1", "c1").as_deref(),
+            Some("Ferry to Aarhus")
+        );
+    }
+
+    #[test]
+    fn a_new_chat_costs_no_extra_read() {
+        let dir = temp_dir("rename-new-chat");
+        // Nothing on disk: the index has no entry and no file exists. The
+        // fallback must return rather than error, so that saving a brand-new
+        // chat is unaffected by any of this.
+        assert_eq!(chosen_title(&dir, "c1", "c1"), None);
+    }
+
+    #[test]
+    fn a_name_cannot_carry_characters_that_break_the_rows_around_it() {
+        // A newline would put a second line in the sidebar and a second line in
+        // an exported Markdown heading.
+        assert_eq!(
+            clean_title("Ferry\nto\tAarhus").as_deref(),
+            Some("Ferry to Aarhus")
+        );
+        // A right-to-left override can make the delete confirmation ask about a
+        // different chat than the one it is about to delete.
+        assert_eq!(
+            clean_title("Notes\u{202e}gnp.exe").as_deref(),
+            Some("Notesgnp.exe")
+        );
+        // Zero-width characters make two chats look identically named.
+        assert_eq!(clean_title("Ta\u{200b}xes").as_deref(), Some("Taxes"));
+        // Whitespace collapses and trims, so a name is not padded into looking
+        // indented in the list.
+        assert_eq!(
+            clean_title("  Tax   deadline  ").as_deref(),
+            Some("Tax deadline")
+        );
+    }
+
+    #[test]
+    fn a_name_with_nothing_in_it_is_refused_rather_than_stored() {
+        // Storing it would leave the row reading "Untitled", indistinguishable
+        // from a chat that was never named — so the rename would look like it
+        // had erased the chat's identity rather than failed.
+        assert_eq!(clean_title("   "), None);
+        assert_eq!(clean_title("\u{200b}\n\t"), None);
+        assert_eq!(clean_title(""), None);
+    }
+
+    #[test]
+    fn a_long_name_is_cut_by_characters_and_not_by_bytes() {
+        // Cutting a multi-byte name at a byte offset panics in Rust rather than
+        // truncating, so this is a crash test as much as a length test.
+        let long = "æ".repeat(MAX_TITLE_CHARS + 40);
+        let cut = clean_title(&long).unwrap();
+        assert_eq!(cut.chars().count(), MAX_TITLE_CHARS);
+        let cjk = "文".repeat(MAX_TITLE_CHARS + 5);
+        assert_eq!(clean_title(&cjk).unwrap().chars().count(), MAX_TITLE_CHARS);
+    }
+
+    // ---- Importing a conversation -----------------------------------------
+
+    #[test]
+    fn the_timestamp_agrees_with_the_calendar() {
+        // Every one of these came from `date -u -r <n>` rather than from
+        // working it out here, because checking hand-written date arithmetic
+        // against hand-written date arithmetic checks nothing.
+        for (secs, expected) in [
+            (0u64, "1970-01-01T00:00:00Z"),
+            (1_234_567_890, "2009-02-13T23:31:30Z"),
+            // A leap day, and the day after a leap February — the two dates the
+            // shifted-epoch trick exists to get right.
+            (951_782_400, "2000-02-29T00:00:00Z"),
+            (1_583_020_800, "2020-03-01T00:00:00Z"),
+            (1_767_225_600, "2026-01-01T00:00:00Z"),
+            // 2100 is not a leap year, which the /100 term is what handles.
+            (4_102_444_800, "2100-01-01T00:00:00Z"),
+        ] {
+            assert_eq!(iso8601_from_unix(secs), expected, "at {secs}");
+        }
+    }
+
+    #[test]
+    fn the_timestamp_sorts_as_a_string_and_parses_as_a_date() {
+        // Both are relied on: the sidebar orders chats by comparing these, and
+        // buckets them by parsing them.
+        assert!(iso8601_from_unix(1_583_020_800) < iso8601_from_unix(1_767_225_600));
+        let now = now_iso8601();
+        assert_eq!(
+            now.len(),
+            20,
+            "{now} is not the format the interface writes"
+        );
+        assert!(now.ends_with('Z') && now.contains('T'), "{now}");
+    }
+
+    fn import_json(messages: &str) -> serde_json::Value {
+        serde_json::from_str(&format!(
+            r#"{{"id":"x","title":"A chat","updated_at":"2026-09-05T10:00:00Z","messages":{messages}}}"#
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn an_ordinary_exported_chat_imports() {
+        let v = import_json(
+            r#"[{"role":"user","text":"hello",
+                 "attachments":[{"kind":"image","name":"a.png","dataUrl":"data:image/png;base64,AA"}]},
+                {"role":"assistant","text":"hi"}]"#,
+        );
+        assert!(validate_imported_conversation(&v).is_ok());
+    }
+
+    // The finding this whole validator exists for. The interface renders a
+    // dataUrl as <img src>, where the CSP already confines it to data: and
+    // blob: — but the same field is put into `image_url` and sent to the
+    // provider when the chat is continued, and no CSP reaches that. A file
+    // could make this app hand a URL to Scaleway and have it fetched there.
+    #[test]
+    fn an_image_that_points_at_the_network_is_refused() {
+        for url in [
+            "https://tracker.example/pixel.gif",
+            "http://10.0.0.1/internal",
+            "file:///etc/passwd",
+            "asset://something-elses-asset",
+            "javascript:alert(1)",
+        ] {
+            let v = import_json(&format!(
+                r#"[{{"role":"user","text":"x","attachments":[{{"kind":"image","name":"a","dataUrl":"{url}"}}]}}]"#
+            ));
+            let err = validate_imported_conversation(&v)
+                .expect_err(&format!("{url} was accepted as an image attachment"));
+            assert!(
+                err.contains("points somewhere other than the file"),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_chat_is_refused_by_name() {
+        // Each of these is a plausible mis-click — another app's export, a
+        // config file, an array rather than an object.
+        let cases: [(&str, &str); 4] = [
+            ("[1,2,3]", "does not contain a conversation"),
+            (r#"{"title":"x"}"#, "no messages in it"),
+            (r#"{"messages":["hello"]}"#, "not a message"),
+            (r#"{"messages":[{"text":"hi"}]}"#, "no sender"),
+        ];
+        for (json, expected) in cases {
+            let v: serde_json::Value = serde_json::from_str(json).unwrap();
+            let err = validate_imported_conversation(&v).expect_err(json);
+            assert!(err.contains(expected), "for {json}: {err}");
+        }
+    }
+
+    // A file that satisfies every structural rule and still shows nothing. This
+    // is the OpenAI and Anthropic API shape, which most other exports copy, and
+    // before this check it imported "successfully" and opened an empty chat —
+    // telling the user their conversation was in when it was not.
+    #[test]
+    fn another_apps_export_is_refused_by_name_rather_than_imported_empty() {
+        let v = import_json(
+            r#"[{"role":"user","content":"hello"},{"role":"assistant","content":"hi"}]"#,
+        );
+        let err = validate_imported_conversation(&v).expect_err("imported as an empty chat");
+        assert!(err.contains("content"), "{err}");
+        assert!(err.contains("text"), "{err}");
+    }
+
+    #[test]
+    fn a_chat_that_would_show_nothing_is_refused() {
+        for messages in [
+            "[]",
+            r#"[{"role":"user"},{"role":"assistant"}]"#,
+            r#"[{"role":"user","text":"   "}]"#,
+            r#"[{"role":"user","text":"","attachments":[]}]"#,
+        ] {
+            let v = import_json(messages);
+            assert!(
+                validate_imported_conversation(&v).is_err(),
+                "{messages} imported as a chat with nothing in it"
+            );
+        }
+    }
+
+    #[test]
+    fn a_message_that_is_only_an_attachment_still_counts_as_something_to_show() {
+        // An image with no caption is a real message, so the emptiness check
+        // must not refuse it while catching the shapes above.
+        let v = import_json(
+            r#"[{"role":"user","attachments":[{"kind":"image","name":"a","dataUrl":"data:image/png;base64,AA"}]}]"#,
+        );
+        assert!(validate_imported_conversation(&v).is_ok());
+    }
+
+    #[test]
+    fn the_other_half_of_export_is_refused_with_the_reason() {
+        // Export offers Markdown or JSON and only JSON can come back, so
+        // choosing the Markdown is the likeliest mistake there is here. Serde's
+        // own message ("expected value at line 1 column 1") does not tell
+        // someone which file to pick instead.
+        let c = Conversation {
+            id: "c1".into(),
+            title: "Ferry to Aarhus".into(),
+            updated_at: "2026-09-05T10:00:00Z".into(),
+            messages: serde_json::json!([
+                { "role": "user", "text": "when does it leave" },
+                { "role": "assistant", "text": "09:40" }
+            ]),
+            project_id: None,
+            app: APP_FORMAT_TAG.into(),
+            schema: CONV_SCHEMA_VERSION,
+            title_custom: true,
+        };
+        // The real thing, from the exporter, rather than a guess at its shape.
+        assert!(looks_like_markdown(&conversation_to_markdown(&c)));
+        // And it does not claim every unparseable file is Markdown.
+        assert!(!looks_like_markdown("not json, not markdown either"));
+        assert!(!looks_like_markdown("# A heading and nothing else"));
+        assert!(!looks_like_markdown(""));
+    }
+
+    #[test]
+    fn a_message_from_an_unknown_sender_is_refused() {
+        // The role decides which side of the conversation a message is drawn
+        // on; an unknown one is drawn as neither.
+        let v = import_json(r#"[{"role":"tool","text":"x"}]"#);
+        let err = validate_imported_conversation(&v).unwrap_err();
+        assert!(err.contains("tool"), "{err}");
+    }
+
+    #[test]
+    fn a_chat_from_a_newer_version_is_refused_rather_than_half_read() {
+        let v: serde_json::Value = serde_json::from_str(&format!(
+            r#"{{"messages":[],"schema":{}}}"#,
+            CONV_SCHEMA_VERSION + 1
+        ))
+        .unwrap();
+        let err = validate_imported_conversation(&v).unwrap_err();
+        assert!(err.contains("newer version"), "{err}");
+    }
+
+    #[test]
+    fn a_chat_with_more_messages_than_can_be_shown_is_refused() {
+        // 32 MB of very small messages is several hundred thousand of them, and
+        // rendering that locks the interface with no way back. The byte cap
+        // alone does not bound the count.
+        let many = format!(
+            "[{}]",
+            vec![r#"{"role":"user","text":"x"}"#; MAX_IMPORT_MESSAGES + 1].join(",")
+        );
+        let v = import_json(&many);
+        let err = validate_imported_conversation(&v).unwrap_err();
+        assert!(err.contains("more than the"), "{err}");
+    }
+
+    #[test]
+    fn an_imported_chat_never_takes_the_name_of_one_already_here() {
+        let dir = temp_dir("import-ids");
+        // Same folder, same seed, same clock reading — so the *only* thing that
+        // can make the second answer differ is noticing the first is taken. The
+        // first version of this test called the clock-reading version twice and
+        // passed with the collision check deleted, which is a test of nothing.
+        let a = unused_conversation_id_at(&dir, b"same seed", 1_700_000_000_000).unwrap();
+        std::fs::write(dir.join(format!("{}.json", sanitize_id(&a).unwrap())), "{}").unwrap();
+        let b = unused_conversation_id_at(&dir, b"same seed", 1_700_000_000_000).unwrap();
+        assert_ne!(a, b, "a taken id was handed out again");
+        assert!(!dir
+            .join(format!("{}.json", sanitize_id(&b).unwrap()))
+            .exists());
+        // And the id survives the sanitiser that will build the filename from
+        // it, rather than being reduced to something else on the way.
+        assert_eq!(sanitize_id(&b).unwrap(), b);
+    }
+
+    #[test]
+    fn importing_goes_through_the_ordinary_save() {
+        // A second write path would be a second set of rules about what a
+        // stored chat looks like — a different answer to externalizing images,
+        // to claiming the folder, and to keeping the index in step.
+        let src = lib_source();
+        let at = src
+            .find("\nasync fn import_conversation")
+            .expect("command is gone");
+        let body = &src[at..];
+        let end = body
+            .find("\n/// How much of one conversation")
+            .unwrap_or(body.len());
+        let body = &body[..end];
+        assert!(
+            body.contains("save_conversation(app, conversation)"),
+            "import no longer writes through save_conversation"
+        );
+        assert!(
+            body.contains("validate_imported_conversation(&v)?"),
+            "import no longer checks the file it was given"
+        );
+        // `looks_like_markdown` has its own test, and that test passed with
+        // this call deleted — at which point choosing the Markdown export gets
+        // serde's "expected value at line 1 column 1" again.
+        assert!(
+            body.contains("if looks_like_markdown(&raw) {"),
+            "choosing the Markdown export no longer says which file to pick instead"
+        );
+        assert!(
+            body.contains("project_id: None"),
+            "an imported chat now keeps a project id from another machine"
+        );
+        // The refusal has to come before the dialog: finding a file and then
+        // being told history is off wastes the part of the job the user did.
+        let refuses = body
+            .find("save_history")
+            .expect("import ignores the toggle");
+        let asks = body
+            .find("blocking_pick_file")
+            .expect("import has no dialog");
+        assert!(
+            refuses < asks,
+            "import asks for a file before checking it can store one"
+        );
+    }
+
+    #[test]
+    fn saving_still_asks_whether_the_chat_was_named() {
+        // The tests above exercise `chosen_title` directly, and every one of
+        // them would still pass with its call in `save_conversation` deleted —
+        // at which point renaming works, looks like it worked, and is undone by
+        // the next reply. The call site is the thing that has to hold, so it is
+        // what this asserts.
+        let src = lib_source();
+        let at = src
+            .find("\nasync fn save_conversation")
+            .expect("command is gone");
+        let body = &src[at..];
+        let end = body.find("\n#[tauri::command]").unwrap_or(body.len());
+        let body = &body[..end];
+        assert!(
+            body.contains("chosen_title(&dir, &conversation.id, &safe)"),
+            "save_conversation no longer preserves a chosen name; a rename now \
+             lasts until the next reply"
+        );
+        // And it has to happen before the write, not after it.
+        let asks = body.find("chosen_title(").expect("checked above");
+        let writes = body.find("write_atomic(").expect("save no longer writes");
+        assert!(
+            asks < writes,
+            "the name is preserved after the file is written"
+        );
+    }
+
+    #[test]
+    fn renaming_writes_the_file_and_the_index_together() {
+        // The guard is on the source rather than on a live command: the command
+        // needs an AppHandle. What is being asserted is that the index write is
+        // not something a later edit can quietly drop — a rename that updated
+        // only the file would show the new name nowhere, since listing reads the
+        // index, and the old name would come back on every launch.
+        let src = lib_source();
+        let at = src
+            .find("\nasync fn rename_conversation")
+            .expect("command is gone");
+        let body = &src[at..at + 3000];
+        let end = body.find("\n#[tauri::command]").unwrap_or(body.len());
+        let body = &body[..end];
+        for needed in ["write_atomic(", "write_conv_index(", "title_custom"] {
+            assert!(
+                body.contains(needed),
+                "rename_conversation no longer calls {needed}"
+            );
+        }
     }
 
     #[test]
@@ -14729,7 +16186,11 @@ pub fn run() {
             update_check_needs_asking,
             save_conversation,
             list_conversations,
+            search_conversations,
+            export_conversation,
             load_conversation,
+            import_conversation,
+            rename_conversation,
             delete_conversation,
             reveal_history_dir,
             open_third_party_notices,

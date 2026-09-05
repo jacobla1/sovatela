@@ -1034,3 +1034,50 @@ describe("auto-memory stays opt-in", () => {
     ).toMatch(/!autoMemoryLoaded/);
   });
 });
+
+// The technical spec explains what an imported file may contain. That
+// explanation is the security argument for the feature, so it has to describe
+// the code rather than what the code did when the paragraph was written.
+describe("the import rules the spec describes are the ones the code applies", () => {
+  const rust = read("src-tauri/src/lib.rs");
+  const spec = read("docs/TECHNICAL-SPEC.md");
+
+  // A number written out in prose is the kind of claim that goes stale in
+  // silence: nothing breaks, the paragraph is just no longer true.
+  it("names the same message limit the code enforces", () => {
+    const decl = rust.match(/const MAX_IMPORT_MESSAGES: usize = ([0-9_]+);/);
+    expect(decl, "MAX_IMPORT_MESSAGES is gone").toBeTruthy();
+    const limit = Number(decl[1].replace(/_/g, ""));
+    // Written with a thousands separator in the prose, as prose is.
+    const asProse = limit.toLocaleString("en-US");
+    expect(
+      spec,
+      `the spec no longer says ${asProse}, which is what the code allows`,
+    ).toContain(asProse);
+  });
+
+  // The whole point of the section. If the check goes, the paragraph explaining
+  // why it is there becomes an advertisement for a defence that is not present.
+  it("still refuses an image attachment that is not inline data", () => {
+    expect(spec).toMatch(/must carry inline\s*\n?`?data:image\/`? content or the import is refused/);
+    expect(
+      rust,
+      "the inline-image check named in TECHNICAL-SPEC is gone from the importer",
+    ).toContain('if !url.starts_with("data:image/") {');
+  });
+
+  // Both are "dropped rather than refused" in the spec, and both are the reason
+  // an import cannot destroy or silently re-file an existing chat.
+  it("still copies under a fresh id and drops the project", () => {
+    expect(spec).toMatch(/always a copy\s*\n?under an id checked to be unused/);
+    const at = rust.indexOf("\nasync fn import_conversation");
+    expect(at, "import_conversation is gone").toBeGreaterThan(-1);
+    const body = rust.slice(at, at + 4000);
+    expect(body, "an imported chat now reuses the id in the file").toContain(
+      "unused_conversation_id(&dir",
+    );
+    expect(body, "an imported chat now keeps another machine's project").toContain(
+      "project_id: None",
+    );
+  });
+});

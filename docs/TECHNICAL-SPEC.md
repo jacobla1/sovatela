@@ -1,6 +1,6 @@
 # Technical and security specification
 
-Sovatela v1.7.3 · Companion to Product spec ·
+Sovatela v1.8.0 · Companion to Product spec ·
 UX spec · [Security policy](../SECURITY.md)
 
 Fuller engineering rationale is kept internally in `ENGINEERING_NOTES.md`, which
@@ -207,6 +207,54 @@ suggested *filename* still comes from the interface and is treated as a name
 rather than a path — separators and dot segments are stripped — and image bytes
 are checked against their actual signature rather than the media type the data
 URL claims.
+
+### Imported conversations
+
+An imported chat file is the only place a whole conversation enters the app
+from outside it. Everything else in a chat was typed here or streamed from the
+configured provider; an imported file was written by something else, possibly
+by hand, so it is read as hostile rather than merely malformed.
+
+The field that matters is an image attachment's `dataUrl`, and the reason is
+not the obvious one. The interface renders it as `<img src>`, where the content
+security policy already confines it to `data:` and `blob:` — a remote URL there
+is a beacon that never fires. But the same field is placed in `image_url` and
+**sent to the provider** when the chat is continued, and no CSP reaches that: a
+crafted file could make this app hand an arbitrary URL to Scaleway to be
+fetched from there. That is both a request the user never made and a signal
+that they opened the file. So an image attachment must carry inline
+`data:image/` content or the import is refused.
+
+Refused, rather than repaired: a file this app exported never contains one, so
+its presence means the file was edited, and importing part of an edited file is
+guessing which part was meant. The other refusals have the same shape — a file
+that is not an object, one with no `messages` array, a message with no sender
+or with an unrecognised one, a `schema` from a newer version, and more than
+20,000 messages (32 MB of very small messages is several hundred thousand of
+them, and rendering that locks the interface; the byte cap alone does not bound
+the count).
+
+A file can satisfy every rule above and still show nothing, so that is refused
+too. `{"messages":[{"role":"user","content":"hello"}]}` is the OpenAI and
+Anthropic API shape that most other exports copy: the roles are right, and a
+missing `text` is allowed because a message may legitimately be an image with
+no caption. It used to import silently and open an empty conversation — the
+worst available outcome, since the user is told the chat is in when it is not.
+An import with no text and no attachments in any message is now a failed
+import, and when the messages carry `content` the refusal says so by name.
+
+Two wrong-file cases get their own wording rather than a parser error, because
+both are ordinary mistakes rather than attacks. Choosing the **Markdown**
+export — the other file the export dialog offers, and the one that cannot come
+back — is answered by saying to export again as JSON. Choosing another app's
+export is answered by naming the `content`/`text` difference.
+
+Two things are dropped rather than refused. The id: an import is always a copy
+under an id checked to be unused, so a file can never replace a chat already
+saved. And the project: an id the file names belongs to the machine it came
+from, and one that happened to match a project here would silently file the
+chat into it. A chosen name (`title_custom`) is kept, so a renamed chat
+survives the round trip.
 
 ### Workspace confinement
 

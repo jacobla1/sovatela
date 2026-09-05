@@ -1,3 +1,74 @@
+# Release notes — Sovatela 1.8.0
+
+Release date: 2026-09-05 · [All releases](https://github.com/jacobla1/sovatela/releases)
+
+The chat list stops being a pile of chats you can only scroll. You can search
+what was said, name a chat yourself, save one to a file and read it back — and
+you can edit a message you have already sent.
+
+## New in 1.8.0
+
+- **Search your saved chats.** A field above the list searches what was said,
+  not just the titles: message text, attachment names, and the contents of text
+  you attached, with the matching line shown beside each result. It reads the
+  files rather than keeping an index — an index is a second copy of the truth
+  that can go stale — so it is bounded rather than instant.
+- **Name your own chats.** Double-click a chat, or press <kbd>F2</kbd> on it. A
+  chat you have named keeps that name; one you have not goes on taking its
+  title from its first message, as before.
+- **Save a chat to a file, and read one back.** Export writes Markdown to read
+  and keep, or the JSON the app itself stores. That JSON can be imported again —
+  on another machine, or after a reinstall. An import always arrives as a copy
+  under a new name, so it can never replace a chat you already have.
+- **Edit a message and ask again.** Editing a message discards the messages
+  below it and asks the model again; the box says how many messages that is
+  before you send. *Try again* does the same for the last reply on its own.
+  Neither can be undone, which is why the count is there.
+
+## What editing does not do
+
+There is no ‹1/2› switcher between an old version of a message and a new one.
+Editing **replaces**: what came after the edited message is gone. Keeping both
+would make a conversation a tree rather than a list, which is a change to how
+every chat is stored, and not one to make quietly in a feature release.
+
+Replies cannot be edited either, only your own messages. A saved chat is meant
+to be a record of what happened, and one you can rewrite both sides of is not.
+
+## Fixed and hardened
+
+- **An imported file cannot make the app fetch an address it was handed.** An
+  image attachment's address is also what is sent to the provider when a chat is
+  continued, and the renderer's content security policy does not reach that — so
+  a crafted file could have had Scaleway fetch an arbitrary address on your
+  behalf, which is both a request you never made and a signal that you opened
+  the file. Imported images must carry their data inline; a file that does not
+  is refused rather than repaired.
+- **A file that would import as an empty chat is refused instead.** Exports from
+  other apps name a message's words `content` where this app uses `text`. Such a
+  file passed every structural check and opened a conversation with nothing in
+  it — telling you your chat was in when it was not. It now says what the
+  difference is.
+- **Choosing the Markdown export when you meant the JSON** now says to export
+  again as JSON, rather than reporting a parse error at line 1 column 1.
+
+## Known limitations
+
+Unchanged: Windows and Linux builds are unsigned and have never been installed,
+upgraded and removed on a clean machine; no screen-reader pass has been run
+since the chat-list change; and a compromised interface could still reach most
+of the app's own commands.
+
+An imported chat is not marked as imported. A file can fabricate what Sovatela
+appears to have said, and continuing that chat feeds those turns back to the
+model — but pasting text into the message box does the same and carries no
+warning, so import is not a privileged way in. Recorded in
+`docs/PRODUCT-GAPS.md`, to be re-opened if chats ever become shareable.
+
+Known limitations and accepted risks: `docs/TECHNICAL-SPEC.md` § 7.
+
+---
+
 # Release notes — Sovatela 1.7.3
 
 Release date: 2026-09-05 · [All releases](https://github.com/jacobla1/sovatela/releases)
