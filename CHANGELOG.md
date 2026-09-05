@@ -15,9 +15,11 @@
   an empty list, and adding or deleting a fact then wrote that empty list back.
   One unreadable read could erase everything you had asked it to remember.
   Only a missing file means empty now; anything else is reported.
-- **Document templates are written atomically.** The file and its details were
-  two ordinary writes, so an interruption could leave a truncated template, or
-  details describing the template it replaced.
+- **Document templates can no longer be left half-written.** The file and its
+  details were two ordinary writes; each is now written completely or not at
+  all. The pair is still not transactional — the details commit first, so a
+  crash between the two writes can leave details naming a template not yet
+  swapped in — and the first version of this entry claimed otherwise.
 - **Malformed tool arguments are no longer copied into the system log.** They
   are model output built from your own material — a query, a path, a line of a
   document — and stderr is captured by the operating system. A length and a

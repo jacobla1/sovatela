@@ -596,6 +596,54 @@ describe("the uninstall page accounts for everything stored", () => {
   });
 });
 
+// Documents describing a capability the app does not hold.
+//
+// TECHNICAL-SPEC said the renderer holds `opener:default` for several releases
+// after 1.6.2 removed it — while SECURITY.md described the removal. Two
+// published documents disagreed about a security control, and nothing noticed,
+// because no test compared either of them against the capability file that
+// decides the answer.
+describe("documents match the capabilities the app actually declares", () => {
+  const caps = JSON.parse(read("src-tauri/capabilities/default.json"));
+  const held = caps.permissions ?? [];
+
+  const flat = (f) =>
+    read(f)
+      .replace(/<!--[\s\S]*?-->/g, " ")
+      .replace(/\s+/g, " ");
+
+  // A document may name a permission the app no longer holds only while
+  // recording that it was removed — the same allowance every other sweep here
+  // makes for a correction.
+  const RECORDS_REMOVAL =
+    /was removed|no longer holds|is not any more|removed in 1\.|used to|until 1\./i;
+
+  it("no document claims a permission that is not in the capability file", () => {
+    for (const perm of ["opener:default", "fs:default", "shell:default", "http:default"]) {
+      if (held.includes(perm)) continue; // genuinely held — nothing to check
+      for (const f of ["docs/TECHNICAL-SPEC.md", "SECURITY.md", "docs/PRIVACY.md"]) {
+        for (const sentence of flat(f).split(/(?<=\.)\s+/)) {
+          if (!sentence.includes(perm)) continue;
+          expect(
+            sentence,
+            `${f} says the app holds ${perm}, which is not in capabilities/default.json`,
+          ).toMatch(RECORDS_REMOVAL);
+        }
+      }
+    }
+  });
+
+  // And the converse, so the list cannot be quietly widened without the
+  // documents that describe it being updated.
+  it("the capability file holds only what is expected", () => {
+    expect(
+      held.sort(),
+      "the main window's permissions changed — TECHNICAL-SPEC § Tauri capabilities " +
+        "and SECURITY.md describe this list and must be updated with it",
+    ).toEqual(["core:default", "dialog:default"]);
+  });
+});
+
 // Turning the workspace off is a security decision, so the interface must not
 // report it before the backend has done it. This one was missed when the other
 // console-only failures were fixed, and it is the worst of the set: the others

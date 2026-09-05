@@ -47,8 +47,12 @@ folder you nominate:
 | Local usage and cost estimates | `usage.json` | Settings → Usage & cost → reset |
 | API keys | Your OS credential store (`com.anaubi.sovatela`) | Settings → Scaleway API key → Remove key from this app |
 
-Recording of conversations can be switched off entirely, in which case nothing
-is written.
+Recording of conversations can be switched off entirely, in which case **no
+conversation text, attachment or generated image is written to disk**. Other
+things still are: your settings, the usage and cost tally, any facts you have
+approved for memory, and any projects you have made. Those are listed in the
+table above with where each one lives and how to remove it. This sentence used
+to say "nothing is written", which was broader than the truth.
 
 Full instructions: [Uninstall and data deletion](UNINSTALL.md).
 

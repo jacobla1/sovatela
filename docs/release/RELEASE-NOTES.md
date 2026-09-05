@@ -18,8 +18,13 @@ they were meant to protect.
   list, and adding or removing one fact then wrote that empty list back over
   everything else. If you have ever wondered whether remembered facts could just
   vanish, this is how. Only a genuinely missing file means empty now.
-- **Document templates are saved atomically**, so an interruption can no longer
-  leave a half-written template, or details describing the one it replaced.
+- **Document templates can no longer be left half-written.** The template and
+  its details are each written completely or not at all, where before either
+  could be truncated by an interruption. What is *not* yet true — and the 1.7.3
+  notes first said otherwise — is that the two change together: the details are
+  committed first, so a crash in the narrow gap between them can leave details
+  naming a template that has not been swapped in yet. Both files are valid; the
+  name shown beside the template may be the wrong one until you set it again.
 - **A recovered search now counts against the search limit.** When the model
   writes a search as text instead of a proper tool call, the app rescues and
   runs it; that path skipped the counter, so the limit you were shown could

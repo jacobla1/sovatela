@@ -123,9 +123,13 @@ the main document cannot make a network request of its own — no `fetch`, `XHR`
 closed off, and `script-src` is `'self'`, so there is no inline execution to
 inject into in the first place.
 
-What that does **not** mean is that nothing can leave. The window holds
-`opener:default`, so anything running in it can ask the backend to open an
-`http(s)` URL in the system browser — and a URL can carry data in its path.
+What that does **not** mean is that nothing can leave. The renderer no longer
+holds `opener:default` — it was removed in 1.6.2, because that permission let it
+hand the operating system a URL of *any* scheme, and `file://` or a custom
+scheme starts a program rather than opening a page. Links now go through the
+`open_external` command, which takes `http(s)` without credentials. But a
+compromised renderer can still call that command, and a URL can carry data in
+its path.
 The call sites are narrow (a click on a link in a reply, with the scheme
 checked, after DOMPurify has already removed `javascript:` hrefs), but the
 capability is broader than the call sites, and a compromised renderer talks to
@@ -185,9 +189,11 @@ exited 0, and that summary was returned as the contents of the document.
 
 ### Tauri capabilities
 
-The main window holds `core:default`, `opener:default`, and `dialog:default`
-only. No filesystem, shell, or HTTP plugin is exposed to the webview — file
-access goes through purpose-built commands with their own validation.
+The main window holds `core:default` and `dialog:default` only. `opener:default`
+was there until 1.6.2 and is not any more; this section said it still was for
+several releases after it went. No filesystem, shell, or HTTP plugin is exposed
+to the webview — file access goes through purpose-built commands with their own
+validation.
 
 That claim was not true of the two commands that write files. `save_image` and
 `save_document` took a destination path from the interface, which obtained it

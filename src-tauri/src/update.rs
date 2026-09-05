@@ -1,11 +1,17 @@
 //! Manual update check.
 //!
-//! The app deliberately has no auto-updater and makes no call on launch. But
-//! through 1.4.0 it also had no way to *tell* anyone a release existed: 1.4.0
+//! The app deliberately has no auto-updater, and makes no call on launch unless
+//! the user switches one on — *Settings → About → Check for a new version when
+//! Sovatela starts*, off by default, and the only setting in the app that adds
+//! an automatic call. (This comment said "makes no call on launch" for two
+//! releases after that setting shipped.)
+//!
+//! Through 1.4.0 the app had no way to *tell* anyone a release existed: 1.4.0
 //! fixed two buttons that had never worked, and every 1.3.x install kept them,
 //! because nothing in the app mentions a new version and there is no server to
 //! push one. That is the gap this closes — and only that. Nothing here runs
-//! unless the user presses the button in Settings → About.
+//! unless the user presses the button in Settings → About, or has switched on
+//! the launch check named above.
 //!
 //! The file is served from `sovatela.eu`, the same site that carries the
 //! download page and `SHA256SUMS.txt`, rather than a code-hosting API: the
