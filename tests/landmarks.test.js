@@ -13,10 +13,14 @@ const read = (f) => readFileSync(join(repo, f), "utf8");
 describe("every view has one main landmark", () => {
   // App.svelte renders these in mutually exclusive {#if} branches, so exactly
   // one is on the page at a time. Two <main>s at once would be the defect.
+  // Matched across the whole opening tag rather than as a literal string: the
+  // chat view gained drag-and-drop handlers, which put its attributes on
+  // separate lines, and a test that fails for a reformatting is one people
+  // learn to update without reading.
   const roots = {
-    "src/lib/Chat.svelte": /<main class="chat">/,
-    "src/lib/Overview.svelte": /<main class="onboarding">/,
-    "src/lib/QuickStart.svelte": /<main class="onboarding">/,
+    "src/lib/Chat.svelte": /<main\b[^>]*class="chat"/s,
+    "src/lib/Overview.svelte": /<main\b[^>]*class="onboarding"/s,
+    "src/lib/QuickStart.svelte": /<main\b[^>]*class="onboarding"/s,
   };
   for (const [file, pattern] of Object.entries(roots)) {
     it(`${file.split("/").pop()} is a main`, () => {

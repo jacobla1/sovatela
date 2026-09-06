@@ -1,12 +1,17 @@
-# Release notes — Sovatela 1.8.0
+# Release notes — Sovatela 1.8.1
 
-Release date: 2026-09-05 · [All releases](https://github.com/jacobla1/sovatela/releases)
+Release date: 2026-09-07 · [All releases](https://github.com/jacobla1/sovatela/releases)
+
+> **Why the version jumps from 1.7.3 to 1.8.1.** A `v1.8.0` tag was pushed and
+> then deleted when the release was held back for more work. A tag that has been
+> public once is not made to point somewhere else, so the number is burned. This
+> release is everything 1.8.0 was going to be, and what the extra weeks found.
 
 The chat list stops being a pile of chats you can only scroll. You can search
 what was said, name a chat yourself, save one to a file and read it back — and
 you can edit a message you have already sent.
 
-## New in 1.8.0
+## New in 1.8.1
 
 - **Search your saved chats.** A field above the list searches what was said,
   not just the titles: message text, attachment names, and the contents of text
@@ -24,6 +29,73 @@ you can edit a message you have already sent.
   below it and asks the model again; the box says how many messages that is
   before you send. *Try again* does the same for the last reply on its own.
   Neither can be undone, which is why the count is there.
+- **Copy your own message**, beside *Edit*, and not only the reply. It copies
+  what you typed, so a code block pasted into a question comes back as code.
+
+## Generated documents
+
+All three writers gained the thing each was most obviously missing.
+
+- **A table in a slide deck is a real table.** It was flattened to one line per
+  row joined with dashes — every word survived, and the tabulation did not, so a
+  reader could no longer tell which figure belonged to which column. A table now
+  gets a slide of its own under the heading it was written beneath, and a long
+  one continues onto further slides with its header row repeated. With a
+  template, it wears **your template's table style** — its colours and banding,
+  resolved against its theme — rather than plain borders.
+- **Lists in a Word document are real lists.** They were indented paragraphs
+  carrying the bullet or number as text: correct to read, invisible to Word's
+  list tools, so nothing renumbered when you added an item. Now Tab demotes and
+  the numbers look after themselves. Markdown written `1.` on every line comes
+  out 1, 2, 3; a list continuing from earlier text keeps its starting number;
+  and two lists separated by a paragraph stay separate. Your template's own list
+  definitions are kept alongside rather than replaced.
+- **A spreadsheet's headings behave like headings.** The first row is bold and
+  frozen, so it stays on screen while you scroll the figures — a sheet whose
+  headings scroll away is one where the tenth screen of numbers has no labels. A
+  heading that happens to read as a number, like a year, stays bold too.
+
+Still unchanged: a `.xlsx` has one sheet and no formulas, and none of the three
+can contain images.
+
+## Attachments
+
+- **Drop files onto the window.** Anywhere on the conversation — not a strip at
+  the bottom — because someone holding a file is looking at the chat. Text
+  dragged from another application is ignored rather than lighting the window up
+  for something that will not happen.
+- **You can see what you attached before you send it.** Images show a thumbnail;
+  a screenshot and the wrong screenshot look identical written down. Documents
+  show how much text came out of them, which is how you notice that a PDF gave
+  up three characters rather than three thousand — until now that only became
+  apparent when the reply was wrong about it.
+
+## Scanned PDFs
+
+- **A scanned PDF is read instead of refused.** A scan is a picture of a page
+  with no text in it; until now that was an honest refusal and nothing more.
+  The reading happens entirely on your device — no upload, no service, no
+  network call — and only after the ordinary text extraction has come back
+  empty, so an ordinary PDF is unaffected.
+
+  It uses the recogniser built into **macOS** or **Windows**. On Linux, and on
+  a Windows install with no language pack, there is no system recogniser and the
+  file is refused — with a message that says why and names `ocrmypdf` as the way
+  round it, rather than the bare "no text found" it used to give.
+
+  Every scan says it is a scan, so the assistant hedges on a doubtful reading
+  rather than stating it as fact.
+
+  Models were nearly bundled so that Linux had something. They were removed
+  before release for two reasons: the licence statement that exists covers files
+  with different hashes from the ones that worked, so the chain for the actual
+  bytes could not be established; and on a clean test contract they read
+  `EUR 12,450` as `EUR 2.450`. Nothing that misreads a figure like that belongs
+  under a claim of reading your documents.
+
+- Scans compressed the way office copiers compress them (CCITT fax, JBIG2) are
+  **not** read, and say which compression they use rather than coming back
+  empty. A photographed or exported scan is normally JPEG, which is read.
 
 ## What editing does not do
 

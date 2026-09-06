@@ -20,10 +20,21 @@ const THEME: &str = "application/vnd.openxmlformats-officedocument.theme+xml";
 const A: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
 const P: &str = "http://schemas.openxmlformats.org/presentationml/2006/main";
 
-/// One slide: a title, and the lines beneath it.
+/// One slide: a title, and either lines or a table beneath it.
+///
+/// A table gets a slide of its own rather than sharing one with bullets. The
+/// body is a text placeholder and a table is a graphic frame — a separate
+/// shape with its own geometry — so sharing the slide means dividing the
+/// vertical space between them, and there is no way to measure laid-out text
+/// to divide it by. A deck with a table on its own slide is also just how
+/// decks are made.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Slide {
     pub title: String,
     pub bullets: Vec<String>,
+    /// Rows, the first being the header. Present only on a table slide, where
+    /// `bullets` is then empty.
+    pub table: Option<Vec<Vec<String>>>,
 }
 
 /// Split Markdown into slides.
@@ -74,6 +85,7 @@ pub fn slides_from(md: &str) -> Vec<Slide> {
             Block::Heading(level, spans) if level == top => out.push(Slide {
                 title: flatten(&spans),
                 bullets: Vec::new(),
+                table: None,
             }),
             // A deeper heading is a subtitle, not a slide. It keeps its place
             // at the top of the body rather than being dropped.
@@ -87,6 +99,7 @@ pub fn slides_from(md: &str) -> Vec<Slide> {
                     None => out.push(Slide {
                         title: line,
                         bullets: Vec::new(),
+                        table: None,
                     }),
                 }
             }
@@ -103,6 +116,7 @@ pub fn slides_from(md: &str) -> Vec<Slide> {
                     None => out.push(Slide {
                         title: numbered,
                         bullets: Vec::new(),
+                        table: None,
                     }),
                 }
             }
@@ -120,26 +134,46 @@ pub fn slides_from(md: &str) -> Vec<Slide> {
                     None => out.push(Slide {
                         title: line,
                         bullets: Vec::new(),
+                        table: None,
                     }),
                 }
             }
             Block::Table(rows) => {
-                // A table on a slide needs a graphic frame, which is a larger
-                // piece of the format. One line per row keeps the content
-                // rather than dropping it, and is recorded as a limitation.
-                let lines: Vec<String> = rows
+                // A slide of its own, carrying the rows.
+                //
+                // This used to flatten to one line per row joined with dashes.
+                // The words survived and the tabulation did not, so a reader
+                // could no longer tell which figure belonged to which column —
+                // which for a table is most of the content.
+                let rows: Vec<Vec<String>> = rows
                     .iter()
-                    .map(|r| r.iter().map(|c| flatten(c)).collect::<Vec<_>>().join(" — "))
+                    .map(|r| r.iter().map(|c| flatten(c)).collect())
                     .collect();
+                if rows.iter().flatten().all(|c| c.trim().is_empty()) {
+                    continue;
+                }
+                // A heading immediately followed by a table fills that
+                // heading's slide rather than leaving it empty and starting
+                // another: `# Figures` above a table is one slide called
+                // Figures, not an empty one and then a second with the same
+                // title. Where the heading already has content, the table
+                // takes its own slide and repeats the title — a title taken
+                // from the table itself would have to consume the header row
+                // to get one.
                 match out.last_mut() {
-                    Some(slide) => slide.bullets.extend(lines),
-                    None => {
-                        let mut it = lines.into_iter();
-                        let title = it.next().unwrap_or_default();
+                    Some(slide) if slide.bullets.is_empty() && slide.table.is_none() => {
+                        slide.table = Some(rows);
+                    }
+                    _ => {
+                        let title = out
+                            .last()
+                            .map(|s: &Slide| s.title.clone())
+                            .unwrap_or_default();
                         out.push(Slide {
                             title,
-                            bullets: it.collect(),
-                        })
+                            bullets: Vec::new(),
+                            table: Some(rows),
+                        });
                     }
                 }
             }
@@ -305,6 +339,35 @@ pub fn paginate(slides: Vec<Slide>) -> Vec<Slide> {
     let mut out: Vec<Slide> = Vec::new();
 
     for slide in slides {
+        // A table slide paginates by rows rather than by lines, and every
+        // continuation repeats the header. Carrying the rows over without it
+        // leaves a slide of unlabelled figures, which is the same loss of
+        // meaning that flattening the table used to cause.
+        if let Some(rows) = &slide.table {
+            let (header, body) = rows
+                .split_first()
+                .map(|(h, b)| (h.clone(), b))
+                .unwrap_or_default();
+            if body.is_empty() {
+                out.push(slide);
+                continue;
+            }
+            for (i, chunk) in body.chunks(MAX_TABLE_ROWS_PER_SLIDE).enumerate() {
+                let mut rows = vec![header.clone()];
+                rows.extend(chunk.iter().cloned());
+                out.push(Slide {
+                    title: if i == 0 {
+                        slide.title.clone()
+                    } else {
+                        format!("{} (cont.)", slide.title)
+                    },
+                    bullets: Vec::new(),
+                    table: Some(rows),
+                });
+            }
+            continue;
+        }
+
         let mut lines = 0usize;
         let mut current: Vec<String> = Vec::new();
         let mut continued = false;
@@ -320,6 +383,7 @@ pub fn paginate(slides: Vec<Slide>) -> Vec<Slide> {
                     slide.title.clone()
                 },
                 bullets: std::mem::take(bullets),
+                table: None,
             });
             *continued = true;
         };
@@ -341,6 +405,7 @@ pub fn paginate(slides: Vec<Slide>) -> Vec<Slide> {
             out.push(Slide {
                 title: slide.title.clone(),
                 bullets: Vec::new(),
+                table: None,
             });
         } else {
             flush(&mut current, &mut continued, &mut out);
@@ -447,6 +512,142 @@ fn placeholders() -> String {
     )
 }
 
+/// The body rectangle of the built-in layout, in EMU.
+///
+/// Stated rather than inherited: the text shapes are placeholders and take
+/// their geometry from the layout, but a graphic frame has no placeholder to
+/// inherit from. Its position is written down or it is wrong. With a template
+/// this is still the built-in rectangle — a template's own body may sit
+/// elsewhere, and that is recorded as a limitation rather than guessed at.
+const BODY_X: i64 = 838200;
+const BODY_Y: i64 = 2286000;
+const BODY_CX: i64 = 10515600;
+const BODY_CY: i64 = 3602038;
+
+/// Nominal row height. PowerPoint grows a row that needs more, so this decides
+/// the resting look rather than the capacity.
+const TABLE_ROW_H: i64 = 370840;
+
+/// Data rows on one table slide, header excluded.
+///
+/// The body is 3602038 EMU tall and a row is 370840, which is nine and a half
+/// rows including the header. Conservative for the same reason as
+/// MAX_LINES_PER_SLIDE: a row past the bottom edge is invisible, and one more
+/// slide is not.
+const MAX_TABLE_ROWS_PER_SLIDE: usize = 8;
+
+/// A cell border. Drawn explicitly on every cell rather than referenced from a
+/// table style: a `tableStyleId` names a definition in a `tableStyles.xml`
+/// this package does not carry, and naming something the package does not
+/// define is exactly what made PowerPoint offer to repair a generated deck
+/// before — the layout that named a type the schema has no definition for.
+const CELL_LINE: &str = concat!(
+    r#"<a:lnL w="12700" cap="flat" cmpd="sng" algn="ctr"><a:solidFill><a:srgbClr val="BFBFBF"/></a:solidFill></a:lnL>"#,
+    r#"<a:lnR w="12700" cap="flat" cmpd="sng" algn="ctr"><a:solidFill><a:srgbClr val="BFBFBF"/></a:solidFill></a:lnR>"#,
+    r#"<a:lnT w="12700" cap="flat" cmpd="sng" algn="ctr"><a:solidFill><a:srgbClr val="BFBFBF"/></a:solidFill></a:lnT>"#,
+    r#"<a:lnB w="12700" cap="flat" cmpd="sng" algn="ctr"><a:solidFill><a:srgbClr val="BFBFBF"/></a:solidFill></a:lnB>"#,
+);
+
+/// One cell. The children of `a:tcPr` are in schema order — the four borders,
+/// then the fill — because a sequence out of order is the class of fault that
+/// opens as a repair prompt rather than as an error anything here can see.
+fn table_cell(text: &str, header: bool, styled: bool) -> String {
+    // With a template's style doing the drawing, this draws nothing: an
+    // explicit border or fill on the cell *overrides* the style, so keeping
+    // them would put grey lines through a branded table and leave it looking
+    // like the template had not been applied. The size stays either way —
+    // that is a decision about fitting a slide, not about how it looks.
+    let bold = if header && !styled { r#" b="1""# } else { "" };
+    let look = if styled {
+        String::new()
+    } else {
+        let fill = if header {
+            r#"<a:solidFill><a:srgbClr val="EFEFEF"/></a:solidFill>"#
+        } else {
+            ""
+        };
+        format!("{CELL_LINE}{fill}")
+    };
+    format!(
+        r#"<a:tc><a:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang="en-GB" sz="1400"{bold}/><a:t>{}</a:t></a:r></a:p></a:txBody>"#,
+        escape::text(text)
+    ) + &format!(
+        r#"<a:tcPr marL="68580" marR="68580" marT="34290" marB="34290" anchor="ctr">{look}</a:tcPr></a:tc>"#
+    )
+}
+
+/// Column widths, in EMU, proportional to the widest cell in each column.
+///
+/// The same measure the spreadsheet writer uses, for the same reason: a column
+/// sized to its heading rather than its contents hides the contents, and on a
+/// slide there is no scrolling to recover them. Every column keeps a floor so
+/// a narrow one stays readable.
+fn table_grid(rows: &[Vec<String>]) -> String {
+    let count = rows.iter().map(Vec::len).max().unwrap_or(0);
+    if count == 0 {
+        return String::new();
+    }
+    let widest: Vec<i64> = (0..count)
+        .map(|c| {
+            rows.iter()
+                .filter_map(|r| r.get(c))
+                .map(|v| display_width(v) as i64)
+                .max()
+                .unwrap_or(1)
+                .max(1)
+        })
+        .collect();
+    let floor = BODY_CX / (count as i64 * 3);
+    let total: i64 = widest.iter().sum();
+    let cols: String = widest
+        .iter()
+        .map(|w| {
+            let share = (BODY_CX * w / total).max(floor);
+            format!(r#"<a:gridCol w="{share}"/>"#)
+        })
+        .collect();
+    format!("<a:tblGrid>{cols}</a:tblGrid>")
+}
+
+/// A table as a graphic frame, which is the only way a slide holds one.
+fn table_frame(rows: &[Vec<String>], style: Option<&str>) -> String {
+    let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
+    let body: String = rows
+        .iter()
+        .enumerate()
+        .map(|(r, row)| {
+            // Short rows are padded, because a row with fewer cells than the
+            // grid has columns is not a table PowerPoint will open.
+            let cells: String = (0..columns)
+                .map(|c| {
+                    table_cell(
+                        row.get(c).map(String::as_str).unwrap_or(""),
+                        r == 0,
+                        style.is_some(),
+                    )
+                })
+                .collect();
+            format!(r#"<a:tr h="{TABLE_ROW_H}">{cells}</a:tr>"#)
+        })
+        .collect();
+    let height = (rows.len() as i64 * TABLE_ROW_H).min(BODY_CY);
+    format!(
+        r#"<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="4" name="Table"/>
+        <p:cNvGraphicFramePr><a:graphicFrameLocks noGrp="1"/></p:cNvGraphicFramePr><p:nvPr/></p:nvGraphicFramePr>
+        <p:xfrm><a:off x="{BODY_X}" y="{BODY_Y}"/><a:ext cx="{BODY_CX}" cy="{height}"/></p:xfrm>
+        <a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/table">
+        <a:tbl><a:tblPr firstRow="1" bandRow="1">{style_id}</a:tblPr>{grid}{body}</a:tbl>
+        </a:graphicData></a:graphic></p:graphicFrame>"#,
+        grid = table_grid(rows),
+        // Emitted only for a style the package actually carries a definition
+        // for, which `Template::table_style` is what guarantees.
+        style_id = match style {
+            Some(id) => format!("<a:tableStyleId>{}</a:tableStyleId>", escape::text(id)),
+            None => String::new(),
+        },
+    )
+}
+
 fn tree(shapes: &str) -> String {
     format!(
         r#"<p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>
@@ -455,7 +656,7 @@ fn tree(shapes: &str) -> String {
     )
 }
 
-fn slide_xml(slide: &Slide, title_ph: &str, body_ph: &str) -> String {
+fn slide_xml(slide: &Slide, title_ph: &str, body_ph: &str, table_style: Option<&str>) -> String {
     let bullets: String = if slide.bullets.is_empty() {
         "<a:p><a:endParaRPr/></a:p>".to_string()
     } else {
@@ -470,16 +671,25 @@ fn slide_xml(slide: &Slide, title_ph: &str, body_ph: &str) -> String {
             })
             .collect()
     };
-    let shapes = format!(
+    let title_shape = format!(
         r#"<p:sp><p:nvSpPr><p:cNvPr id="2" name="Title"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr>
         <p:nvPr><p:ph {title_ph}/></p:nvPr></p:nvSpPr><p:spPr/>
-        <p:txBody>{title_props}<a:lstStyle/><a:p><a:r><a:rPr lang="en-GB"/><a:t>{title}</a:t></a:r></a:p></p:txBody></p:sp>
-        <p:sp><p:nvSpPr><p:cNvPr id="3" name="Content"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr>
-        <p:nvPr><p:ph {body_ph}/></p:nvPr></p:nvSpPr><p:spPr/>
-        <p:txBody><a:bodyPr/><a:lstStyle/>{bullets}</p:txBody></p:sp>"#,
+        <p:txBody>{title_props}<a:lstStyle/><a:p><a:r><a:rPr lang="en-GB"/><a:t>{title}</a:t></a:r></a:p></p:txBody></p:sp>"#,
         title = escape::text(&slide.title),
         title_props = title_body_properties(&slide.title),
     );
+    // A table replaces the body placeholder rather than sitting beside it. An
+    // empty placeholder left behind still draws "Click to add text" over the
+    // slide in PowerPoint's editing view, which is a prompt on a slide that
+    // has its content already.
+    let shapes = match &slide.table {
+        Some(rows) => format!("{title_shape}{}", table_frame(rows, table_style)),
+        None => format!(
+            r#"{title_shape}<p:sp><p:nvSpPr><p:cNvPr id="3" name="Content"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr>
+        <p:nvPr><p:ph {body_ph}/></p:nvPr></p:nvSpPr><p:spPr/>
+        <p:txBody><a:bodyPr/><a:lstStyle/>{bullets}</p:txBody></p:sp>"#
+        ),
+    };
     format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:a="{A}" xmlns:r="{REL_BASE}" xmlns:p="{P}">
         <p:cSld>{}</p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>"#,
@@ -507,6 +717,7 @@ pub fn deck_of(md: &str) -> Vec<Slide> {
         vec![Slide {
             title: String::new(),
             bullets: Vec::new(),
+            table: None,
         }]
     } else {
         slides
@@ -607,6 +818,12 @@ pub fn from_markdown_with(
             )
         });
 
+    // A table's look, when the template defines one this package carries. The
+    // part is copied in by `seed`; the relationship below is what makes
+    // PowerPoint read it, and without that the styles are inert and a branded
+    // deck gets this app's grey borders instead.
+    let table_style = template.and_then(|t| t.table_style.clone());
+
     // Slides, and the presentation that orders them.
     let mut presentation_rels: Vec<(String, String, String)> = vec![(
         "rId1".into(),
@@ -620,7 +837,7 @@ pub fn from_markdown_with(
         pkg.add(
             &format!("ppt/slides/slide{n}.xml"),
             SLIDE,
-            slide_xml(slide, &title_ph, &body_ph),
+            slide_xml(slide, &title_ph, &body_ph, table_style.as_deref()),
         );
         pkg.add_rels(
             &format!("ppt/slides/_rels/slide{n}.xml.rels"),
@@ -639,6 +856,16 @@ pub fn from_markdown_with(
         format!("{REL_BASE}/theme"),
         "theme/theme1.xml".into(),
     ));
+    // Related whenever the part is present, not only when a style is used: a
+    // part sitting in the package that nothing points at is dead weight, and
+    // PowerPoint reads table looks through this relationship or not at all.
+    if pkg.has("ppt/tableStyles.xml") {
+        presentation_rels.push((
+            format!("rId{}", slides.len() + 3),
+            format!("{REL_BASE}/tableStyles"),
+            "tableStyles.xml".into(),
+        ));
+    }
 
     pkg.add(
         "ppt/presentation.xml",
@@ -1117,17 +1344,164 @@ mod tests {
         );
     }
 
+    // ---- Tables on slides -------------------------------------------------
+    //
+    // A table used to be flattened to one line per row joined with dashes.
+    // Every word survived and the tabulation did not, which for a table is
+    // most of the content: a reader could no longer tell which figure belonged
+    // to which column.
+
+    /// One part of a built package, as text. The other writers' test modules
+    /// each have their own; a test module is private to its file.
+    fn part(bytes: &[u8], name: &str) -> String {
+        use std::io::Read as _;
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut out = String::new();
+        zip.by_name(name)
+            .unwrap_or_else(|_| panic!("no {name} in the package"))
+            .read_to_string(&mut out)
+            .unwrap();
+        out
+    }
+
+    const FIGURES: &str =
+        "# Figures\n\n| Region | Revenue |\n| --- | --- |\n| EMEA | 128400 |\n| APAC | 96200 |";
+
     #[test]
-    fn a_table_keeps_its_content_as_lines() {
-        // Not a real table on the slide — a graphic frame is a larger piece of
-        // the format — but the words survive, which is the point.
-        let slides =
-            slides_from("# Figures\n\n| Region | Revenue |\n| --- | --- |\n| EMEA | 128400 |");
-        assert!(
-            slides[0].bullets.iter().any(|b| b.contains("EMEA")),
-            "got: {:?}",
-            slides[0].bullets
+    fn a_table_becomes_a_table_and_not_a_list_of_lines() {
+        let slides = slides_from(FIGURES);
+        let table = slides
+            .iter()
+            .find_map(|s| s.table.as_ref())
+            .expect("the table did not survive as a table");
+        assert_eq!(
+            table[0],
+            vec!["Region", "Revenue"],
+            "the header row is wrong"
         );
+        assert_eq!(table[1], vec!["EMEA", "128400"]);
+        // And nothing was left behind as prose.
+        assert!(
+            !slides
+                .iter()
+                .any(|s| s.bullets.iter().any(|b| b.contains(" — "))),
+            "the table was also flattened into bullets"
+        );
+    }
+
+    #[test]
+    fn a_heading_above_a_table_does_not_leave_an_empty_slide_behind() {
+        // The obvious shape — a heading, then a table — must be one slide.
+        // Pushing the table onto a new slide gave an empty "Figures" followed
+        // by a second "Figures" holding the figures.
+        let slides = paginate(slides_from(FIGURES));
+        assert_eq!(slides.len(), 1, "got {} slides: {slides:?}", slides.len());
+        assert!(slides[0].table.is_some());
+    }
+
+    #[test]
+    fn a_table_after_bullets_takes_its_own_slide() {
+        // Here the heading's slide is already in use, so the table cannot join
+        // it: the body is a text placeholder and the table is a graphic frame.
+        let slides = paginate(slides_from(
+            "# Figures\n\n- a note first\n\n| Region | Revenue |\n| --- | --- |\n| EMEA | 1 |",
+        ));
+        assert_eq!(slides.len(), 2, "got {slides:?}");
+        assert!(slides[0].table.is_none() && !slides[0].bullets.is_empty());
+        assert!(slides[1].table.is_some() && slides[1].bullets.is_empty());
+        assert_eq!(slides[1].title, "Figures");
+    }
+
+    #[test]
+    fn a_table_slide_keeps_the_heading_it_belongs_under() {
+        // Otherwise the figures arrive on an untitled slide, or take a title
+        // by consuming the header row.
+        let slides = slides_from(FIGURES);
+        let s = slides.iter().find(|s| s.table.is_some()).unwrap();
+        assert_eq!(s.title, "Figures");
+    }
+
+    #[test]
+    fn a_long_table_is_split_and_every_part_keeps_the_header() {
+        // A continuation without the header is a slide of unlabelled figures,
+        // which is the loss of meaning this whole change is about.
+        let mut md = String::from("# Figures\n\n| Region | Revenue |\n| --- | --- |\n");
+        for i in 0..20 {
+            md.push_str(&format!("| R{i} | {i}00 |\n"));
+        }
+        let slides = paginate(slides_from(&md));
+        let tables: Vec<&Vec<Vec<String>>> =
+            slides.iter().filter_map(|s| s.table.as_ref()).collect();
+        assert!(tables.len() > 1, "20 rows fitted on one slide");
+        for t in &tables {
+            assert_eq!(
+                t[0],
+                vec!["Region", "Revenue"],
+                "a continuation lost its header"
+            );
+            assert!(
+                t.len() - 1 <= MAX_TABLE_ROWS_PER_SLIDE,
+                "{} rows",
+                t.len() - 1
+            );
+        }
+        // Every data row is somewhere, exactly once.
+        let carried: usize = tables.iter().map(|t| t.len() - 1).sum();
+        assert_eq!(carried, 20, "rows were lost or duplicated in the split");
+    }
+
+    #[test]
+    fn a_table_slide_writes_a_graphic_frame_rather_than_a_text_box() {
+        let bytes = from_markdown(FIGURES).unwrap();
+        let slide = part(&bytes, "ppt/slides/slide1.xml");
+        assert!(
+            slide.contains("<p:graphicFrame>"),
+            "no graphic frame: {slide}"
+        );
+        assert!(
+            slide.contains(r#"uri="http://schemas.openxmlformats.org/drawingml/2006/table""#),
+            "the frame does not declare itself a table: {slide}"
+        );
+        assert!(slide.contains("<a:tbl>"), "no table in the frame: {slide}");
+        // The empty body placeholder is gone: left behind it draws "Click to
+        // add text" across a slide that has its content already.
+        assert!(
+            !slide.contains(r#"name="Content""#),
+            "an empty body placeholder was left on the table slide: {slide}"
+        );
+    }
+
+    #[test]
+    fn the_table_names_no_style_the_package_does_not_define() {
+        // The defect class that made PowerPoint offer to repair a deck before:
+        // a part naming a definition nothing in the package provides. Borders
+        // are drawn on the cells instead.
+        let bytes = from_markdown(FIGURES).unwrap();
+        let slide = part(&bytes, "ppt/slides/slide1.xml");
+        assert!(
+            !slide.contains("tableStyleId"),
+            "the table references a style this package does not carry: {slide}"
+        );
+        assert!(
+            slide.contains("<a:lnB"),
+            "cells have no borders of their own"
+        );
+    }
+
+    #[test]
+    fn every_row_has_a_cell_for_every_column() {
+        // A ragged row is not a table PowerPoint will open, and Markdown rows
+        // are ragged whenever someone omits a trailing cell.
+        let bytes =
+            from_markdown("# T\n\n| A | B | C |\n| --- | --- | --- |\n| 1 |\n| 1 | 2 | 3 |")
+                .unwrap();
+        let slide = part(&bytes, "ppt/slides/slide1.xml");
+        let cols = slide.matches("<a:gridCol").count();
+        assert_eq!(cols, 3, "grid does not have three columns: {slide}");
+        for row in slide.split("<a:tr ").skip(1) {
+            let row = &row[..row.find("</a:tr>").unwrap_or(row.len())];
+            assert_eq!(row.matches("<a:tc>").count(), cols, "ragged row: {row}");
+        }
     }
 
     #[test]

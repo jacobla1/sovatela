@@ -27,14 +27,21 @@ const GENERAL_DIGIT_LIMIT: usize = 11;
 const STYLES_XML: &str = concat!(
     r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
     r#"<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">"#,
-    r#"<fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>"#,
+    // Font 1 is the same face in bold, for the header row.
+    r#"<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font>"#,
+    r#"<font><b/><sz val="11"/><name val="Calibri"/></font></fonts>"#,
     r#"<fills count="2"><fill><patternFill patternType="none"/></fill>"#,
     r#"<fill><patternFill patternType="gray125"/></fill></fills>"#,
     r#"<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>"#,
     r#"<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>"#,
-    // Index 0 is General; index 1 is `0`, the built-in integer format.
-    r#"<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>"#,
-    r#"<xf numFmtId="1" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs>"#,
+    // Index 0 is General; index 1 is `0`, the built-in integer format. Indices
+    // 2 and 3 are those two again in bold, because a header cell that happens
+    // to hold a number still has to be bold — a year as a column heading was
+    // the case that made this four styles rather than three.
+    r#"<cellXfs count="4"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>"#,
+    r#"<xf numFmtId="1" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>"#,
+    r#"<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>"#,
+    r#"<xf numFmtId="1" fontId="1" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1"/></cellXfs>"#,
     r#"</styleSheet>"#
 );
 
@@ -174,29 +181,53 @@ fn columns(rows: &[Vec<String>]) -> String {
 pub fn from_table(src: &str) -> Result<Vec<u8>, String> {
     let rows = rows_from(src);
 
+    // The first row is the header — a Markdown table always has one, and the
+    // first line of delimited text conventionally is one. Not with a single
+    // row: there is no header without something under it, and freezing the
+    // only row would leave nothing to scroll.
+    let has_header = rows.len() > 1;
+
     let body: String = rows
         .iter()
         .enumerate()
         .map(|(r, cells)| {
             let row_number = r + 1;
+            let header = has_header && r == 0;
             let tds: String = cells
                 .iter()
                 .enumerate()
                 .map(|(c, raw)| {
                     let at = reference(c, row_number);
-                    match classify(raw) {
+                    let value = classify(raw);
+                    // One decision, used by every branch below. Written twice
+                    // it drifted immediately: the text path hard-coded the
+                    // bold index, so removing the bold from the number path
+                    // left headings half-styled and half the tests silent.
+                    //
+                    // Bold is the same two styles again, offset by two, so a
+                    // heading stays bold whether it reads as text or a number.
+                    let long = match &value {
                         Cell::Number(n) => {
-                            let digits = n.chars().filter(char::is_ascii_digit).count();
-                            let long = !n.contains('.') && digits > GENERAL_DIGIT_LIMIT;
-                            let style = if long { r#" s="1""# } else { "" };
-                            format!(r#"<c r="{at}"{style}><v>{n}</v></c>"#)
+                            !n.contains('.')
+                                && n.chars().filter(char::is_ascii_digit).count()
+                                    > GENERAL_DIGIT_LIMIT
                         }
-                        Cell::Text(t) if t.is_empty() => format!(r#"<c r="{at}"/>"#),
+                        Cell::Text(_) => false,
+                    };
+                    let index = if header { 2 } else { 0 } + u32::from(long);
+                    let style = if index == 0 {
+                        String::new()
+                    } else {
+                        format!(r#" s="{index}""#)
+                    };
+                    match value {
+                        Cell::Number(n) => format!(r#"<c r="{at}"{style}><v>{n}</v></c>"#),
+                        Cell::Text(t) if t.is_empty() => format!(r#"<c r="{at}"{style}/>"#),
                         // Inline strings rather than a shared-strings part:
                         // one fewer part to keep in step, and these documents
                         // are generated once and read, not edited at scale.
                         Cell::Text(t) => format!(
-                            r#"<c r="{at}" t="inlineStr"><is><t xml:space="preserve">{}</t></is></c>"#,
+                            r#"<c r="{at}"{style} t="inlineStr"><is><t xml:space="preserve">{}</t></is></c>"#,
                             escape::text(&t)
                         ),
                     }
@@ -206,8 +237,19 @@ pub fn from_table(src: &str) -> Result<Vec<u8>, String> {
         })
         .collect();
 
+    // Headings that stay put while the figures scroll. A sheet whose first row
+    // scrolls away is one where the tenth screen of numbers has no labels, and
+    // scrolling back to read them is the whole reason this is worth doing.
+    //
+    // `sheetViews` comes before `cols`, which comes before `sheetData`: Excel
+    // reads the worksheet in schema order and refuses one that is not.
+    let views = if has_header {
+        r#"<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft" activeCell="A2" sqref="A2"/></sheetView></sheetViews>"#
+    } else {
+        ""
+    };
     let sheet = format!(
-        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="{S}">{}<sheetData>{body}</sheetData></worksheet>"#,
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="{S}">{views}{}<sheetData>{body}</sheetData></worksheet>"#,
         columns(&rows)
     );
     let workbook = format!(
@@ -364,11 +406,133 @@ mod tests {
             !sheet.contains(r#"s="1"><v>1234.5678</v>"#),
             "a decimal was made an integer"
         );
-        // And the style it points at has to exist, or Excel repairs the file.
-        let styles = part(&bytes, "xl/styles.xml");
+        // And every style any cell points at has to exist, or Excel repairs
+        // the file. Asserted against the highest index the sheet actually
+        // uses rather than a fixed count, which is what this said before and
+        // what broke the moment a fourth style was added — a test that fails
+        // for being out of date teaches people to update it without reading
+        // what it was for.
+        assert_styles_resolve(&bytes);
+    }
+
+    // ---- The header row ---------------------------------------------------
+
+    #[test]
+    fn the_header_row_is_bold_and_the_data_is_not() {
+        let bytes =
+            from_table("| Region | Revenue |\n|---|---|\n| EMEA | 128400 |\n| APAC | 96200 |")
+                .unwrap();
+        let sheet = part(&bytes, "xl/worksheets/sheet1.xml");
+        let row = |n: &str| {
+            let at = sheet
+                .find(&format!(r#"<row r="{n}">"#))
+                .expect("no such row");
+            let rest = &sheet[at..];
+            rest[..rest.find("</row>").unwrap()].to_string()
+        };
         assert!(
-            styles.contains(r#"<cellXfs count="2""#),
-            "style 1 is not defined: {styles}"
+            row("1").contains(r#"s="2""#),
+            "the header is not bold: {}",
+            row("1")
+        );
+        assert!(
+            !row("2").contains(r#"s="2""#) && !row("2").contains(r#"s="3""#),
+            "a data row was made bold: {}",
+            row("2")
+        );
+        assert_styles_resolve(&bytes);
+    }
+
+    #[test]
+    fn a_heading_that_reads_as_a_number_is_still_bold() {
+        // A year as a column heading. Style 3 is the bold integer, and without
+        // it the heading would take the plain number style and lose its bold —
+        // the case that made this four styles rather than three.
+        let bytes = from_table("| 2025 | 2026 |\n|---|---|\n| 1 | 2 |").unwrap();
+        let sheet = part(&bytes, "xl/worksheets/sheet1.xml");
+        let header = {
+            let at = sheet.find(r#"<row r="1">"#).unwrap();
+            let rest = &sheet[at..];
+            &rest[..rest.find("</row>").unwrap()]
+        };
+        assert!(
+            header.contains(r#"s="2""#) || header.contains(r#"s="3""#),
+            "a numeric heading lost its bold: {header}"
+        );
+        assert_styles_resolve(&bytes);
+    }
+
+    #[test]
+    fn the_headings_stay_put_while_the_figures_scroll() {
+        let bytes = from_table("| Region | Revenue |\n|---|---|\n| EMEA | 1 |").unwrap();
+        let sheet = part(&bytes, "xl/worksheets/sheet1.xml");
+        assert!(
+            sheet.contains(r#"state="frozen""#) && sheet.contains(r#"ySplit="1""#),
+            "the header row scrolls away: {sheet}"
+        );
+        // Schema order, which Excel refuses a file for getting wrong.
+        let views = sheet.find("<sheetViews>").expect("no sheetViews");
+        assert!(
+            views < sheet.find("<cols>").unwrap_or(usize::MAX),
+            "views after cols"
+        );
+        assert!(
+            views < sheet.find("<sheetData>").unwrap(),
+            "views after the data"
+        );
+    }
+
+    #[test]
+    fn a_single_row_is_not_given_a_header_it_does_not_have() {
+        // Freezing the only row leaves nothing to scroll, and bolding it makes
+        // a lone line of data look like a heading.
+        let bytes = from_table("just one line").unwrap();
+        let sheet = part(&bytes, "xl/worksheets/sheet1.xml");
+        assert!(
+            !sheet.contains("frozen"),
+            "a single row was frozen: {sheet}"
+        );
+        assert!(
+            !sheet.contains(r#"s="2""#),
+            "a single row was made bold: {sheet}"
+        );
+    }
+
+    /// Every `s="N"` in the sheet names a style the styles part defines.
+    fn assert_styles_resolve(bytes: &[u8]) {
+        let sheet = part(bytes, "xl/worksheets/sheet1.xml");
+        let styles = part(bytes, "xl/styles.xml");
+        let highest = sheet
+            .match_indices(r#" s=""#)
+            .filter_map(|(at, _)| {
+                let rest = &sheet[at + r#" s=""#.len()..];
+                rest[..rest.find('"')?].parse::<u32>().ok()
+            })
+            .max();
+        let Some(highest) = highest else { return };
+        let defined: u32 = styles
+            .find(r#"<cellXfs count=""#)
+            .map(|at| &styles[at + r#"<cellXfs count=""#.len()..])
+            .and_then(|rest| rest.find('"').map(|end| rest[..end].to_string()))
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0);
+        assert!(
+            highest < defined,
+            "the sheet uses style {highest} but only {defined} are defined: {styles}"
+        );
+        // The count has to match the elements, not merely exceed the use.
+        // Counted inside `cellXfs` alone: `cellStyleXfs` holds `<xf>` elements
+        // of its own, and counting the whole part said five where four were
+        // declared.
+        let block = {
+            let at = styles.find("<cellXfs ").expect("no cellXfs");
+            let end = styles.find("</cellXfs>").expect("cellXfs is not closed");
+            &styles[at..end]
+        };
+        assert_eq!(
+            block.matches("<xf ").count() as u32,
+            defined,
+            "cellXfs count disagrees with the styles in it: {styles}"
         );
     }
 

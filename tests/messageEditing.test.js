@@ -17,14 +17,20 @@ import { render, screen, fireEvent, waitFor, within } from "@testing-library/sve
 // no answer, and it fills in a warning accordingly.
 let nextReply = "";
 let sent = 0;
+let stall = false;
+let renamedTo = "";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd, args) => {
     if (cmd === "send_chat") {
       sent += 1;
+      // `stall` holds the app in its sending state, which is the only way to
+      // see which controls survive a reply in flight.
+      if (stall) return new Promise(() => {});
       args.onEvent.onmessage({ type: "Token", data: nextReply });
       return null;
     }
+    if (cmd === "rename_conversation") return renamedTo;
     if (cmd === "save_conversation") return true;
     if (cmd === "check_connection") return "ok";
     if (cmd === "get_memory_settings")
@@ -70,6 +76,8 @@ const noteText = () =>
 beforeEach(() => {
   vi.clearAllMocks();
   sent = 0;
+  stall = false;
+  renamedTo = "";
 });
 
 describe("editing a message and sending it again", () => {
@@ -190,6 +198,103 @@ describe("editing a message and sending it again", () => {
     await fireEvent.input(editBox(), { target: { value: "   " } });
     // Otherwise the reply below is discarded to ask the model nothing.
     expect(thread().getByText("Send").disabled).toBe(true);
+  });
+});
+
+// The half of renaming that lives in the interface. Rust refuses to write a
+// derived title over a chosen one, so the file on disk was always right — and
+// `persist` put the derived title straight back into the sidebar, so the row
+// reverted the moment a reply arrived. Correct on disk and wrong on screen is
+// the worse failure of the two: it looks like the rename did not take.
+//
+// No component test could see it: History.svelte is given its rows as props,
+// and the reversion happens in Chat.svelte between a rename and the next save.
+describe("a renamed chat keeps its name when the conversation continues", () => {
+  it("does not put the first message back in the sidebar", async () => {
+    render(Chat, { props: {} });
+    await exchange("what time is the ferry", "The 09:40 sailing.");
+
+    // Rename it, the way the sidebar does.
+    const renamed = "Ferry to Aarhus";
+    renamedTo = renamed;
+    await fireEvent.click(screen.getByLabelText("Toggle chat history sidebar"));
+    const row = await waitFor(() => {
+      const el = document.querySelector(".history-open");
+      expect(el).toBeTruthy();
+      return el;
+    });
+    await fireEvent.dblClick(row);
+    const box = document.querySelector(".history-rename");
+    await fireEvent.input(box, { target: { value: renamed } });
+    await fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => expect(screen.getByTitle(renamed)).toBeTruthy());
+
+    // Now continue the conversation, which is what used to undo it.
+    nextReply = "Sundays start at 11:00.";
+    const composer = screen.getByLabelText("Message GLM-5.2");
+    await fireEvent.input(composer, { target: { value: "and on Sunday" } });
+    await fireEvent.keyDown(composer, { key: "Enter" });
+    await waitFor(() => expect(sent).toBeGreaterThan(1));
+
+    expect(
+      screen.getByTitle(renamed),
+      "the sidebar put the first message back over the chosen name",
+    ).toBeTruthy();
+  });
+});
+
+describe("copying your own message", () => {
+  const userCopy = () => screen.queryByLabelText("Copy your message");
+
+  it("offers copy on your message as well as on the reply", async () => {
+    render(Chat, { props: {} });
+    await exchange("what time is the ferry", "The 09:40 sailing.");
+    expect(userCopy()).toBeTruthy();
+    expect(screen.getByLabelText("Copy response")).toBeTruthy();
+  });
+
+  it("copies what you typed", async () => {
+    const writeText = vi.fn().mockResolvedValue();
+    Object.assign(navigator, { clipboard: { writeText } });
+    render(Chat, { props: {} });
+    await exchange("what time is the ferry", "The 09:40 sailing.");
+    await fireEvent.click(userCopy());
+    expect(writeText).toHaveBeenCalledWith("what time is the ferry");
+  });
+
+  // A prompt is shown verbatim, so copying it has to give back what is on the
+  // screen. The reply path runs text through `parseParts`, which reads a fenced
+  // block as an artifact — right for a reply that rendered one, and on a prompt
+  // it would put "[Artifact: …]" on the clipboard in place of the code someone
+  // pasted in to ask about.
+  it("gives back pasted code rather than a placeholder for it", async () => {
+    const writeText = vi.fn().mockResolvedValue();
+    Object.assign(navigator, { clipboard: { writeText } });
+    const prompt = "why does this fail?\n\n```js\nconst x = 1;\n```";
+    render(Chat, { props: {} });
+    await exchange(prompt, "Because x is never used.");
+    await fireEvent.click(userCopy());
+    const copied = writeText.mock.calls[0][0];
+    expect(copied, "the pasted code was replaced by an artifact placeholder").toContain(
+      "const x = 1;",
+    );
+    expect(copied).not.toContain("[Artifact");
+  });
+
+  // Copying is harmless mid-stream; editing is not, because it truncates the
+  // conversation a request is still writing into.
+  it("stays available while a reply is streaming, unlike edit", async () => {
+    render(Chat, { props: {} });
+    await exchange("what time is the ferry", "The 09:40 sailing.");
+    // A send that never delivers, so the app stays in the sending state.
+    stall = true;
+    const box = screen.getByLabelText("Message GLM-5.2");
+    await fireEvent.input(box, { target: { value: "and on Sunday" } });
+    await fireEvent.keyDown(box, { key: "Enter" });
+
+    await waitFor(() => expect(editButtons()).toHaveLength(0));
+    expect(screen.queryAllByLabelText("Copy your message").length).toBeGreaterThan(0);
+    stall = false;
   });
 });
 

@@ -1,6 +1,12 @@
 # Changelog
 
-## 1.8.0 — 2026-09-05
+## 1.8.1 — 2026-09-07
+
+*There is no 1.8.0. The tag was pushed and then deleted when the release was
+stopped for further work, and a tag that has been public once should not be
+made to point somewhere else — anyone who fetched in that window has it cached
+against a commit that no longer exists. The number is burned rather than
+reused; everything intended for it is below.*
 
 ### New
 - **Search your saved chats.** A field above the chat list searches what was
@@ -34,13 +40,50 @@
   does the same to that reply alone. Neither can be undone, which is why the
   count is there. Replies cannot be edited: a saved chat should not misreport
   what was said.
+- **A table in a generated slide deck is a real table.** It used to be
+  flattened to one line per row joined with dashes: every word survived and the
+  tabulation did not, so you could no longer tell which figure belonged to which
+  column. Tables now get a slide of their own, with the heading they were
+  written under, and a long one continues onto further slides with its header
+  row repeated.
 
+- **Lists in a generated Word document are real lists.** They used to be
+  indented paragraphs carrying a bullet or a number as ordinary text: they read
+  and printed correctly, and Word's list tools could not see them, so nothing
+  renumbered when you added an item. They are now numbering definitions — Tab
+  demotes, adding an item renumbers the rest. Markdown written `1.` on every
+  line, which is how most of it is written, now comes out 1, 2, 3; a list
+  continuing from earlier text keeps its own starting number; and two lists
+  with a paragraph between them each start again rather than the second
+  carrying on from the first. Your template's
+  own list definitions are kept alongside, never replaced.
+- **A generated spreadsheet's headings behave like headings.** The first row is
+  bold and frozen, so it stays on screen while you scroll the figures. A heading
+  that reads as a number, like a year, stays bold too.
+- **Scanned PDFs are read rather than refused, on macOS and Windows.** A scan
+  is a picture of a page with no text in it. It is now read on your device — no
+  upload, no service — using the recogniser built into the operating system, and
+  only after the ordinary extraction finds nothing, so an ordinary PDF is
+  unaffected. Linux has no system recogniser: there the file is refused, with a
+  message that names the reason and points at `ocrmypdf`. Copier compression
+  (CCITT fax, JBIG2) is not read on any platform, and says which compression it
+  is rather than coming back empty.
+- **Drop files onto the window to attach them.** Anywhere on the conversation,
+  not just the composer. Dragging text from another application is ignored,
+  rather than promising an attachment that never appears.
+- **A staged attachment shows what it is.** Images show a thumbnail instead of
+  only a filename — a screenshot and the wrong screenshot look the same written
+  down. Documents show how much text was extracted, which is the only way to see
+  before sending that a PDF gave up three characters rather than three thousand.
 ### Interface
 - The chat list's row controls have a 24×24 minimum target, which the
   accessibility review noted they did not. Export and delete are separated by a
   gap, and delete takes a warning colour when you reach it — deleting a chat
   already asks in a dialog naming the chat, so a mis-click destroys nothing, but
   the dialog cannot tell you which button you are about to press.
+- **Copy your own message**, not just the reply. The button sits beside *Edit*,
+  and copies the message exactly as you typed it — a code block you pasted in to
+  ask about comes back as the code, not as a note saying there was one.
 - <kbd>F2</kbd> is listed in the keyboard shortcuts sheet. Double-click is the
   familiar way to rename and no keyboard has it, so the shortcut is the half
   that makes renaming reachable at all.

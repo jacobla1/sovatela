@@ -11,11 +11,21 @@ Both dependency trees were scanned; **no GPL, LGPL, or AGPL obligations reach
 this project's code**, and there are no copyleft terms that affect how it may
 be distributed.
 
+> While 1.8.1 was being prepared, this application
+> briefly bundled two CC BY-SA 4.0 neural-network models to read scanned PDFs.
+> They were removed before release: the licence statement that exists covers
+> artifacts with different hashes from the ones that actually worked, so the
+> chain for the shipped bytes could not be established. Scanned PDFs are now
+> read by the recogniser built into macOS and Windows, which redistributes
+> nothing. No model weights ship with this application.
+
 **npm graph — 151 packages:** MIT (130), Apache-2.0 (5), ISC (4),
 Apache-2.0/MIT dual (5), BSD-2/3-Clause (4), MIT-0 (1), OFL-1.1 (1, the Inter
 font), MPL-2.0-OR-Apache-2.0 (1, DOMPurify — taken under Apache-2.0).
 
-**Cargo graph — 608 crates:** overwhelmingly `MIT OR Apache-2.0`. Notable:
+**Cargo graph — 623 crates:** overwhelmingly `MIT OR Apache-2.0`. Notable:
+- **`flatbuffers`** was the only Apache-2.0-only crate; it arrived with the
+  bundled recogniser and left with it.
 - **MPL-2.0** (5 crates: `cssparser`, `cssparser-macros`, `selectors`,
   `dtoa-short`, `option-ext`), pulled in transitively via the web-view stack.
   MPL-2.0 is *file-level* weak copyleft: because these crates are consumed

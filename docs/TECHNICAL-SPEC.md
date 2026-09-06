@@ -1,6 +1,6 @@
 # Technical and security specification
 
-Sovatela v1.8.0 · Companion to Product spec ·
+Sovatela v1.8.1 · Companion to Product spec ·
 UX spec · [Security policy](../SECURITY.md)
 
 Fuller engineering rationale is kept internally in `ENGINEERING_NOTES.md`, which
@@ -207,6 +207,33 @@ suggested *filename* still comes from the interface and is treated as a name
 rather than a path — separators and dot segments are stripped — and image bytes
 are checked against their actual signature rather than the media type the data
 URL claims.
+
+### Reading a scanned PDF
+
+A PDF with no text layer is read by optical character recognition, entirely on
+the device. It runs **inside the extraction helper** — the same separate,
+memory-capped, killable process every parser uses — which matters more here than
+elsewhere: this decodes attacker-supplied image data and then runs it through a
+neural network, and the helper is what bounds whatever either does. The PDF path
+gets a higher allocation ceiling and a longer deadline than the others, because
+two models are loaded and a page is held as decoded pixels.
+
+The scan is **extracted** from the PDF as an embedded image rather than the page
+being rendered. Rendering would mean pdfium or MuPDF — a large native dependency
+to build, sign and notarize on three platforms — and a scanned page does not
+need compositing: it is one image on an otherwise empty page. The cost is that
+CCITT fax and JBIG2 compression are not read; each is refused by name.
+
+The recogniser is the system's or there is none: Vision on macOS,
+`Windows.Media.Ocr` on Windows, and on Linux a refusal naming the reason.
+Bundling models as a floor was implemented and then removed before 1.8.1 — the
+only licence statement for them covers artifacts with different hashes from the
+ones that worked, so the chain for the shipped bytes could not be established,
+and on a clean 400 dpi contract they read `EUR 12,450` as `EUR 2.450`. No model
+weights ship with this application. Every scan says it is a scan, because the
+text goes to a model that will otherwise state a misreading as fact.
+
+No network call is made by any of this, on any platform.
 
 ### Imported conversations
 
@@ -422,12 +449,32 @@ checkout is a superset and is not part of the repository.
   (`word/comments.xml`). Headers, footers, footnotes and endnotes are read
   from 1.5.5 and appear after the body under a `[Headers, footers and notes]`
   label
-- Generated documents (1.6.0) carry less than the application that opens them
-  can express, and the gaps are worth naming: a `.docx` list is an indented
-  paragraph carrying its own marker rather than a numbering definition, so
-  Word's list tools do not see it; a table on a slide becomes one line per row,
-  because a real one needs a graphic frame; a `.xlsx` has one sheet, no
-  formulas and no formatting; and none of the three can contain images
+- Generated documents carry less than the application that opens them can
+  express, and the gaps are worth naming. A `.xlsx` has one sheet and no
+  formulas, though its columns are sized to their contents and its header row
+  is bold and frozen; and none of the three can contain images.
+- A `.docx` list is a real list from 1.8.1: items sit in definitions in
+  `word/numbering.xml`, so Word's list tools see them and adding an item
+  renumbers the rest. Each run of adjacent items is its own instance, with a
+  `w:startOverride` where the author did not start at 1 — a shared instance
+  makes a second list continue the first, and a definition with no override
+  renumbers an author's `7.` `8.` back to 1. A template's own numbering is
+  merged with rather than replaced, because its `ListParagraph` may point at
+  one of its definitions and a style pointing at a numbering id that is gone
+  makes the list quietly stop being a list. The splice keeps every
+  `w:abstractNum` ahead of every `w:num`, an order Word declines a file for
+  getting wrong.
+- A table **on a slide** is a real table from 1.8.1 —
+  a graphic frame holding `a:tbl`, on a slide of its own, continuing with a
+  repeated header. It wears the template's own table style when the template
+  carries a `ppt/tableStyles.xml` that **defines** one, and plain borders drawn
+  on the cells otherwise; the relationship from `presentation.xml` is what makes
+  PowerPoint read that part at all. Only a style the package actually contains
+  is named — a file declaring a default it does not define gets the plain
+  borders — because naming a definition the package lacks is the fault that has
+  produced repair prompts here before. Its frame sits at the built-in
+  body rectangle: a graphic frame has no placeholder to inherit geometry from,
+  so a template whose body is elsewhere will not move it
 - The Markdown a generated document understands is a **subset**: headings,
   paragraphs, bullet and numbered lists, tables, and inline bold, italic and
   code. **Links, images, block quotes, code fences, nested lists, strikethrough

@@ -142,6 +142,25 @@ if (!target) {
   process.exit(1);
 }
 
+// A target that looks like a flag is a mistyped invocation, not a directory.
+//
+// This script takes no options, so `--dry-run` was read as the place to write
+// to and a directory of that name appeared in the working tree — where the
+// next `git add -A` committed 242 duplicated files. Nothing shipped, because
+// the classification gate below refuses anything it cannot account for and
+// those files matched no rule. But the gate is the last line, not the first,
+// and a script that silently obeys a flag it does not have is what put work in
+// front of it.
+if (target.startsWith("-")) {
+  console.error(
+    `"${target}" looks like an option, and this script takes none — it takes a \n` +
+      "directory to write into. If you meant to see what would be published \n" +
+      "without touching anything, give it a scratch directory: nothing is sent \n" +
+      "anywhere until you commit and push from there yourself.",
+  );
+  process.exit(1);
+}
+
 // `--force` used to skip the clean-tree check. It is gone rather than
 // deprecated: the one guarantee this script offers is that what ships
 // corresponds to a commit somebody can look up, and a flag that waives it on

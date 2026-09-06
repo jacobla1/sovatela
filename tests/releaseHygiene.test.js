@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { trackedFiles } from "./tracked.js";
 
 const repo = resolve(import.meta.dirname, "..");
 const read = (f) => readFileSync(join(repo, f), "utf8");
@@ -374,5 +375,40 @@ describe("Windows signing is described the same way everywhere", () => {
         /not signed yet|signing,? so SmartScreen stops warning|signing is planned/i,
       );
     }
+  });
+});
+
+// A publish that refuses is the last line of defence, not the first. A stray
+// directory left in the working tree by a mistyped command was swept in by
+// `git add -A` — 242 duplicated files, which then blocked publication until
+// somebody read the refusal and worked out where they had come from.
+//
+// Nothing shipped, because the classification gate is fail-closed. This is the
+// earlier warning: a tracked path that cannot be a deliberate one.
+describe("nothing that looks like a stray build artifact is tracked", () => {
+  const tracked = [...(trackedFiles(repo) ?? [])];
+
+  it("has files to check", () => {
+    expect(tracked.length).toBeGreaterThan(100);
+  });
+
+  it("tracks no path whose directory looks like a command-line flag", () => {
+    // `--dry-run/` is the case that happened: this script takes no options, so
+    // the flag was read as the directory to write into.
+    const flagged = tracked.filter((p) => p.split("/").some((seg) => seg.startsWith("-")));
+    expect(
+      flagged,
+      "a mistyped command left a directory in the tree and it was committed",
+    ).toEqual([]);
+  });
+
+  it("tracks no second copy of its own published tree", () => {
+    // The shape of the accident rather than its name: any directory holding a
+    // nested `src-tauri/tauri.conf.json` is a copy of this repository inside
+    // itself.
+    const nested = tracked.filter(
+      (p) => p.endsWith("src-tauri/tauri.conf.json") && p !== "src-tauri/tauri.conf.json",
+    );
+    expect(nested, "the repository contains a copy of itself").toEqual([]);
   });
 });

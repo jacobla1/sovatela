@@ -7,6 +7,7 @@ use tauri::Manager;
 
 pub mod doc_sandbox;
 pub mod glm;
+pub mod ocr;
 pub mod ooxml;
 
 #[global_allocator]
@@ -7956,15 +7957,6 @@ async fn import_conversation(app: tauri::AppHandle) -> Result<Option<Conversatio
     Ok(Some(meta))
 }
 
-/// How much of one conversation file search will read.
-///
-/// A conversation is capped at MAX_CONVERSATION_BYTES (32 MB) and older ones
-/// carry base64 images inline, so "read every file" is not a bound. This is:
-/// past it, the file is searched as far as this and reported as searched, not
-/// silently skipped — a partial search that says so beats a complete one that
-/// takes a minute.
-const MAX_SEARCH_BYTES_PER_FILE: usize = 2 * 1024 * 1024;
-
 /// Most hits returned. The sidebar cannot usefully show more, and an unbounded
 /// result set is an unbounded allocation driven by whatever is on disk.
 const MAX_SEARCH_HITS: usize = 200;
@@ -8131,16 +8123,21 @@ async fn search_conversations(
         let Ok(raw) = std::fs::read_to_string(&path) else {
             continue;
         };
-        let raw = if raw.len() > MAX_SEARCH_BYTES_PER_FILE {
-            let cut = (0..=MAX_SEARCH_BYTES_PER_FILE)
-                .rev()
-                .find(|&i| raw.is_char_boundary(i))
-                .unwrap_or(0);
-            &raw[..cut]
-        } else {
-            &raw[..]
-        };
-        let Ok(conv) = serde_json::from_str::<Conversation>(raw) else {
+        // Read whole, or not at all.
+        //
+        // This used to cut the text at a byte ceiling before parsing it, on the
+        // reasoning that a huge chat should be searched as far as the ceiling
+        // rather than skipped. JSON does not work that way: a document cut in
+        // the middle is not a shorter document, it is a syntax error, so every
+        // file past the ceiling failed to parse and was skipped in silence —
+        // the exact outcome the ceiling was written to avoid, and the opposite
+        // of what its comment claimed.
+        //
+        // The ceiling is gone rather than moved. A conversation this app will
+        // open is already bounded by MAX_CONVERSATION_BYTES, images live in
+        // `assets/` rather than inline, and a search that quietly misses the
+        // longest chats is worse than one that takes longer over them.
+        let Ok(conv) = serde_json::from_str::<Conversation>(&raw) else {
             continue;
         };
 
@@ -8985,6 +8982,15 @@ mod tests {
             ## Steps\n\n\
             1. First step\n2. Second step\n3. Third step\n\n\
             - A bullet\n- Another bullet\n\n\
+            Written as all ones, which is how most Markdown is written — Word \
+            should show 1, 2, 3:\n\n\
+            1. One\n1. Two\n1. Three\n\n\
+            Continuing from earlier text, so it must start at seven and not \
+            restart at one:\n\n\
+            7. Seventh\n8. Eighth\n\n\
+            A second list after a paragraph, which must not carry on from the \
+            one above it:\n\n\
+            1. Fresh one\n2. Fresh two\n\n\
             A table written without its outer pipes:\n\n\
             Name | Role\n-----|-----\nAsha | Lead\n";
         std::fs::write(
@@ -9019,6 +9025,25 @@ mod tests {
         std::fs::write(
             out.join("overflow.pptx"),
             generate_document("pptx", &deck, None).unwrap(),
+        )
+        .expect("write fixture");
+
+        // Tables on slides. Until 1.8.1 a table was flattened to one line per
+        // row, so this fixture is new work rather than a defect that shipped —
+        // and a graphic frame is exactly the kind of addition the pattern
+        // above predicts will be structurally perfect and wrong on screen. It
+        // has to be looked at: are the cells cells, is the header shaded, do
+        // the borders draw, does the long table continue onto a second slide
+        // with its header repeated, and does anything sit off the edge.
+        let mut tables = String::from(
+            "# One table\n\n            | Region | Q1 | Q2 |\n|---|---|---|\n            | Nord | 1,200 | 1,450 |\n| Syd | 980 | 1,010 |\n\n            ## After some words\n\n            - A bullet first, so the table cannot share this slide\n\n            | Name | Role |\n|---|---|\n| Asha | Lead |\n\n            ## A ragged table\n\n            | A | B | C |\n|---|---|---|\n| only one |\n| 1 | 2 | 3 |\n\n            ## A long one\n\n| Row | Value |\n|---|---|\n",
+        );
+        for n in 1..=20 {
+            tables.push_str(&format!("| Row {n} | {n}00 |\n"));
+        }
+        std::fs::write(
+            out.join("tables.pptx"),
+            generate_document("pptx", &tables, None).unwrap(),
         )
         .expect("write fixture");
 
@@ -11588,6 +11613,44 @@ mod tests {
 
     /// The search reads what a person wrote, and skips what they attached as
     /// bytes: a base64 image is megabytes that can never match a typed word.
+    #[test]
+    fn a_long_conversation_is_searched_rather_than_skipped() {
+        // The defect this replaced. Search used to cut each file at a byte
+        // ceiling before parsing it, so that a very long chat would be
+        // "searched as far as the ceiling" — which is not a thing JSON does. A
+        // document cut in the middle is a syntax error, so every file past the
+        // ceiling failed to parse and was skipped without a word, and the
+        // comment above the ceiling claimed the opposite.
+        //
+        // Asserted through the parse, because that is where it broke: a
+        // conversation well past the old 2 MB ceiling has to come back whole,
+        // with text at the end of it findable.
+        let filler = "a wholly unremarkable sentence about nothing at all. ".repeat(60_000);
+        let json = serde_json::json!({
+            "id": "big",
+            "title": "A long one",
+            "updated_at": "2026-09-06T10:00:00Z",
+            "messages": [
+                { "role": "user", "text": filler },
+                { "role": "assistant", "text": "the needle is here at the very end" }
+            ]
+        })
+        .to_string();
+        assert!(
+            json.len() > 2 * 1024 * 1024,
+            "the fixture is not past the old ceiling: {} bytes",
+            json.len()
+        );
+
+        let conv: Conversation =
+            serde_json::from_str(&json).expect("a long conversation must still parse");
+        let text = searchable_text(&conv.messages);
+        assert!(
+            find_case_insensitive(&text, "the needle is here").is_some(),
+            "text past the old ceiling is not searchable"
+        );
+    }
+
     #[test]
     fn searchable_text_covers_messages_and_text_attachments_only() {
         let messages = serde_json::json!([

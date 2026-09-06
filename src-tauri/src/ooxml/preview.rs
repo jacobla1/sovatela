@@ -65,18 +65,41 @@ pub enum PreviewBlock {
     Para {
         spans: Vec<PreviewSpan>,
     },
-    /// Bullets and numbered items alike: the writer gives both a marker of its
-    /// own rather than a numbering definition, so the marker is content and
-    /// belongs in the preview exactly as written.
+    /// Bullets and numbered items alike.
+    ///
+    /// `marker` is what Word will draw, not what the author typed. From 1.8.1
+    /// these are real numbering definitions, so Word numbers an ordered list
+    /// itself: an author who writes `1.` three times — the ordinary Markdown
+    /// idiom — gets 1, 2, 3 in the document, and the preview has to say so or
+    /// it is describing a different file.
     Item {
         marker: String,
         style: Option<String>,
         spans: Vec<PreviewSpan>,
+        /// Which list this item belongs to, so the writer can give each its
+        /// own numbering instance. Contiguous items of the same kind share one.
+        list: ListRun,
     },
     Table {
         rows: Vec<Vec<Vec<PreviewSpan>>>,
     },
     Rule,
+}
+
+/// The list an item belongs to.
+///
+/// A list is a *run* of adjacent items, not each item on its own: Word
+/// restarts numbering per instance, so two ordered lists separated by a
+/// paragraph must be two instances or the second continues the first.
+#[derive(Serialize, Debug, PartialEq, Eq, Clone, Copy)]
+pub struct ListRun {
+    /// Index of the run in the document. The writer maps it to a `w:numId`.
+    pub run: u32,
+    pub ordered: bool,
+    /// The number the run starts at, as the author wrote it. Word is told to
+    /// start here, so a list continuing from earlier text keeps its numbers
+    /// instead of silently restarting at 1.
+    pub start: u32,
 }
 
 /// One slide of a `.pptx`, after the deck has been divided and paginated.
@@ -90,6 +113,11 @@ pub enum PreviewBlock {
 pub struct PreviewSlide {
     pub title: String,
     pub bullets: Vec<String>,
+    /// Rows, the first being the header, on a slide that holds a table. The
+    /// preview draws it as a table because the file contains one: showing it
+    /// as bullets would be describing the deck this writer used to produce.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub table: Option<Vec<Vec<String>>>,
 }
 
 /// What the interface draws, by format.
@@ -106,9 +134,64 @@ pub enum Preview {
 /// Called by the preview and by the writer, which is the point.
 pub fn docx_blocks(template: Option<&Template>, md: &str) -> Vec<PreviewBlock> {
     let defined = template.map(|t| t.styles.as_slice());
-    parse(md)
+    let blocks = parse(md);
+
+    // Which list each item belongs to, decided once for the whole document.
+    // A run ends at any block that is not an item of the same kind, and each
+    // run carries the number it starts at — so `5.` `6.` `7.` after a
+    // paragraph stays 5, 6, 7 rather than restarting.
+    let mut runs: Vec<Option<ListRun>> = Vec::with_capacity(blocks.len());
+    let mut next_run = 0u32;
+    let mut open: Option<ListRun> = None;
+    for b in &blocks {
+        let want = match b {
+            Block::Bullet(_) => Some((false, 1u32)),
+            Block::Numbered(n, _) => Some((true, *n)),
+            _ => None,
+        };
+        match want {
+            None => {
+                open = None;
+                runs.push(None);
+            }
+            Some((ordered, n)) => {
+                let current = match open {
+                    Some(r) if r.ordered == ordered => r,
+                    _ => {
+                        let r = ListRun {
+                            run: next_run,
+                            ordered,
+                            start: n,
+                        };
+                        next_run += 1;
+                        open = Some(r);
+                        r
+                    }
+                };
+                runs.push(Some(current));
+            }
+        }
+    }
+    // The number Word will print beside each item: the run's start, then one
+    // more for each item in it so far.
+    let mut seen: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+    let ordinals: Vec<u32> = runs
         .iter()
-        .map(|b| match b {
+        .map(|r| match r {
+            Some(r) => {
+                let n = seen.entry(r.run).or_insert(0);
+                let value = r.start + *n;
+                *n += 1;
+                value
+            }
+            None => 0,
+        })
+        .collect();
+
+    blocks
+        .iter()
+        .enumerate()
+        .map(|(i, b)| match b {
             Block::Heading(level, s) => PreviewBlock::Heading {
                 level: *level,
                 style: super::docx::heading_style(*level, defined),
@@ -119,11 +202,16 @@ pub fn docx_blocks(template: Option<&Template>, md: &str) -> Vec<PreviewBlock> {
                 marker: "• ".to_string(),
                 style: super::docx::list_style(defined),
                 spans: spans(s),
+                list: runs[i].expect("a bullet is always in a run"),
             },
-            Block::Numbered(n, s) => PreviewBlock::Item {
-                marker: format!("{n}. "),
+            Block::Numbered(_, s) => PreviewBlock::Item {
+                // The run's number, not the author's. Word draws its own once
+                // the item is in a numbering definition, and `1. 1. 1.` — how
+                // most Markdown is written — becomes 1, 2, 3 on the page.
+                marker: format!("{}. ", ordinals[i]),
                 style: super::docx::list_style(defined),
                 spans: spans(s),
+                list: runs[i].expect("a numbered item is always in a run"),
             },
             Block::Table(rows) => PreviewBlock::Table {
                 rows: rows
@@ -143,6 +231,7 @@ pub fn pptx_slides(md: &str) -> Vec<PreviewSlide> {
         .map(|s| PreviewSlide {
             title: s.title,
             bullets: s.bullets,
+            table: s.table,
         })
         .collect()
 }
@@ -230,9 +319,14 @@ mod tests {
                 PreviewBlock::Heading { spans, .. } | PreviewBlock::Para { spans } => {
                     lines.push(text(spans))
                 }
-                PreviewBlock::Item { marker, spans, .. } => {
-                    lines.push(format!("{marker}{}", text(spans)))
-                }
+                // The marker is deliberately left out. From 1.8.1 a list item
+                // is in a real numbering definition, so Word draws the bullet
+                // or the number itself and it is not text in the file — it
+                // cannot appear in what is read back out, and including it
+                // here would make this test fail for the one reason that is
+                // not a disagreement about words. The marker's own value is
+                // covered by `a_list_item_carries_the_marker_the_writer_will_use`.
+                PreviewBlock::Item { spans, .. } => lines.push(text(spans)),
                 PreviewBlock::Table { rows } => {
                     for row in rows {
                         lines.push(row.iter().map(|c| text(c)).collect::<Vec<_>>().join("\t"));

@@ -127,6 +127,28 @@ pub struct Template {
     /// The header and footer relationships that `section` refers to, so those
     /// references resolve in the generated document.
     pub section_rels: Vec<(String, String, String)>,
+    /// The template's own `word/numbering.xml`, verbatim, when it has one.
+    ///
+    /// The generated document's list definitions are merged into this rather
+    /// than replacing it: a template's `ListParagraph` style can carry a
+    /// `w:numPr` pointing at one of its own definitions, and dropping those
+    /// leaves the style pointing at nothing — a list that quietly stops being
+    /// a list, with nothing reporting why.
+    pub numbering: Option<String>,
+    /// The table style a generated table should use, if the template defines
+    /// one it can.
+    ///
+    /// A `.pptx` carries its table looks in `ppt/tableStyles.xml`, and a table
+    /// asks for one by GUID. Without this a generated table is drawn with this
+    /// app's own grey borders, which in a branded deck looks like the template
+    /// was not applied — the same complaint as a heading that is not the
+    /// template's heading.
+    ///
+    /// `None` unless the part actually **defines** the style, not merely names
+    /// a default. That is the same rule as [`styles`]: naming a definition the
+    /// file does not contain is not an error anything reports, it just renders
+    /// as nothing, and here it would silently drop the borders too.
+    pub table_style: Option<String>,
     /// Every `w:styleId` the template's style part defines.
     ///
     /// Naming a style a template does not define is not an error — Word
@@ -151,6 +173,8 @@ impl Template {
             slide_size: None,
             section: None,
             section_rels: Vec::new(),
+            numbering: None,
+            table_style: None,
             styles,
         }
     }
@@ -478,14 +502,91 @@ pub fn load(name: &str, bytes: &[u8]) -> Result<Template, String> {
         .map(|(_, data, _)| style_ids(&String::from_utf8_lossy(data)))
         .unwrap_or_default();
 
+    let numbering = parts
+        .iter()
+        .find(|(n, _, _)| n == "word/numbering.xml")
+        .map(|(_, data, _)| String::from_utf8_lossy(data).into_owned());
+
+    let table_style = parts
+        .iter()
+        .find(|(n, _, _)| n == "ppt/tableStyles.xml")
+        .and_then(|(_, data, _)| defined_table_style(&String::from_utf8_lossy(data)));
+
     Ok(Template {
         kind,
         parts,
         slide_size,
         section,
         section_rels,
+        numbering,
+        table_style,
         styles,
     })
+}
+
+/// The GUID of a table style the part actually defines.
+///
+/// Prefers the part's own default (`def` on `tblStyleLst`) when that style is
+/// among the definitions, and otherwise takes the first that is defined. A
+/// file carrying only `<a:tblStyleLst def="{…}"/>` with no definitions gives
+/// `None`: the GUID is real to PowerPoint, which knows the built-ins, but this
+/// package would then be naming something it does not carry — the fault that
+/// has produced repair prompts here before.
+fn defined_table_style(xml: &str) -> Option<String> {
+    let defined: Vec<String> = xml
+        .match_indices(r#"<a:tblStyle "#)
+        .filter_map(|(at, _)| {
+            let rest = &xml[at..];
+            let key = rest.find(r#"styleId=""#)? + r#"styleId=""#.len();
+            let val = &rest[key..];
+            Some(val[..val.find('"')?].to_string())
+        })
+        .filter(|id| !id.is_empty())
+        .collect();
+    let default = xml
+        .find(r#"def=""#)
+        .map(|at| &xml[at + r#"def=""#.len()..])
+        .and_then(|rest| rest.find('"').map(|end| rest[..end].to_string()));
+    match default {
+        Some(d) if defined.iter().any(|id| id.eq_ignore_ascii_case(&d)) => Some(d),
+        _ => defined.into_iter().next(),
+    }
+}
+
+#[cfg(test)]
+mod table_style_tests {
+    use super::defined_table_style;
+
+    const GUID: &str = "{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}";
+
+    #[test]
+    fn takes_the_parts_own_default_when_it_is_defined() {
+        let xml = format!(
+            r#"<a:tblStyleLst def="{GUID}"><a:tblStyle styleId="{GUID}" styleName="Medium 2"/></a:tblStyleLst>"#
+        );
+        assert_eq!(defined_table_style(&xml).as_deref(), Some(GUID));
+    }
+
+    #[test]
+    fn falls_back_to_a_style_that_is_defined_when_the_default_is_not() {
+        // A real file can name a built-in as its default and define only its
+        // own. Following the default would name something not carried here.
+        let xml = format!(
+            r#"<a:tblStyleLst def="{{DEAD-BEEF}}"><a:tblStyle styleId="{GUID}" styleName="House"/></a:tblStyleLst>"#
+        );
+        assert_eq!(defined_table_style(&xml).as_deref(), Some(GUID));
+    }
+
+    #[test]
+    fn a_default_with_no_definitions_is_not_a_style_to_name() {
+        // The common shape: PowerPoint knows this GUID, but this package would
+        // be pointing at a definition it does not carry — the fault that has
+        // produced repair prompts here before. Better the app's own borders.
+        let xml = format!(r#"<a:tblStyleLst def="{GUID}"/>"#);
+        assert_eq!(defined_table_style(&xml), None);
+        assert_eq!(defined_table_style("<a:tblStyleLst/>"), None);
+        assert_eq!(defined_table_style(""), None);
+    }
 }
 
 /// Every `w:styleId` a style part defines.
@@ -1405,6 +1506,72 @@ mod tests {
         // A part declared neither way is still refused — that is the check
         // this started as, and it is worth keeping.
         assert_eq!(declared_type(ct, "ppt/embeddings/x.bin"), None);
+    }
+
+    // ---- A generated table wearing the template's own look ----------------
+
+    #[test]
+    fn a_table_takes_the_templates_style_instead_of_this_apps_borders() {
+        const GUID: &str = "{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}";
+        let ct = content_types(&[
+            ("ppt/slideMasters/slideMaster1.xml", MASTER_CT),
+            ("ppt/slideLayouts/slideLayout1.xml", "l"),
+            (
+                "ppt/tableStyles.xml",
+                "application/vnd.openxmlformats-officedocument.presentationml.tableStyles+xml",
+            ),
+        ]);
+        let styles = format!(
+            r#"<a:tblStyleLst def="{GUID}"><a:tblStyle styleId="{GUID}" styleName="House"/></a:tblStyleLst>"#
+        );
+        let bytes = zip_of(&[
+            ("[Content_Types].xml", ct.as_bytes()),
+            ("ppt/slideMasters/slideMaster1.xml", b"<p:sldMaster/>"),
+            (
+                "ppt/slideLayouts/slideLayout1.xml",
+                br#"<p:sldLayout type="obj"><p:ph type="title"/><p:ph idx="1"/></p:sldLayout>"#,
+            ),
+            ("ppt/tableStyles.xml", styles.as_bytes()),
+        ]);
+        let t = load("house.pptx", &bytes).unwrap();
+        assert_eq!(
+            t.table_style.as_deref(),
+            Some(GUID),
+            "the style was not read"
+        );
+
+        let deck = crate::ooxml::pptx::from_markdown_with(
+            Some(&t),
+            "# Figures\n\n| Region | Q1 |\n|---|---|\n| Nord | 1 |",
+        )
+        .unwrap();
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&deck[..])).unwrap();
+        let read = |zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>, name: &str| {
+            use std::io::Read as _;
+            let mut out = String::new();
+            zip.by_name(name).unwrap().read_to_string(&mut out).unwrap();
+            out
+        };
+
+        let slide = read(&mut zip, "ppt/slides/slide1.xml");
+        assert!(
+            slide.contains(&format!("<a:tableStyleId>{GUID}</a:tableStyleId>")),
+            "the table does not ask for the template's style: {slide}"
+        );
+        // And this app's own borders are gone. An explicit line on the cell
+        // overrides the style, so leaving them would draw grey rules through a
+        // branded table — the template applied everywhere except the table.
+        assert!(
+            !slide.contains("<a:lnB"),
+            "the app's borders are still fighting the template's style: {slide}"
+        );
+
+        // The style part is inert unless the presentation points at it.
+        let rels = read(&mut zip, "ppt/_rels/presentation.xml.rels");
+        assert!(
+            rels.contains("tableStyles"),
+            "tableStyles.xml is in the package but nothing relates it: {rels}"
+        );
     }
 
     #[test]

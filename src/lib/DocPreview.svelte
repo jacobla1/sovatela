@@ -75,6 +75,23 @@
         <span class="slide-number">{i + 1}</span>
         <div class="slide-body">
           <p class="slide-title">{slide.title}</p>
+          {#if slide.table}
+            <!-- Drawn as a table because the slide holds one. Showing these
+                 rows as bullets would be previewing the deck this writer used
+                 to produce, where a table arrived as one line per row. -->
+            <div class="scroll">
+              <table>
+                <thead>
+                  <tr>{#each slide.table[0] as cell}<th>{cell}</th>{/each}</tr>
+                </thead>
+                <tbody>
+                  {#each slide.table.slice(1) as row}
+                    <tr>{#each row as cell}<td>{cell}</td>{/each}</tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          {/if}
           {#each slide.bullets as bullet}
             <p class="item"><span class="marker">•</span>{bullet}</p>
           {/each}

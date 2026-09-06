@@ -1,6 +1,6 @@
 [package]
 name = "scale"
-version = "1.8.0"
+version = "1.8.1"
 description = "BYO-key desktop chat client for GLM-5.2 on Scaleway"
 authors = ["Jacob Bergmann Larsen"]
 license = "MIT"
@@ -41,6 +41,9 @@ html2text = "0.13"
 # Safe arithmetic evaluator for the agent's calculate tool (no I/O, no shell).
 # meval is f64-only, so no silent integer-division truncation (10/3 = 3.33…).
 meval = "0.2"
+jpeg-decoder = { version = "0.3.2", default-features = false }
+
+lopdf = { version = "0.42.0", default-features = false }
 
 # O_NOFOLLOW for workspace file operations, so a path validated as inside the
 # chosen folder cannot be swapped for a symlink before it is opened. Already in
@@ -62,3 +65,26 @@ flate2 = "1"
 wiremock = "0.6"
 # The `test` feature provides mock_builder()/mock App for a real AppHandle.
 tauri = { version = "2", features = ["test"] }
+
+# Text recognition uses the operating system's own engine, or there is none.
+# Models were bundled for a while so Linux had a floor; they were removed in
+# 1.8.1 because the licence for the artifacts that worked could not be
+# established, and because what they produced — "EUR 2.450" for "EUR 12,450" on
+# a clean scan — was not worth the doubt.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.4"
+objc2-vision = "0.3.2"
+objc2-foundation = "0.3.2"
+objc2-core-graphics = "0.3.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62.2", features = [
+    # RoInitialize: the helper is this binary re-executed from main, so nothing
+    # has started the Windows Runtime on its thread.
+    "Win32_System_WinRT",
+    "Media_Ocr",
+    "Graphics_Imaging",
+    "Security_Cryptography",
+    "Storage_Streams",
+    "Foundation",
+] }

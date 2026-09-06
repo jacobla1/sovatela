@@ -1391,6 +1391,58 @@ button.ghost:hover {
   opacity: 1;
 }
 
+/* Dropping files onto the window.
+
+   Covers the conversation rather than the composer alone: someone holding a
+   file is looking at the chat, and a strip at the bottom is a small target to
+   hit one-handed. `pointer-events: none` so the veil cannot swallow the drop
+   it is advertising — the handlers are on the view beneath it. */
+.drop-veil {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--bg) 78%, transparent);
+}
+
+.drop-card {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-5);
+  font-size: var(--fs-md);
+  color: var(--text);
+  background: var(--bg);
+  border: 2px dashed var(--accent);
+  border-radius: var(--r-md);
+}
+
+.drop-icon {
+  font-size: 1.4em;
+  line-height: 1;
+}
+
+/* The veil is positioned against the view, so the view has to be a container.
+   Without this it anchors to the page and covers the sidebar too. */
+.chat {
+  position: relative;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .drop-card {
+    animation: drop-in var(--dur) var(--ease);
+  }
+  @keyframes drop-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+  }
+}
+
 /* Editing a message in place.
 
    A user turn is normally a card sized to its own text and right-aligned at up
@@ -2232,6 +2284,39 @@ button.mini.primary:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The thumbnail. Square and cropped rather than letterboxed: the chip is a
+   row of equal things, and a tall screenshot that keeps its aspect makes the
+   whole strip as tall as itself. */
+.att-thumb {
+  width: 28px;
+  height: 28px;
+  object-fit: cover;
+  border-radius: var(--r-xs);
+  border: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+/* The name gives up its width first. It is the part that can be truncated
+   without losing anything — the thumbnail identifies the file, and the size is
+   four characters that answer "was it read". */
+.att-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.att-size {
+  flex: 0 0 auto;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+/* A chip with a picture in it is a row, not a line of text. */
+.att-chip {
+  max-width: 260px;
 }
 
 .att-chip.att-error {

@@ -67,9 +67,15 @@ run() {
 
 # A repair prompt is a failure even though it is not an error: Office reports
 # it by asking the person sitting there, so watch the screen as well as this.
-run "Word — two adjacent tables, and a numbered list" \
+run "Word — two adjacent tables, and four lists" \
     word.applescript \
-    "tables=3 — a merge reports fewer; and the list reads 1. 2. 3. not — — —" \
+    "tables=3 — a merge reports fewer. Then read the lists on screen, which is \
+the only place they can be read: from 1.8.0 they are real numbering \
+definitions, so Word draws the markers and nothing here can see them. The one \
+written '1.' three times must show 1. 2. 3.; the one written '7.' '8.' must \
+start at seven; and the list after the paragraph must start again at one \
+rather than continuing. Click in any of them and Word's list buttons must \
+light up" \
     tables-and-lists.docx
 
 run "Word — a template with revision marks left on" \
@@ -80,8 +86,21 @@ made a file Word refused outright, while every check here passed it" \
 
 run "Excel — a reference longer than a double can hold" \
     excel.applescript \
-    "A2 = 9007199254740993 exactly, every digit; A3 = 4915123456789" \
+    "A2 = 9007199254740993 exactly, every digit; A3 = 4915123456789. On screen: \
+row 1 is bold and stays put when you scroll, new in 1.8.0" \
     precision.xlsx A2 A3
+
+# New in 1.8.0, and the reason a graphic frame is worth opening rather than
+# asserting: a slide layout naming a type the schema does not define passed
+# every check in this repo and still made PowerPoint offer to repair the deck.
+run "PowerPoint — tables on slides" \
+    powerpoint.applescript \
+    "slides=7 — one table under its own heading, one after bullets, a ragged \
+table padded to three columns, and a 20-row table split across three slides. \
+No repair prompt. On screen: click into a cell and it selects as a cell, not a \
+line of text; the header row is shaded; the borders draw; slides 6 and 7 \
+repeat the header; nothing runs off the right edge" \
+    tables.pptx
 
 run "PowerPoint — content that has to be split across slides" \
     powerpoint.applescript \

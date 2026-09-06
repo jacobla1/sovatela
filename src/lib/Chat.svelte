@@ -413,9 +413,17 @@
       });
       // Update the sidebar entry in place rather than re-reading every file.
       if (saved) {
+        // A chat the user named keeps that name. Rust already refuses to write
+        // the derived title over a chosen one, so the file on disk was right —
+        // but this line put the derived title straight back into the sidebar,
+        // and the row reverted the moment a reply arrived. Correct on disk and
+        // wrong on screen is the worse half of the two: it looks like the
+        // rename failed.
+        const existing = conversations.find((c) => c.id === cid);
         upsertConversationMeta({
+          ...existing,
           id: cid,
-          title,
+          title: existing?.title_custom ? existing.title : title,
           updated_at: updatedAt,
           project_id: pid,
         });
@@ -655,6 +663,71 @@
       return;
     }
     pending.push({ kind: "text", name, content: pasted });
+  }
+
+  // ----- Dropping files onto the window -----
+  //
+  // The webview handles the drop itself: `dragDropEnabled` is off in
+  // `tauri.conf.json`, so this is an ordinary HTML drop and what arrives is
+  // `File` objects — the same thing the file picker produces. Tauri's own
+  // drag-drop would hand over file *paths* instead, and reading one would need
+  // a command that opens an arbitrary path. That is a privilege the interface
+  // does not have, and dropping a file is not a good reason to grant it.
+  //
+  // A counter rather than a flag: dragging across a child element fires
+  // `dragleave` on the parent, so a boolean flickers the overlay off while the
+  // pointer is still inside the window.
+  let dragDepth = $state(0);
+  const dragging = $derived(dragDepth > 0);
+
+  // Text dragged from another application is not an attachment, and lighting
+  // the whole window up for it promises something that will not happen.
+  const carriesFiles = (e) => Array.from(e.dataTransfer?.types || []).includes("Files");
+
+  function onDragEnter(e) {
+    if (!carriesFiles(e)) return;
+    e.preventDefault();
+    dragDepth += 1;
+  }
+
+  function onDragOver(e) {
+    // Without this the browser refuses the drop and shows the "no entry"
+    // cursor — the default is not to accept.
+    if (carriesFiles(e)) e.preventDefault();
+  }
+
+  function onDragLeave(e) {
+    if (!carriesFiles(e)) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+  }
+
+  async function onDrop(e) {
+    if (!carriesFiles(e)) return;
+    e.preventDefault();
+    dragDepth = 0;
+    if (imageMode) {
+      // The image toggle sends attachments to the picture generator as
+      // references. Dropping a document there would be read as one.
+      const only = Array.from(e.dataTransfer.files).filter((f) =>
+        f.type.startsWith("image/"),
+      );
+      await onFiles(only);
+      if (only.length !== e.dataTransfer.files.length) {
+        announce("Only images can be added while making a picture");
+      }
+      return;
+    }
+    await onFiles(e.dataTransfer.files);
+  }
+
+  // What a document actually gave up, in words a person reads at a glance.
+  //
+  // Deliberately not bytes: the file's size says nothing about whether it could
+  // be read, and a 4 MB PDF that extracted one line is the case worth catching.
+  function extractedSize(content) {
+    const chars = (content || "").length;
+    if (chars < 1000) return `${chars} characters`;
+    return `${Math.round(chars / 1000)}k characters`;
   }
 
   async function onFiles(fileList) {
@@ -1083,6 +1156,15 @@
   // the chat, so it shouldn't appear in the clipboard either. The artifact
   // panel has its own Copy button for the code.
   function messageCopyText(m) {
+    // Your own message is shown exactly as typed — no markdown rendering, line
+    // breaks kept — so copying it hands back what is on the screen.
+    //
+    // The parsing below must not run on it. `parseParts` reads a fenced block
+    // as an artifact, which is right for a reply that rendered one and wrong
+    // for a prompt that merely contains fences: pasting code into a question
+    // and then copying it back would return "[Artifact: …]" instead of the
+    // code, losing the thing you were copying.
+    if (m.role === "user") return (m.text || "").trim();
     return parseParts(m.text || "")
       .map((p) => (p.type === "artifact" ? `[Artifact: ${titleFor(p)}]` : p.content.trim()))
       .filter(Boolean)
@@ -1230,7 +1312,11 @@
     const stored = await invoke("rename_conversation", { id, title });
     const meta = conversations.find((c) => c.id === id);
     if (meta) {
-      upsertConversationMeta({ ...meta, title: stored });
+      // `title_custom` too, and not only for tidiness: `persist` reads it to
+      // decide whether it may replace the title, and the copy in memory is
+      // what it reads. Set on disk but not here, the next reply would put the
+      // derived title back on screen.
+      upsertConversationMeta({ ...meta, title: stored, title_custom: true });
     }
     announce(`Chat renamed to ${stored}`);
     return stored;
@@ -1485,7 +1571,25 @@
 {/if}
 <!-- The one main landmark in this view. History is navigation beside it,
      and the artifact panel is complementary to it. -->
-<main class="chat">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<main
+  class="chat"
+  ondragenter={onDragEnter}
+  ondragover={onDragOver}
+  ondragleave={onDragLeave}
+  ondrop={onDrop}
+>
+  <!-- The whole view is the target, not the composer alone: someone dragging a
+       file is looking at the conversation, and a strip at the bottom is a small
+       thing to hit while holding a file. -->
+  {#if dragging}
+    <div class="drop-veil" aria-hidden="true">
+      <div class="drop-card">
+        <span class="drop-icon">⇣</span>
+        {imageMode ? "Drop images to draw from" : "Drop files to attach"}
+      </div>
+    </div>
+  {/if}
   <header>
     <div class="header-left">
       <button
@@ -1626,6 +1730,26 @@
         </div>
       </div>
     {/if}
+<!-- One copy button, both roles. `label` differs because "Copy response" on
+     your own message would be describing the wrong thing; the icon and the
+     confirmation are the same because the action is. -->
+{#snippet copyButton(m, mi, label)}
+  <button
+    class="msg-action"
+    title={label}
+    aria-label={label}
+    onclick={() => copyMessage(m, mi)}
+  >
+    {#if copiedIndex === mi}
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+      Copied
+    {:else}
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+      Copy
+    {/if}
+  </button>
+{/snippet}
+
     {#each messages as m, mi}
       <!-- `editing` widens the turn. A user message is normally a card sized to
            its own text and right-aligned, which is the wrong shape to rewrite a
@@ -1769,17 +1893,23 @@
             </div>
           {/if}
         </div>
-        {#if m.role === "user" && m.text && editingIndex !== mi && !sending}
+        {#if m.role === "user" && m.text && editingIndex !== mi}
           <div class="msg-actions">
-            <button
-              class="msg-action"
-              title="Edit and send again"
-              aria-label="Edit this message and send it again"
-              onclick={() => startEdit(mi)}
-            >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
-              Edit
-            </button>
+            <!-- Copying stays available while a reply streams; editing does
+                 not, because editing truncates the conversation and there is a
+                 request writing into it. -->
+            {@render copyButton(m, mi, "Copy your message")}
+            {#if !sending}
+              <button
+                class="msg-action"
+                title="Edit and send again"
+                aria-label="Edit this message and send it again"
+                onclick={() => startEdit(mi)}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                Edit
+              </button>
+            {/if}
           </div>
         {/if}
         {#if m.role === "assistant" && m.text && !(sending && mi === messages.length - 1)}
@@ -1797,20 +1927,7 @@
                 Try again
               </button>
             {/if}
-            <button
-              class="msg-action"
-              title="Copy response"
-              aria-label="Copy response"
-              onclick={() => copyMessage(m, mi)}
-            >
-              {#if copiedIndex === mi}
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
-                Copied
-              {:else}
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-                Copy
-              {/if}
-            </button>
+            {@render copyButton(m, mi, "Copy response")}
           </div>
         {/if}
         </div>
@@ -1824,9 +1941,25 @@
       <div class="pending">
         {#each pending as a, i}
           <span class="att-chip {a.kind === 'error' ? 'att-error' : ''}">
-            {#if a.kind === "image"}🖼️{:else if a.kind === "text"}📄{:else}⚠️{/if}
-            {a.name}
-            <button class="att-x" onclick={() => removePending(i)} aria-label="Remove">×</button>
+            {#if a.kind === "image"}
+              <!-- The picture itself. A filename is not a preview: a screenshot
+                   and the wrong screenshot have the same shape of name, and the
+                   moment to notice is before sending. -->
+              <img class="att-thumb" src={a.dataUrl} alt="" />
+            {:else if a.kind === "text"}📄{:else}⚠️{/if}
+            <span class="att-name" title={a.name}>{a.name}</span>
+            {#if a.kind === "text"}
+              <!-- How much was read out of it. A PDF that yields three
+                   characters looks exactly like one that yielded three thousand
+                   until the reply is wrong, and this is the only place the
+                   difference is visible before sending. -->
+              <span class="att-size">{extractedSize(a.content)}</span>
+            {/if}
+            <button
+              class="att-x"
+              onclick={() => removePending(i)}
+              aria-label={`Remove ${a.name}`}
+            >×</button>
           </span>
         {/each}
       </div>

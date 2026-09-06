@@ -23,6 +23,28 @@ fn to_spans(spans: &[PreviewSpan]) -> Vec<Span> {
 const MAIN: &str =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml";
 const STYLES: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml";
+const NUMBERING: &str =
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml";
+
+/// The two abstract list definitions this writer adds: a bullet and a decimal.
+///
+/// Ids are chosen at build time to sit above anything the template already
+/// defines, so these are formatted rather than constant.
+fn abstract_definitions(bullet_id: u32, decimal_id: u32) -> String {
+    let level = |fmt: &str, text: &str| {
+        format!(
+            r#"<w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="{fmt}"/>
+            <w:lvlText w:val="{text}"/><w:lvlJc w:val="left"/>
+            <w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl>"#
+        )
+    };
+    format!(
+        r#"<w:abstractNum w:abstractNumId="{bullet_id}"><w:multiLevelType w:val="hybridMultilevel"/>{}</w:abstractNum>
+        <w:abstractNum w:abstractNumId="{decimal_id}"><w:multiLevelType w:val="hybridMultilevel"/>{}</w:abstractNum>"#,
+        level("bullet", "\u{2022}"),
+        level("decimal", "%1."),
+    )
+}
 /// The namespaces a generated document declares on its root.
 ///
 /// `xmlns:r` is not optional decoration. A template's section properties are
@@ -97,6 +119,94 @@ pub(super) fn heading_style(level: u8, defined: Option<&[String]>) -> Option<Str
         .find(|id| defined.iter().any(|d| d == id))
 }
 
+/// Every value of an attribute, as numbers, wherever it appears.
+fn attr_values(xml: &str, attr: &str) -> Vec<u32> {
+    let needle = format!(r#"{attr}=""#);
+    xml.match_indices(&needle)
+        .filter_map(|(at, _)| {
+            let rest = &xml[at + needle.len()..];
+            rest[..rest.find('"')?].parse::<u32>().ok()
+        })
+        .collect()
+}
+
+/// Build `word/numbering.xml`, keeping whatever the template already defines.
+///
+/// Replacing the template's part outright would be simpler and wrong: a
+/// template's own `ListParagraph` style can carry a `w:numPr` pointing at one
+/// of its definitions, and a style pointing at a numbering id that no longer
+/// exists is the same class of fault as naming a style a template does not
+/// define — nothing reports it, and the list simply stops being a list.
+///
+/// So ours are added alongside, with ids above anything already in use. The
+/// order matters: `w:numbering` wants every `w:abstractNum` before every
+/// `w:num`, and a document that puts them the other way round is one Word
+/// declines to open.
+///
+/// Returns the part and the `w:numId` each run should use.
+fn numbering_part(template: Option<&str>, runs: &[super::preview::ListRun]) -> (String, Vec<u32>) {
+    let existing = template.unwrap_or("");
+    let next = |values: Vec<u32>| values.into_iter().max().map(|m| m + 1).unwrap_or(1);
+    let bullet_abstract = next(attr_values(existing, "w:abstractNumId"));
+    let decimal_abstract = bullet_abstract + 1;
+    let first_num_id = next(attr_values(existing, "w:numId"));
+
+    let mut instances = String::new();
+    let mut ids = Vec::with_capacity(runs.len());
+    for (offset, run) in runs.iter().enumerate() {
+        let num_id = first_num_id + offset as u32;
+        // One instance per run. Sharing one across two ordered lists makes the
+        // second continue the first's numbering.
+        let abstract_id = if run.ordered {
+            decimal_abstract
+        } else {
+            bullet_abstract
+        };
+        // Every ordered run states where it starts — including the ones that
+        // start at 1, which is not redundant and was the defect.
+        //
+        // Separate `w:num` instances sharing one `w:abstractNum` do not restart
+        // in Word: they carry on from each other. Writing the override only
+        // when the author's number was not 1 meant the first list numbered
+        // 1, 2, 3 and the next one continued at 4, 5, 6 — while a unit test
+        // asserting the two lists had *different* ids passed, because they did.
+        // Found by opening the document in Word, which is the only place the
+        // markers exist at all now that Word draws them.
+        let start = if run.ordered {
+            format!(
+                r#"<w:lvlOverride w:ilvl="0"><w:startOverride w:val="{}"/></w:lvlOverride>"#,
+                run.start
+            )
+        } else {
+            String::new()
+        };
+        instances.push_str(&format!(
+            r#"<w:num w:numId="{num_id}"><w:abstractNumId w:val="{abstract_id}"/>{start}</w:num>"#
+        ));
+        ids.push(num_id);
+    }
+
+    let ours = abstract_definitions(bullet_abstract, decimal_abstract);
+    let part = match template {
+        // Splice into the template's own part: our definitions after its last
+        // abstract one, our instances at the end.
+        Some(t) if t.contains("</w:numbering>") => {
+            let at = t
+                .rfind("</w:abstractNum>")
+                .map(|i| i + "</w:abstractNum>".len())
+                .or_else(|| t.find("<w:num "))
+                .unwrap_or_else(|| t.rfind("</w:numbering>").expect("checked above"));
+            let (head, tail) = t.split_at(at);
+            let tail = tail.replacen("</w:numbering>", &format!("{instances}</w:numbering>"), 1);
+            format!("{head}{ours}{tail}")
+        }
+        _ => format!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:numbering {W}>{ours}{instances}</w:numbering>"#
+        ),
+    };
+    (part, ids)
+}
+
 /// The style for a list item, or none if the template has nothing suitable.
 pub(super) fn list_style(defined: Option<&[String]>) -> Option<String> {
     let Some(defined) = defined else {
@@ -133,6 +243,21 @@ fn runs(spans: &[Span]) -> String {
             )
         })
         .collect()
+}
+
+/// A list item: a paragraph that belongs to a numbering instance.
+///
+/// The indent comes from the numbering definition rather than from the style,
+/// so this is correct even for a template that defines no list style at all.
+fn list_paragraph(style: Option<&str>, num_id: u32, spans: &[Span]) -> String {
+    let pstyle = match style {
+        Some(s) => format!(r#"<w:pStyle w:val="{}"/>"#, escape::attr(s)),
+        None => String::new(),
+    };
+    format!(
+        r#"<w:p><w:pPr>{pstyle}<w:numPr><w:ilvl w:val="0"/><w:numId w:val="{num_id}"/></w:numPr></w:pPr>{}</w:p>"#,
+        runs(spans)
+    )
 }
 
 fn paragraph(style: Option<&str>, spans: &[Span]) -> String {
@@ -255,7 +380,33 @@ pub fn from_markdown_with(
     // they are decided once, in `preview::docx_blocks`, and both read the
     // answer. A preview that disagrees with the file is not a bug that can be
     // introduced by editing this function.
-    let body: String = super::preview::docx_blocks(template, md)
+    let blocks = super::preview::docx_blocks(template, md);
+
+    // One numbering instance per list, decided before the body is written so
+    // each item can name the id it belongs to.
+    let runs: Vec<super::preview::ListRun> = {
+        let mut seen = Vec::new();
+        for b in &blocks {
+            if let PreviewBlock::Item { list, .. } = b {
+                if !seen
+                    .iter()
+                    .any(|r: &super::preview::ListRun| r.run == list.run)
+                {
+                    seen.push(*list);
+                }
+            }
+        }
+        seen
+    };
+    let template_numbering = template.and_then(|t| t.numbering.clone());
+    let (numbering_xml, num_ids) = numbering_part(template_numbering.as_deref(), &runs);
+    let num_id_for = |list: &super::preview::ListRun| {
+        runs.iter()
+            .position(|r| r.run == list.run)
+            .and_then(|i| num_ids.get(i).copied())
+    };
+
+    let body: String = blocks
         .iter()
         .map(|b| match b {
             PreviewBlock::Heading { style, spans, .. } => {
@@ -266,15 +417,24 @@ pub fn from_markdown_with(
                 marker,
                 style,
                 spans,
+                list,
             } => {
-                // Rendered as an indented paragraph carrying its own marker
-                // rather than a real numbering definition. A `numbering.xml`
-                // is a larger piece of the format, and a list that reads
-                // correctly and is not machine-numbered is a smaller lie than
-                // a document that will not open. Recorded as a limitation.
-                let mut with_marker = vec![Span::Text(marker.clone())];
-                with_marker.extend(to_spans(spans));
-                paragraph(style.as_deref(), &with_marker)
+                // A real numbering definition from 1.8.1. It used to be an
+                // indented paragraph carrying the marker as text: it read and
+                // printed correctly, and Word's list tools could not see it,
+                // so nothing renumbered and nothing demoted.
+                //
+                // If no id was allocated — which nothing here can currently
+                // cause — the marker goes back to being text rather than the
+                // item losing it altogether.
+                match num_id_for(list) {
+                    Some(id) => list_paragraph(style.as_deref(), id, &to_spans(spans)),
+                    None => {
+                        let mut with_marker = vec![Span::Text(marker.clone())];
+                        with_marker.extend(to_spans(spans));
+                        paragraph(style.as_deref(), &with_marker)
+                    }
+                }
             }
             // The empty paragraph is not decoration. WordprocessingML merges
             // adjacent tables, so two Markdown tables in a row became one
@@ -350,6 +510,16 @@ pub fn from_markdown_with(
     if !pkg.has("word/styles.xml") {
         pkg.add("word/styles.xml", STYLES, default_styles());
     }
+    // After `t.seed`, so this replaces the template's part with the merged one
+    // rather than being replaced by it. The relationship is what makes Word
+    // read it: without it the definitions are inert and every item loses its
+    // marker, which is worse than the indented paragraphs this replaces.
+    pkg.add("word/numbering.xml", NUMBERING, numbering_xml);
+    rels.push((
+        "rIdNumbering".to_string(),
+        format!("{REL_BASE}/numbering"),
+        "numbering.xml".to_string(),
+    ));
 
     pkg.add("word/document.xml", MAIN, document);
     let borrowed: Vec<(&str, &str, &str)> = rels
@@ -556,29 +726,208 @@ mod tests {
         );
     }
 
+    // ---- Real lists -------------------------------------------------------
+    //
+    // A list item used to be an indented paragraph carrying its marker as
+    // text. It read and printed correctly, and Word's list tools could not see
+    // it: nothing renumbered, nothing demoted, and adding an item between two
+    // others left the numbers as they were. From 1.8.1 items are in a real
+    // numbering definition, so the marker is no longer text in the file — it
+    // is drawn by Word, and these tests read the definitions rather than the
+    // words.
+
     #[test]
-    fn a_numbered_list_keeps_its_numbers() {
-        // The marker was a dash for both kinds of list, so "1. Step one" came
-        // out as "— Step one". For an ordered list the ordinal is content.
-        let text = read_back(&from_markdown("1. Step one\n2. Step two\n3. Step three").unwrap());
-        assert!(text.contains("1. Step one"), "got: {text:?}");
-        assert!(text.contains("2. Step two"), "got: {text:?}");
-        assert!(!text.contains("— Step"), "still using a dash: {text:?}");
+    fn a_list_item_belongs_to_a_numbering_definition() {
+        let bytes = from_markdown("- First\n- Second").unwrap();
+        let document = part(&bytes, "word/document.xml");
+        assert!(
+            document.contains("<w:numPr>"),
+            "the items are not in a list: {document}"
+        );
+        // And the marker is no longer text: leaving it there would draw it
+        // beside the one Word now supplies.
+        assert!(
+            !document.contains("<w:t>• "),
+            "the marker is still written as text as well: {document}"
+        );
+        let numbering = part(&bytes, "word/numbering.xml");
+        assert!(
+            numbering.contains(r#"<w:numFmt w:val="bullet"/>"#),
+            "no bullet definition: {numbering}"
+        );
+        // Word reads the definitions through this relationship or not at all,
+        // and without it every item loses its marker completely — worse than
+        // the indented paragraphs this replaced.
+        let rels = part(&bytes, "word/_rels/document.xml.rels");
+        assert!(
+            rels.contains("numbering.xml"),
+            "nothing relates the numbering part: {rels}"
+        );
     }
 
     #[test]
-    fn a_bullet_list_still_uses_a_bullet() {
-        let text = read_back(&from_markdown("- First\n- Second").unwrap());
-        assert!(text.contains("• First"), "got: {text:?}");
+    fn a_numbered_list_is_numbered_by_word_rather_than_by_us() {
+        let bytes = from_markdown("1. Step one\n2. Step two\n3. Step three").unwrap();
+        let numbering = part(&bytes, "word/numbering.xml");
+        assert!(
+            numbering.contains(r#"<w:numFmt w:val="decimal"/>"#),
+            "no decimal definition: {numbering}"
+        );
+        assert!(
+            numbering.contains(r#"<w:lvlText w:val="%1."/>"#),
+            "the number is not the level's text: {numbering}"
+        );
+        let document = part(&bytes, "word/document.xml");
+        assert!(!document.contains("<w:t>1. "), "still literal: {document}");
     }
 
     #[test]
     fn an_ordinal_that_does_not_start_at_one_is_kept_as_written() {
         // A list continuing from earlier text is the author's numbering, not
-        // ours to renumber.
-        let text = read_back(&from_markdown("7. Seventh\n8. Eighth").unwrap());
-        assert!(text.contains("7. Seventh"), "got: {text:?}");
-        assert!(text.contains("8. Eighth"), "got: {text:?}");
+        // ours to renumber — and a real definition renumbers from 1 unless it
+        // is told otherwise, which is the trap in doing lists properly.
+        let bytes = from_markdown("7. Seventh\n8. Eighth").unwrap();
+        let numbering = part(&bytes, "word/numbering.xml");
+        assert!(
+            numbering.contains(r#"<w:startOverride w:val="7"/>"#),
+            "the list will restart at 1: {numbering}"
+        );
+        // The preview has to say the same, or it shows a document that is not
+        // the one being written.
+        let blocks = super::super::preview::docx_blocks(None, "7. Seventh\n8. Eighth");
+        let markers: Vec<String> = blocks
+            .iter()
+            .filter_map(|b| match b {
+                PreviewBlock::Item { marker, .. } => Some(marker.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(markers, vec!["7. ", "8. "], "the preview disagrees");
+    }
+
+    #[test]
+    fn markdown_written_as_all_ones_comes_out_counted() {
+        // `1.` on every line is how most Markdown is written, and it used to
+        // produce a document reading "1. 1. 1." because the marker was text.
+        let blocks = super::super::preview::docx_blocks(None, "1. one\n1. two\n1. three");
+        let markers: Vec<String> = blocks
+            .iter()
+            .filter_map(|b| match b {
+                PreviewBlock::Item { marker, .. } => Some(marker.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(markers, vec!["1. ", "2. ", "3. "]);
+    }
+
+    #[test]
+    fn a_templates_own_numbering_survives_ours_being_added() {
+        // The template's `ListParagraph` can point at one of its own
+        // definitions. Replacing the part leaves that style pointing at
+        // nothing, and the list quietly stops being a list — nothing reports
+        // it, which is the same shape as naming a style a template lacks.
+        let theirs = concat!(
+            r#"<?xml version="1.0"?><w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">"#,
+            r#"<w:abstractNum w:abstractNumId="4"><w:lvl w:ilvl="0"><w:numFmt w:val="lowerRoman"/></w:lvl></w:abstractNum>"#,
+            r#"<w:num w:numId="9"><w:abstractNumId w:val="4"/></w:num>"#,
+            r#"</w:numbering>"#
+        );
+        let runs = [super::super::preview::ListRun {
+            run: 0,
+            ordered: true,
+            start: 1,
+        }];
+        let (part, ids) = numbering_part(Some(theirs), &runs);
+
+        // Theirs is still there, untouched.
+        assert!(
+            part.contains(r#"w:abstractNumId="4""#) && part.contains(r#"w:numId="9""#),
+            "the template's definitions were lost: {part}"
+        );
+        assert!(part.contains("lowerRoman"), "their format was lost: {part}");
+        // Ours sits above their ids rather than colliding with them.
+        assert_eq!(ids, vec![10], "ours reused an id the template holds");
+        assert!(part.contains(r#"w:abstractNumId="5""#), "{part}");
+        // And the schema's order is kept: Word declines a file that puts a
+        // `w:num` before a `w:abstractNum`.
+        let last_abstract = part
+            .rfind("</w:abstractNum>")
+            .expect("no abstract definitions");
+        let first_num = part.find("<w:num ").expect("no instances");
+        assert!(
+            last_abstract < first_num,
+            "an abstract definition follows an instance: {part}"
+        );
+    }
+
+    #[test]
+    fn a_document_with_no_lists_still_writes_a_valid_numbering_part() {
+        // The part is added unconditionally, so it has to be well formed with
+        // no instances in it at all.
+        let bytes = from_markdown("# Just a heading\n\nAnd a paragraph.").unwrap();
+        let numbering = part(&bytes, "word/numbering.xml");
+        assert!(numbering.contains("<w:numbering"), "{numbering}");
+        assert!(
+            !numbering.contains("<w:num "),
+            "instances with no lists: {numbering}"
+        );
+    }
+
+    #[test]
+    fn every_ordered_list_states_where_it_starts() {
+        // The defect this replaced a weaker test for. Two `w:num` instances
+        // sharing one `w:abstractNum` continue each other in Word unless each
+        // says where it begins — so a document with three ordered lists
+        // rendered 1,2,3 then 4,5,6 then 9,10, and the test below passed the
+        // whole time because the ids really were different.
+        //
+        // Only Word could show it. The markers are not in the file any more.
+        let bytes = from_markdown(
+            "1. one\n2. two\n\nA paragraph.\n\n1. one again\n2. two again\n\nAnother.\n\n7. seventh\n8. eighth",
+        )
+        .unwrap();
+        let numbering = part(&bytes, "word/numbering.xml");
+        let instances = numbering.matches("<w:num w:numId=").count();
+        let overrides = numbering.matches("<w:startOverride").count();
+        assert_eq!(instances, 3, "expected three lists: {numbering}");
+        assert_eq!(
+            overrides, instances,
+            "an ordered list does not say where it starts, so Word will continue \
+             the previous one: {numbering}"
+        );
+        // And the values are the authors', not a renumbering.
+        for expected in [
+            r#"<w:startOverride w:val="1"/>"#,
+            r#"<w:startOverride w:val="7"/>"#,
+        ] {
+            assert!(
+                numbering.contains(expected),
+                "missing {expected}: {numbering}"
+            );
+        }
+    }
+
+    #[test]
+    fn two_separate_lists_do_not_continue_one_another() {
+        // Sharing one numbering instance makes the second list carry on from
+        // the first — 1, 2 then 3, 4 — which is wrong and looks deliberate.
+        let bytes =
+            from_markdown("1. one\n2. two\n\nA paragraph between.\n\n1. one again\n2. two again")
+                .unwrap();
+        let numbering = part(&bytes, "word/numbering.xml");
+        assert!(
+            numbering.matches("<w:num w:numId=").count() >= 2,
+            "both lists share one numbering instance: {numbering}"
+        );
+        let document = part(&bytes, "word/document.xml");
+        let ids: std::collections::HashSet<&str> = document
+            .match_indices(r#"<w:numId w:val=""#)
+            .map(|(at, _)| {
+                let rest = &document[at + r#"<w:numId w:val=""#.len()..];
+                &rest[..rest.find('"').unwrap()]
+            })
+            .collect();
+        assert_eq!(ids.len(), 2, "the two lists use the same id: {ids:?}");
     }
 
     #[test]
@@ -601,7 +950,9 @@ mod tests {
     }
 
     #[test]
-    fn lists_keep_their_items_and_their_markers() {
+    fn lists_keep_their_items() {
+        // The marker is no longer among the words: Word draws it from the
+        // numbering definition, so it cannot appear in extracted text.
         let text = read_back(&from_markdown("- first\n- second\n\n1. one\n2. two").unwrap());
         for expected in ["first", "second", "one", "two"] {
             assert!(
@@ -609,7 +960,6 @@ mod tests {
                 "{expected:?} missing from {text:?}"
             );
         }
-        assert!(text.contains('•'), "bullets lost their marker: {text:?}");
     }
 
     #[test]

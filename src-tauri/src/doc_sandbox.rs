@@ -56,6 +56,20 @@ pub const HELPER_FLAG: &str = "--sovatela-extract-doc-helper";
 /// passes it almost immediately.
 pub const HELPER_MEMORY_CAP: usize = 768 * 1024 * 1024;
 
+/// The same ceiling for a PDF, which may fall through to text recognition.
+///
+/// Higher because a page is held as decoded pixels: at `ocr::MAX_PIXELS` a
+/// 24-bit page is about 120 MB, 160 MB again as BGRA on Windows, and one page
+/// is decoded at a time. With `lopdf`'s object tree for a 20 MB document on top
+/// of that, the real peak is a few hundred megabytes.
+///
+/// It was 2048 MB, on a rationale that said "two models are loaded into
+/// memory". That stopped being true when the bundled models were removed and
+/// the recogniser became the operating system's, and the number was left
+/// behind — a ceiling sized for work the process no longer does is a licence to
+/// allocate, which is what an adversarial decompression stream wants.
+pub const HELPER_MEMORY_CAP_PDF: usize = 1024 * 1024 * 1024;
+
 /// Wall-clock ceiling. The memory cap does not catch a parser that spins
 /// without allocating, and a user waiting on an attachment will not wait
 /// longer than this anyway.
@@ -71,6 +85,15 @@ const MAX_HELPER_OUTPUT: usize = 48 * 1024 * 1024;
 /// Windows a process killed by the C runtime's `abort` has historically
 /// exited with 3, and a death must never be mistaken for a polite refusal.
 const EXIT_UNREADABLE: i32 = 33;
+
+/// Wall-clock ceiling for a PDF, which may fall through to text recognition.
+///
+/// `ocr::MAX_OCR_PAGES` pages at a second or two each — the measured figure on
+/// this hardware is well under a second a page — with room to spare. It was
+/// 300 s, which was sized for loading neural-network weights that are no longer
+/// loaded: five minutes of a pinned core behind a spinner is not something an
+/// interactive application should be willing to wait through.
+pub const PDF_TIME_LIMIT: Duration = Duration::from_secs(120);
 
 /// How long the parent will wait for a finished child's output to arrive down
 /// the pipe. Not a parse budget — the child has already exited by then.
@@ -300,12 +323,32 @@ pub fn run_helper_if_requested() -> bool {
         std::process::exit(EXIT_UNREADABLE);
     }
 
-    set_memory_cap(HELPER_MEMORY_CAP);
+    set_memory_cap(match kind {
+        Kind::Pdf => HELPER_MEMORY_CAP_PDF,
+        _ => HELPER_MEMORY_CAP,
+    });
     // The same extraction the application would have run in-process, with the
     // cap and the deadline around it. Sharing the code rather than duplicating
     // it is the point: the bounds inside `document_text` are unit-tested where
     // they are, and this adds a ceiling those bounds cannot be argued out of.
     let result = std::panic::catch_unwind(|| crate::document_text(kind.stand_in_name(), &input));
+
+    // A PDF with no text layer is a picture of a page. Reading it is only
+    // attempted once the ordinary extraction has come back empty, so a PDF
+    // that *has* text never pays for the models being loaded — which is the
+    // overwhelmingly common case and several seconds of work.
+    let mut result = result;
+    if kind == Kind::Pdf && matches!(result, Ok(Err(_))) {
+        let attempt = std::panic::catch_unwind(|| crate::ocr::scanned_pdf_text(&input));
+        // A refusal from the recogniser replaces the original, because it is
+        // the more useful of the two: "this PDF is a picture of a page, and it
+        // uses fax compression" says what to do next, where "no text found"
+        // only says that something is wrong. A *panic* does not replace
+        // anything — the original message stands.
+        if let Ok(answer) = attempt {
+            result = Ok(answer);
+        }
+    }
 
     let (code, payload) = match result {
         Ok(Ok(text)) => (0, text),
@@ -418,7 +461,22 @@ fn default_helper_command() -> Result<Command, String> {
 /// Blocks. Callers are on a blocking task, because the parse is seconds of CPU
 /// for a large document either way.
 pub fn extract_text(kind: Kind, bytes: &[u8]) -> Result<String, String> {
-    run(kind, bytes, HELPER_TIME_LIMIT).into_result()
+    run(kind, bytes, time_limit_for(kind)).into_result()
+}
+
+/// How long this kind gets.
+///
+/// A PDF gets longer because it alone may fall through to text recognition,
+/// which is seconds of CPU per page rather than milliseconds — 45 seconds
+/// killed a scan of any length, and a document read halfway then killed is
+/// reported as unreadable. Bounded by `ocr::MAX_OCR_PAGES` rather than by this:
+/// the page cap is what stops the work, and this is the backstop for a page
+/// that will not finish.
+fn time_limit_for(kind: Kind) -> Duration {
+    match kind {
+        Kind::Pdf => PDF_TIME_LIMIT,
+        _ => HELPER_TIME_LIMIT,
+    }
 }
 
 fn run(kind: Kind, bytes: &[u8], time_limit: Duration) -> Outcome {

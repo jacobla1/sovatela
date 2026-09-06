@@ -54,6 +54,9 @@ describe("streaming is announced once, not per token", () => {
       'showHistory ? "Chat list shown" : "Chat list hidden"',
       '`This chat could not be saved. ${String(e?.message ?? e)}`',
       '"Saved."',
+      // Dropping a mixed handful while making a picture: the documents are
+      // silently not attached, and silence there looks like they were.
+      '"Only images can be added while making a picture"',
       "msg.data",
       "replyAnnouncement(reply)",
       // Exporting is a deliberate act with a file at the end of it, and its
