@@ -11,7 +11,7 @@ Both dependency trees were scanned; **no GPL, LGPL, or AGPL obligations reach
 this project's code**, and there are no copyleft terms that affect how it may
 be distributed.
 
-> While 1.8.1 was being prepared, this application
+> While 1.8.2 was being prepared, this application
 > briefly bundled two CC BY-SA 4.0 neural-network models to read scanned PDFs.
 > They were removed before release: the licence statement that exists covers
 > artifacts with different hashes from the ones that actually worked, so the

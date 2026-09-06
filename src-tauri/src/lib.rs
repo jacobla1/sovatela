@@ -9028,7 +9028,7 @@ mod tests {
         )
         .expect("write fixture");
 
-        // Tables on slides. Until 1.8.1 a table was flattened to one line per
+        // Tables on slides. Until 1.8.2 a table was flattened to one line per
         // row, so this fixture is new work rather than a defect that shipped —
         // and a graphic frame is exactly the kind of addition the pattern
         // above predicts will be structurally perfect and wrong on screen. It
@@ -14884,6 +14884,13 @@ mod tests {
     /// The first bytes of a real PNG, for mocks that have to survive
     /// `sniff_image_mime`. A body labelled `image/png` is no longer taken as
     /// one, which is the point of these fixtures being real.
+    ///
+    /// Carries its callers' `cfg`: both tests that use it need `wiremock`,
+    /// which is a dev-dependency only off Windows, so without this the helper
+    /// is defined there and never called. That is a lint error under
+    /// `-D warnings`, and it went unseen because clippy had never run on
+    /// Windows — the release gate runs it on Linux alone.
+    #[cfg(not(target_os = "windows"))]
     fn png_bytes() -> Vec<u8> {
         let mut v = b"\x89PNG\r\n\x1a\n".to_vec();
         v.extend_from_slice(b"the rest does not have to be a valid PNG");

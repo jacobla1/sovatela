@@ -419,7 +419,7 @@ pub fn from_markdown_with(
                 spans,
                 list,
             } => {
-                // A real numbering definition from 1.8.1. It used to be an
+                // A real numbering definition from 1.8.2. It used to be an
                 // indented paragraph carrying the marker as text: it read and
                 // printed correctly, and Word's list tools could not see it,
                 // so nothing renumbered and nothing demoted.
@@ -731,7 +731,7 @@ mod tests {
     // A list item used to be an indented paragraph carrying its marker as
     // text. It read and printed correctly, and Word's list tools could not see
     // it: nothing renumbered, nothing demoted, and adding an item between two
-    // others left the numbers as they were. From 1.8.1 items are in a real
+    // others left the numbers as they were. From 1.8.2 items are in a real
     // numbering definition, so the marker is no longer text in the file — it
     // is drawn by Word, and these tests read the definitions rather than the
     // words.

@@ -62,6 +62,13 @@ fn unsupported_filter(filter: &str) -> Option<&'static str> {
 }
 
 /// One page's image, as the RGB bytes a recogniser is handed.
+///
+/// Where the system has no recogniser these fields are written and never read:
+/// `Engine` has no variants there, so nothing consumes a page. That is dead
+/// code by the compiler's reckoning and correct by ours — the decoding above it
+/// still has to bound and validate what it reads, because the refusal it
+/// produces is the answer that platform gives.
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 #[cfg_attr(test, derive(Debug))]
 struct Page {
     width: u32,
@@ -194,7 +201,7 @@ fn widen_gray(gray: &[u8]) -> Vec<u8> {
 // bounds, the ordering against the ordinary extraction — is shared.
 //
 // The recogniser is the operating system's or there is none. Models were
-// bundled for a while as a floor for Linux, and were removed in 1.8.1 for two
+// bundled for a while as a floor for Linux, and were removed in 1.8.2 for two
 // reasons that each stand on their own: the licence for the exact artifacts
 // that worked could not be established — the only statement anywhere covers
 // differently-hashed files — and what they produced was not good enough to be

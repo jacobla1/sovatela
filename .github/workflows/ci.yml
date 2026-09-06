@@ -71,6 +71,15 @@ jobs:
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
+      # The same command the release gate runs, and for the reason it exists:
+      # until 1.8.1 this ran *only* at release time, so a lint that fires on one
+      # platform was first seen when a tag had already been pushed. A
+      # Linux-only dead-code warning stopped a release that way, having passed
+      # every green CI run before it. A gate whose first exercise is the
+      # release is not a gate, it is a surprise.
+      - name: Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
       # ---- claude-glm installer script validation --------------------------
       - name: Check installer scripts (macOS)
         if: matrix.platform == 'macos-latest'

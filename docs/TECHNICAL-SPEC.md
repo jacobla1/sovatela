@@ -1,6 +1,6 @@
 # Technical and security specification
 
-Sovatela v1.8.1 · Companion to Product spec ·
+Sovatela v1.8.2 · Companion to Product spec ·
 UX spec · [Security policy](../SECURITY.md)
 
 Fuller engineering rationale is kept internally in `ENGINEERING_NOTES.md`, which
@@ -226,7 +226,7 @@ CCITT fax and JBIG2 compression are not read; each is refused by name.
 
 The recogniser is the system's or there is none: Vision on macOS,
 `Windows.Media.Ocr` on Windows, and on Linux a refusal naming the reason.
-Bundling models as a floor was implemented and then removed before 1.8.1 — the
+Bundling models as a floor was implemented and then removed before 1.8.2 — the
 only licence statement for them covers artifacts with different hashes from the
 ones that worked, so the chain for the shipped bytes could not be established,
 and on a clean 400 dpi contract they read `EUR 12,450` as `EUR 2.450`. No model
@@ -453,7 +453,7 @@ checkout is a superset and is not part of the repository.
   express, and the gaps are worth naming. A `.xlsx` has one sheet and no
   formulas, though its columns are sized to their contents and its header row
   is bold and frozen; and none of the three can contain images.
-- A `.docx` list is a real list from 1.8.1: items sit in definitions in
+- A `.docx` list is a real list from 1.8.2: items sit in definitions in
   `word/numbering.xml`, so Word's list tools see them and adding an item
   renumbers the rest. Each run of adjacent items is its own instance, with a
   `w:startOverride` where the author did not start at 1 — a shared instance
@@ -464,7 +464,7 @@ checkout is a superset and is not part of the repository.
   makes the list quietly stop being a list. The splice keeps every
   `w:abstractNum` ahead of every `w:num`, an order Word declines a file for
   getting wrong.
-- A table **on a slide** is a real table from 1.8.1 —
+- A table **on a slide** is a real table from 1.8.2 —
   a graphic frame holding `a:tbl`, on a slide of its own, continuing with a
   repeated header. It wears the template's own table style when the template
   carries a `ppt/tableStyles.xml` that **defines** one, and plain borders drawn

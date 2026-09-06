@@ -1,12 +1,13 @@
 # Changelog
 
-## 1.8.1 — 2026-09-07
+## 1.8.2 — 2026-09-07
 
-*There is no 1.8.0. The tag was pushed and then deleted when the release was
-stopped for further work, and a tag that has been public once should not be
-made to point somewhere else — anyone who fetched in that window has it cached
-against a commit that no longer exists. The number is burned rather than
-reused; everything intended for it is below.*
+*There is no 1.8.0 and no 1.8.1. Each was tagged and then withdrawn — the first
+when the release was held back for more work, the second when its build failed
+at the test gate before anything was produced. A tag that has been public once
+is not made to point somewhere else, because anyone who fetched in that window
+holds it against a commit that no longer exists, so both numbers are burned
+rather than reused. Everything intended for them is below.*
 
 ### New
 - **Search your saved chats.** A field above the chat list searches what was
