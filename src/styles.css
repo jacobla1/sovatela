@@ -2314,6 +2314,23 @@ button.mini.primary:disabled {
   color: var(--muted);
 }
 
+/* Says the text was recognised from a picture rather than read out of the file.
+   Deliberately not muted: it is the one thing on the chip that changes how far
+   the text can be trusted, and a recogniser can drop a figure with nothing else
+   on screen looking any different. The sentence lives in the `title`; this is
+   the mark that makes someone go looking for it. */
+.att-ocr {
+  flex: 0 0 auto;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  padding: 0 0.35em;
+  border: 1px solid currentColor;
+  border-radius: var(--r-sm);
+  color: var(--warn);
+  cursor: help;
+}
+
 /* A chip with a picture in it is a row, not a line of text. */
 .att-chip {
   max-width: 260px;

@@ -31,10 +31,30 @@
 //! there.
 //!
 //! Instead the ceiling is enforced in the one place that is the same on every
-//! platform: the global allocator. Every byte the decompression path allocates
-//! passes through it, because `flate2` is built on `miniz_oxide` here — pure
-//! Rust, no C zlib — so there is no allocation route that bypasses Rust's
-//! allocator. Past the ceiling `alloc` returns null, which aborts the child.
+//! platform: the global allocator. Past the ceiling `alloc` returns null, which
+//! aborts the child.
+//!
+//! ## What the ceiling does and does not see
+//!
+//! It sees every allocation the *parsing* path makes. That is true because the
+//! decompression is pure Rust: `flate2` is built on `miniz_oxide`, and the zip
+//! crate is taken with `default-features = false, features = ["deflate"]`.
+//!
+//! That second part is deliberate and was not always so. `zip`'s defaults link
+//! bzip2, lzma and zstd — C libraries whose `malloc` never touches Rust's
+//! allocator — and this comment claimed no such route existed on the strength
+//! of `flate2` alone, which was true of `flate2` and false of the other three.
+//! OOXML and ODT are Deflate by specification, so nothing legitimate needed
+//! them, and an archive using one is now refused rather than decompressed
+//! through code this ceiling cannot see.
+//!
+//! It does **not** see what a system text recogniser allocates inside its own
+//! frameworks — CoreGraphics and Vision on macOS, the Windows Runtime on
+//! Windows. Those are native allocations in a process this counter shares but
+//! does not govern. What still applies to them is the deadline and the kill,
+//! which are process-wide, and the fact that only one extraction runs at a
+//! time. This is crash and runaway containment, not a memory guarantee, and
+//! the difference is worth keeping straight.
 //!
 //! The limit is `usize::MAX` in the application itself, and the allocator's
 //! fast path is a single relaxed load, so the counting costs the GUI nothing.
@@ -479,7 +499,26 @@ fn time_limit_for(kind: Kind) -> Duration {
     }
 }
 
+/// How many extraction helpers may run at once.
+///
+/// One. Each is allowed up to a gigabyte and, for a PDF, whatever the system
+/// recogniser allocates on top of that in native frameworks the Rust allocator
+/// never sees. Nothing stopped several starting together: attaching a handful
+/// of documents, or a compromised interface calling the command in a loop,
+/// could put several of those in flight at once and take the machine down
+/// without any single child exceeding its own limit.
+///
+/// A queue rather than a refusal, because attaching four documents at once is
+/// an ordinary thing to do and the right answer is to read them one after
+/// another. The wait is bounded by each helper's own deadline.
+static EXTRACTION_SLOT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn run(kind: Kind, bytes: &[u8], time_limit: Duration) -> Outcome {
+    // Held for the whole call, including the child's lifetime. Poisoning is
+    // ignored: the guard protects a count, not data, and a panicking caller
+    // must not stop every later extraction.
+    let _slot = EXTRACTION_SLOT.lock().unwrap_or_else(|e| e.into_inner());
+
     let mut cmd = match helper_command() {
         Ok(c) => c,
         Err(e) => return Outcome::Unreadable(e),
@@ -584,6 +623,43 @@ fn run(kind: Kind, bytes: &[u8], time_limit: Duration) -> Outcome {
 
 #[cfg(test)]
 mod tests {
+    /// Two extractions cannot be in flight at once.
+    ///
+    /// Each helper may allocate up to a gigabyte, plus whatever a system text
+    /// recogniser takes in native frameworks that the Rust allocator never
+    /// counts. Several at once is how a machine goes down without any one
+    /// child breaking its own limit — and nothing prevented it: `extract_text`
+    /// spawned a child per call.
+    #[test]
+    fn only_one_extraction_runs_at_a_time() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let live = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let mut threads = Vec::new();
+        for _ in 0..6 {
+            let (live, peak) = (Arc::clone(&live), Arc::clone(&peak));
+            threads.push(std::thread::spawn(move || {
+                let _slot = super::EXTRACTION_SLOT
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                let now = live.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                live.fetch_sub(1, Ordering::SeqCst);
+            }));
+        }
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(
+            peak.load(Ordering::SeqCst),
+            1,
+            "more than one extraction held the slot at once"
+        );
+    }
+
     use super::*;
 
     /// Build a `SOVATELA_TEST_PDF_HELPER` spec: program, then arguments,

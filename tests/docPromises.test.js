@@ -640,7 +640,29 @@ describe("documents match the capabilities the app actually declares", () => {
       held.sort(),
       "the main window's permissions changed — TECHNICAL-SPEC § Tauri capabilities " +
         "and SECURITY.md describe this list and must be updated with it",
-    ).toEqual(["core:default", "dialog:default"]);
+    ).toEqual([
+      "core:app:default",
+      "core:event:default",
+      "core:menu:default",
+      "core:path:default",
+      "core:resources:default",
+      "core:tray:default",
+      "core:webview:default",
+      "core:window:default",
+      "dialog:allow-ask",
+    ]);
+  });
+
+  // The bundles are named here as well as in the Rust guard, because this is
+  // the test that ties the list to the documents describing it — and the way
+  // this widens again is somebody replacing nine lines with one word.
+  it("does not go back to the bundles", () => {
+    for (const bundle of ["core:default", "dialog:default", "opener:default"]) {
+      expect(
+        held,
+        `${bundle} is granted again, which re-opens whatever it contains`,
+      ).not.toContain(bundle);
+    }
   });
 });
 

@@ -178,6 +178,13 @@ jobs:
 
             See [CHANGELOG.md](https://github.com/jacobla1/sovatela/blob/main/CHANGELOG.md) for what changed in this version.
 
+            **Where this came from.** `PROVENANCE.txt` names the tag, the
+            public commit and the workflow run that built these files, and
+            carries the record the publisher wrote when that source was
+            published: the private commit it came from and a digest over every
+            published file. It is listed in `SHA256SUMS.txt`, so the signature
+            below covers it too.
+
             **Verify your download.** Three checks, strongest last:
 
                 # 1. the file arrived intact
@@ -487,6 +494,66 @@ jobs:
             > SHA256SUMS.txt
           echo "Checksums:"; sed 's/^/  /' SHA256SUMS.txt
 
+          # The provenance record, and the reason it is built here rather than
+          # written by hand: everything below is known only to this run, and
+          # everything the source knows is already in PROVENANCE.json, which
+          # `deploy/publish-source.mjs` wrote as a pure function of the private
+          # commit and the files it published.
+          #
+          # Together they are the chain a stranger can walk: this asset names
+          # the tag, the public commit and the run that built it; the source
+          # record names the private commit and a digest over the published
+          # tree. Both end up in SHA256SUMS.txt, which is minisigned below — so
+          # the whole chain is covered by one signature people already check.
+          #
+          # Checked before it is quoted, rather than copied unread. A signature
+          # over an unchecked record signs whatever the record happens to say:
+          # a tree published for 1.8.2 and then tagged v1.8.3 would yield a
+          # signed assertion that the two correspond, which is precisely the
+          # claim nobody would afterwards think to question. Whether the digest
+          # matches the private commit can only be settled by re-running the
+          # publisher — that is the release transcript — but the version is
+          # knowable here, so a mismatch is refused here.
+          record="$GITHUB_WORKSPACE/PROVENANCE.json"
+          test -f "$record" || { echo "::error::no PROVENANCE.json in the published tree"; exit 1; }
+          recorded="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$record")"
+          if [ "$recorded" != "$version" ]; then
+            echo "::error::the published tree says version $recorded but the tag says $version."
+            echo "::error::the source was not republished for this tag, or the tag is wrong."
+            exit 1
+          fi
+          # And the digest is recomputed over the tree being signed, rather
+          # than the record being copied in on its own authority.
+          #
+          # This cannot show that the private commit produced this tree — that
+          # needs the private repository, and it is what the release transcript
+          # is for. It can show that the record about to be signed describes the
+          # files about to be shipped, which is a different claim and was not
+          # being made at all: the checksums were signed over a record nothing
+          # had read. The construction is shared with the publisher rather than
+          # written out again here, because two copies of a hash drift apart the
+          # first time one is edited and the record then means nothing.
+          node "$GITHUB_WORKSPACE/deploy/payload-digest.mjs" --verify "$GITHUB_WORKSPACE" \
+            || { echo "::error::PROVENANCE.json does not describe the tree being released"; exit 1; }
+
+          {
+            echo "Sovatela release provenance"
+            echo "schema: 2"
+            echo "tag: $TAG"
+            echo "public_commit: $GITHUB_SHA"
+            echo "workflow_run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "repository: $GITHUB_REPOSITORY"
+            echo
+            echo "source record (from the published tree at that commit):"
+            sed 's/^/  /' "$GITHUB_WORKSPACE/PROVENANCE.json"
+          } > PROVENANCE.txt
+          echo "Provenance:"; sed 's/^/  /' PROVENANCE.txt
+
+          # Added to the list *after* it is printed above, so the installer
+          # checksums people compare by eye are unchanged in form, and the
+          # provenance is signed along with them.
+          shasum -a 256 PROVENANCE.txt >> SHA256SUMS.txt
+
       - name: Sign the checksums
         env:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
@@ -528,6 +595,7 @@ jobs:
           gh release upload "$TAG" \
             release-assets/SHA256SUMS.txt \
             release-assets/SHA256SUMS.txt.minisig \
+            release-assets/PROVENANCE.txt \
             --repo "$GITHUB_REPOSITORY" --clobber
 
       # Binds every installer and the checksum list to this workflow, this run

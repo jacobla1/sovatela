@@ -412,3 +412,126 @@ describe("nothing that looks like a stray build artifact is tracked", () => {
     expect(nested, "the repository contains a copy of itself").toEqual([]);
   });
 });
+
+// Everything this project claims about correspondence — that the public tree is
+// what the private one emits, that a release was built from the reviewed
+// source — was checked by a person re-running the publisher and comparing
+// directories. That is real evidence and nobody else can hold it: a reader of
+// the public repository cannot ask which private commit produced it.
+//
+// The provenance record states it instead, and the release signs it.
+describe("the published tree says where it came from", () => {
+  const publisher = read("deploy/publish-source.mjs");
+  const workflow = read(".github/workflows/release.yml");
+
+  it("writes a record naming the private commit and a digest of what shipped", () => {
+    expect(publisher).toMatch(/PROVENANCE\.json/);
+    for (const field of ["private_commit", "payload_sha256", "version", "files"]) {
+      expect(publisher, `the record no longer carries ${field}`).toContain(field);
+    }
+  });
+
+  it("digests the published files themselves, not just their names", () => {
+    // A digest over paths alone would match a tree whose contents had changed,
+    // which is the one thing it exists to detect.
+    const shared = read("deploy/payload-digest.mjs");
+    const at = shared.indexOf("export function payloadDigest");
+    expect(at, "the digest is gone").toBeGreaterThan(-1);
+    const body = shared.slice(at, shared.indexOf("\n}", at));
+    expect(body).toMatch(/readFileSync/);
+  });
+
+  it("digests the executable bit along with the bytes", () => {
+    // A published script that arrives executable when the private one was not,
+    // or the reverse, is a difference in what the tree *does* — and a digest
+    // over path and content alone calls those two trees identical.
+    const shared = read("deploy/payload-digest.mjs");
+    const at = shared.indexOf("export function payloadDigest");
+    const body = shared.slice(at, shared.indexOf("\n}", at));
+    expect(body, "the digest ignores file modes").toMatch(/statSync|mode/);
+  });
+
+  it("does not call it a digest of the tree, which it is not", () => {
+    // It covers the payload, and the published directory has one more file in
+    // it — PROVENANCE.json cannot contain its own hash. The old name invited
+    // exactly the reading the record cannot support.
+    expect(publisher).toContain("payload_sha256");
+    const at = publisher.indexOf("const provenance = {");
+    const body = publisher.slice(at, publisher.indexOf("};", at));
+    expect(body, "the field is called a tree digest again").not.toMatch(/^\s*tree_sha256:/m);
+  });
+
+  it("recomputes the digest over the tree it is about to sign", () => {
+    // The workflow used to copy the record into a signed asset having checked
+    // only its version and the presence of some fields. It could not prove the
+    // private commit produced this tree — that needs the private repository —
+    // but it could prove the record describes the files it is shipping, and it
+    // was not doing that at all.
+    const verify = workflow.search(/payload-digest\.mjs[^\n]*--verify/);
+    expect(verify, "the workflow signs the record without recomputing it").toBeGreaterThan(-1);
+    const signs = workflow.indexOf("shasum -a 256 PROVENANCE.txt >> SHA256SUMS.txt");
+    expect(verify, "the digest is checked after the record is already signed").toBeLessThan(signs);
+  });
+
+  it("keeps one copy of the digest construction, not two", () => {
+    // The publisher writes the digest and the workflow now checks it. Written
+    // out twice, the two drift the first time either is edited — and a record
+    // that no longer means what it says is worse than no record, because it
+    // still verifies.
+    expect(publisher).toMatch(/from "\.\/payload-digest\.mjs"/);
+    const shared = read("deploy/payload-digest.mjs");
+    expect(shared).toMatch(/export function payloadDigest/);
+    // The publisher must not have kept its own hashing loop beside the import.
+    const at = publisher.indexOf("const provenance = {");
+    const before = publisher.slice(Math.max(0, at - 800), at);
+    expect(
+      before,
+      "the publisher still builds the digest itself as well as importing it",
+    ).not.toMatch(/createHash\("sha256"\)[\s\S]*update\("\\0"\)/);
+  });
+
+  it("refuses to sign a record that does not belong to the tag", () => {
+    // The workflow used to copy the record into a signed asset without reading
+    // it. A tree published for one version and tagged as another would then
+    // produce a *signed* assertion that the two correspond — the one claim
+    // nobody would afterwards think to question.
+    const check = workflow.indexOf('recorded" != "$version');
+    expect(check, "the workflow signs the source record without checking it").toBeGreaterThan(-1);
+    const signs = workflow.indexOf("shasum -a 256 PROVENANCE.txt >> SHA256SUMS.txt");
+    expect(check, "the version is checked after the record is already signed").toBeLessThan(signs);
+  });
+
+  it("stays a pure function of the commit and the files", () => {
+    // The record ships inside the published tree, and the check it supports is
+    // "re-run the publisher and compare". Anything that varies between runs —
+    // a timestamp, a hostname, a run number — makes that comparison impossible
+    // and quietly retires the strongest check this project has.
+    const at = publisher.indexOf("const provenance = {");
+    const body = publisher.slice(at, publisher.indexOf("};", at));
+    for (const varying of ["Date", "hostname", "now()", "env."]) {
+      expect(
+        body,
+        `the record includes ${varying}, so two publishes of one commit differ`,
+      ).not.toContain(varying);
+    }
+  });
+
+  it("is bound to the release by the signature people already check", () => {
+    // PROVENANCE.txt names what only the run knows; SHA256SUMS.txt covers it;
+    // minisign covers SHA256SUMS.txt. One signature, whole chain.
+    expect(workflow).toMatch(/PROVENANCE\.txt/);
+    const sums = workflow.indexOf("shasum -a 256 PROVENANCE.txt >> SHA256SUMS.txt");
+    expect(sums, "the provenance is not covered by the signed checksum list").toBeGreaterThan(-1);
+    const signing = workflow.indexOf("minisign -S -s /tmp/minisign.key");
+    expect(sums, "the checksums are signed before the provenance is added").toBeLessThan(signing);
+    expect(workflow).toMatch(/release-assets\/PROVENANCE\.txt/);
+  });
+
+  it("records the public commit and the run, which only the run knows", () => {
+    const at = workflow.indexOf("Sovatela release provenance");
+    const body = workflow.slice(at, at + 900);
+    expect(body).toContain("GITHUB_SHA");
+    expect(body).toContain("GITHUB_RUN_ID");
+    expect(body).toContain("PROVENANCE.json");
+  });
+});

@@ -26,8 +26,10 @@
 // Nothing here mutates the source repo. It only writes into <target-dir>.
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, copyFileSync, writeFileSync, readFileSync, rmSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative, basename } from "node:path";
+import { payloadDigest } from "./payload-digest.mjs";
 
 const repo = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
 
@@ -88,6 +90,7 @@ const PUBLIC = [
   "deploy/searxng-local/",
   "deploy/web/",
   "deploy/publish-source.mjs",
+  "deploy/payload-digest.mjs",
   // Root files. Named individually: the repository root is where a stray
   // assessment or working note is most likely to be dropped.
   ".env.integration.example",
@@ -131,6 +134,7 @@ const PUBLIC = [
   "docs/release/QA-1.7.1.md",
   "docs/release/QA-1.7.2.md",
   "docs/release/QA-1.7.3.md",
+  "docs/release/QA-1.8.3.md",
 ];
 
 const isPublic = (p) =>
@@ -318,7 +322,50 @@ if (leaked.length || dangling.length || pointing.length) {
   process.exit(2);
 }
 
+// ---------------------------------------------------------------------------
+// The provenance record.
+//
+// Every claim this project makes about correspondence — that the public tree is
+// what the private one emits, that the release was built from the reviewed
+// source — has so far been checked by a person re-running this script and
+// comparing directories. That works, and it is not evidence anybody else can
+// hold: a reader of the public repository has no way to ask which private
+// commit produced it.
+//
+// So the output states it. The digest is over the staged set itself — every
+// published path and the hash of its bytes — which is what makes the claim
+// checkable rather than asserted: re-run the publisher on that private commit
+// and the digest is the same, or the tree is not what it says it is.
+//
+// Deliberately a pure function of the commit and the files. No timestamp, no
+// hostname, no run number: this file is part of the published tree, and a
+// publication that differs from one minute to the next cannot be compared
+// against the mirror at all. The release workflow adds the parts only it knows
+// — the tag, the public commit and the run — to a separate signed asset.
+// It covers the *payload* — the files listed below — and not `PROVENANCE.json`
+// itself, which cannot contain its own hash. It was called `tree_sha256`, which
+// invited reading it as a digest of the published directory; it is not one, and
+// the published directory has one more file in it than this counts.
+//
+// The construction itself lives in `deploy/payload-digest.mjs`, because the
+// release workflow now recomputes it over the public checkout before signing
+// the record — and two copies of a hash construction is a record that quietly
+// stops meaning anything the first time one of them is edited.
+const digest_hex = payloadDigest(target);
+const provenance = {
+  schema: 2,
+  version: JSON.parse(readFileSync(join(repo, "package.json"), "utf8")).version,
+  private_commit: execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo }).toString().trim(),
+  files: shipping.length,
+  withheld: WITHHELD.length,
+  // Path, mode and content of every file below, in path order. Not of this
+  // file, which is written afterwards and is not in the count.
+  payload_sha256: digest_hex,
+};
+writeFileSync(join(target, "PROVENANCE.json"), JSON.stringify(provenance, null, 2) + "\n");
+
 console.log(`  ${shipping.length} files staged into ${target}`);
+console.log(`  provenance: private ${provenance.private_commit.slice(0, 12)} · payload ${provenance.payload_sha256.slice(0, 12)}`);
 console.log(`  ${WITHHELD.length} withheld: ${WITHHELD.map((p) => basename(p)).join(", ")}`);
 console.log(`  ${rewritten} link(s) unwrapped, ${repointed} repointed to a public URL, across ${rewrittenIn.size} file(s)`);
 [...rewrittenIn].sort().forEach((p) => console.log(`      ${p}`));

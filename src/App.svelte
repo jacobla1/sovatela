@@ -212,6 +212,21 @@
   }
 </script>
 
+<!-- Anywhere that is not the conversation swallows a dropped file and does
+     nothing with it.
+
+     `dragDropEnabled` is off, so the webview handles drops itself — and its
+     default for a file dropped on a page is to *navigate to it*, replacing the
+     application with a PDF viewer or a download. The conversation view accepts
+     drops deliberately; every other part of the window — sidebar, settings,
+     artifact panel, the gaps between them — has to refuse rather than fall
+     through to that default. Bound at the window so it holds wherever the
+     pointer happens to be, including regions no component owns. -->
+<svelte:window
+  ondragover={(e) => e.preventDefault()}
+  ondrop={(e) => e.preventDefault()}
+/>
+
 {#if updateBanner}
   <!-- Opt-in only. Dismissible, and it never reappears in this session: a
        notice that cannot be got rid of is a notice people learn to ignore. -->

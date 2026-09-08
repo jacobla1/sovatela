@@ -1,6 +1,6 @@
 # Technical and security specification
 
-Sovatela v1.8.2 · Companion to Product spec ·
+Sovatela v1.8.3 · Companion to Product spec ·
 UX spec · [Security policy](../SECURITY.md)
 
 Fuller engineering rationale is kept internally in `ENGINEERING_NOTES.md`, which
@@ -168,17 +168,40 @@ application.
 So the parse happens somewhere expendable. The application re-executes its own
 binary with `--sovatela-extract-pdf-helper`, writes the document to the child's
 stdin and reads the text back from its stdout. The child gets a live-allocation
-ceiling of 768 MB and 45 seconds of wall clock; past either it dies and the
-parent reports an unreadable file. Nothing else in the application notices.
+ceiling and a wall-clock deadline; past either it dies and the parent reports an
+unreadable file. Nothing else in the application notices.
+
+The limits are per format, because the formats are not alike: an Office or
+OpenDocument file gets 768 MB and 45 seconds, a PDF 1024 MB and 120 seconds. A
+PDF needs the larger budget because a scanned one is decoded page by page for
+OCR, and giving that budget to every format would have meant bounding all of
+them by the most expensive one. Only one helper runs at a time, so these are the
+cost of extraction as a whole rather than the cost of each concurrent one.
 
 The ceiling is enforced by a counting global allocator rather than an rlimit,
 because there is no rlimit to use: macOS defines `RLIMIT_AS` as an alias of
 `RLIMIT_RSS` and rejects any attempt to set either, and Windows has no rlimits
-at all. The allocator works everywhere, and it is exact here because `flate2`
-is built on `miniz_oxide` — pure Rust, no C zlib — so no allocation on the
-decompression path bypasses it. In the application proper the limit is
-`usize::MAX` and the allocator's fast path is a single relaxed load, so the
-counting costs the interface nothing.
+at all. The allocator works everywhere, and it is exact on the parsing path:
+`flate2` is built on `miniz_oxide` — pure Rust, no C zlib — and `zip` is built
+with Deflate only, so the bzip2, LZMA and Zstd C libraries whose `malloc` would
+bypass the counter are not linked at all.
+
+It does **not** cover OCR on macOS or Windows. There the page image is handed to
+Vision or to the Windows Runtime recogniser, which allocate through CoreGraphics
+and COM where the counter cannot see them; the wall-clock deadline is what
+bounds that work. The number of pages and the pixels per page are capped before
+any image is built, so the input to it is bounded even though the allocation is
+not.
+
+In the application proper the limit is `usize::MAX` and the allocator's fast
+path is a single relaxed load, so the counting costs the interface nothing.
+
+What this contains: a crash, a runaway allocation and a hang, in a process the
+application can lose without noticing. What it is not is an operating system
+sandbox. The child runs with the user's own privileges and can reach whatever
+the user can reach, so a parser or recogniser driven into running code is not
+confined by it. Narrowing that is future work, recorded in
+`docs/PRODUCT-GAPS.md`.
 
 Every reply is framed with a fixed marker. Without it the parent cannot tell
 its helper's output from any other program's, and a child that exits 0 with
@@ -189,11 +212,25 @@ exited 0, and that summary was returned as the contents of the document.
 
 ### Tauri capabilities
 
-The main window holds `core:default` and `dialog:default` only. `opener:default`
-was there until 1.6.2 and is not any more; this section said it still was for
-several releases after it went. No filesystem, shell, or HTTP plugin is exposed
-to the webview — file access goes through purpose-built commands with their own
-validation.
+The main window holds nine permissions, named one by one:
+
+    core:app  core:event  core:menu  core:path  core:resources
+    core:tray  core:webview  core:window  dialog:allow-ask
+
+Until 1.8.3 it held `core:default` and `dialog:default` instead, and those two
+bundles were the real IPC surface while every check this project had was
+pointed at its own 63 commands. `core:default` includes `core:image:default`,
+whose `allow-from-path` opens a file by name and whose `allow-rgba` returns its
+pixels — a way to read the user's pictures that no audit of our commands could
+see, because it is not one of them. `dialog:default` granted open and save
+pickers the interface has never called: it uses `ask`, and every folder and
+file this app chooses is chosen by a dialog opened in Rust.
+
+Image is absent rather than denied, because the frontend imports no image API.
+`opener:default` was there until 1.6.2 and is not any more; this section said
+it still was for several releases after it went. No filesystem, shell, or HTTP
+plugin is exposed to the webview — file access goes through purpose-built
+commands with their own validation.
 
 That claim was not true of the two commands that write files. `save_image` and
 `save_document` took a destination path from the interface, which obtained it
@@ -214,19 +251,40 @@ A PDF with no text layer is read by optical character recognition, entirely on
 the device. It runs **inside the extraction helper** — the same separate,
 memory-capped, killable process every parser uses — which matters more here than
 elsewhere: this decodes attacker-supplied image data and then runs it through a
-neural network, and the helper is what bounds whatever either does. The PDF path
+neural network. What the helper bounds is narrower than "whatever either does",
+and the difference matters: the ceiling is enforced in Rust's global allocator,
+so allocations a system recogniser makes inside its own frameworks are not
+counted by it. The deadline and the kill do apply to the whole process, and the
+child holds the user's own filesystem and network authority — this is crash and
+runaway isolation, not a privilege sandbox. Only one extraction runs at a time,
+because several children each entitled to a gigabyte is a way to exhaust a
+machine without any one of them exceeding its limit. The PDF path
 gets a higher allocation ceiling and a longer deadline than the others, because
 two models are loaded and a page is held as decoded pixels.
 
 The scan is **extracted** from the PDF as an embedded image rather than the page
-being rendered. Rendering would mean pdfium or MuPDF — a large native dependency
+being rendered. A JPEG stream is handed to the decoder as it is; every other
+stream is decompressed through `lopdf`, which implements Flate, LZW and ASCII85.
+
+What `lopdf` does *not* do is everything those can be combined with, which this
+paragraph used to claim. It reads `/DecodeParms` only in its dictionary form,
+so a chain's array-shaped parameters are dropped without a word, and it undoes
+only the PNG predictors, so `Predictor 2` is read from the file and ignored.
+Neither reaches the decoder: the filter chain is checked against an allow-list
+first, and array parameters, unsupported predictors and any filter outside
+those three are refused by name. A chain containing `DCTDecode` is refused too
+— only a lone one takes the JPEG path — because the shortcut hands over the raw
+stream, which for a wrapped JPEG is not JPEG. Until
+1.8.3 this code assumed `PdfImage::content` arrived decompressed — it does
+not — so an ordinary Flate-compressed scan had its compressed bytes read as
+pixels and was refused as a short image. Rendering would mean pdfium or MuPDF — a large native dependency
 to build, sign and notarize on three platforms — and a scanned page does not
 need compositing: it is one image on an otherwise empty page. The cost is that
 CCITT fax and JBIG2 compression are not read; each is refused by name.
 
 The recogniser is the system's or there is none: Vision on macOS,
 `Windows.Media.Ocr` on Windows, and on Linux a refusal naming the reason.
-Bundling models as a floor was implemented and then removed before 1.8.2 — the
+Bundling models as a floor was implemented and then removed before 1.8.3 — the
 only licence statement for them covers artifacts with different hashes from the
 ones that worked, so the chain for the shipped bytes could not be established,
 and on a clean 400 dpi contract they read `EUR 12,450` as `EUR 2.450`. No model
@@ -365,9 +423,11 @@ folder; relocating migrates existing files.
 - **Costs are frozen at record time**, so refreshing the price list never
   rewrites history.
 
-**Gap.** No schema version field in the stored JSON. Fine so far because the
-format hasn't changed, but the first breaking change will have nothing to
-migrate *from*. Add a version to new files before it's needed.
+Stored conversations carry a `schema` field — version 1 — and a file claiming a
+version this build does not know is refused rather than read as though it were
+this format. `title_custom` was added in 1.8.x without a bump, because a field
+with a serde default is readable by older builds and bumping would have made
+them refuse the whole conversation.
 
 ---
 
@@ -453,7 +513,7 @@ checkout is a superset and is not part of the repository.
   express, and the gaps are worth naming. A `.xlsx` has one sheet and no
   formulas, though its columns are sized to their contents and its header row
   is bold and frozen; and none of the three can contain images.
-- A `.docx` list is a real list from 1.8.2: items sit in definitions in
+- A `.docx` list is a real list from 1.8.3: items sit in definitions in
   `word/numbering.xml`, so Word's list tools see them and adding an item
   renumbers the rest. Each run of adjacent items is its own instance, with a
   `w:startOverride` where the author did not start at 1 — a shared instance
@@ -464,7 +524,7 @@ checkout is a superset and is not part of the repository.
   makes the list quietly stop being a list. The splice keeps every
   `w:abstractNum` ahead of every `w:num`, an order Word declines a file for
   getting wrong.
-- A table **on a slide** is a real table from 1.8.2 —
+- A table **on a slide** is a real table from 1.8.3 —
   a graphic frame holding `a:tbl`, on a slide of its own, continuing with a
   repeated header. It wears the template's own table style when the template
   carries a `ppt/tableStyles.xml` that **defines** one, and plain borders drawn
@@ -522,6 +582,9 @@ checkout is a superset and is not part of the repository.
 ### 7.1 Dependency advisories, triaged
 
 `cargo audit` reports **0 vulnerabilities and 19 warnings** across 609 crates.
+One of those warnings is a yanked `chacha20`, reached through `lopdf`'s
+`rand`; the rest are unmaintained transitive crates, mostly the Linux GTK
+stack, and are tracked rather than resolved because they wait on upstream.
 A warning is not a vulnerability, and "no vulnerabilities" is not an answer to
 someone asking what the warnings are. Each is recorded below with the path that
 pulls it in and what is being done about it. Paths are from `cargo tree -i`;

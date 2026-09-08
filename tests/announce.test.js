@@ -57,7 +57,17 @@ describe("streaming is announced once, not per token", () => {
       // Dropping a mixed handful while making a picture: the documents are
       // silently not attached, and silence there looks like they were.
       '"Only images can be added while making a picture"',
+      // An edit or "Try again" on a picture, with the image provider since
+      // removed. Refusing is the point — the alternative is sending the prompt
+      // and its reference pictures to the chat provider instead — but a refusal
+      // that only un-does the edit looks like the button did nothing.
+      '"Image generation is not configured, so this cannot be sent again."',
+      // The same two, for a replay the provider rejected outright: the
+      // conversation is put back the way it was, and without this the only
+      // evidence of the attempt is a reply that briefly appeared and vanished.
+      "`Could not send that again: ${msg}`",
       "msg.data",
+      "`Could not send that again: ${e}`",
       "replyAnnouncement(reply)",
       // Exporting is a deliberate act with a file at the end of it, and its
       // outcome is otherwise invisible: the save dialog closes and nothing on

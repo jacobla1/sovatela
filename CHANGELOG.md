@@ -1,13 +1,70 @@
 # Changelog
 
-## 1.8.2 — 2026-09-07
+## 1.8.3 — 2026-09-08
 
-*There is no 1.8.0 and no 1.8.1. Each was tagged and then withdrawn — the first
-when the release was held back for more work, the second when its build failed
-at the test gate before anything was produced. A tag that has been public once
-is not made to point somewhere else, because anyone who fetched in that window
-holds it against a commit that no longer exists, so both numbers are burned
-rather than reused. Everything intended for them is below.*
+*There is no 1.8.0, 1.8.1 or 1.8.2. Each was tagged and then withdrawn — the
+first when the release was held back for more work, the second when its build
+failed at the test gate before anything was produced, the third when an
+external review of the frozen source found defects in the code written to fix
+the previous round's. A tag that has been public once is not made to point
+somewhere else, because anyone who fetched in that window holds it against a
+commit that no longer exists, so all three numbers are burned rather than
+reused. Everything intended for them is below.*
+
+### Corrected before release
+*Found by review and testing of unreleased code, not reported from a released
+version. They are listed because several changed what the app does, and because
+a record of only what users noticed is not a record of what happened.*
+
+- **A scan is read down the page rather than across it.** The recogniser does
+  not promise to return lines in reading order, and this app was using the order
+  they arrived in. On a clean scan that happens to be top to bottom and nothing
+  looks wrong; on a poor one it is not, and a contract came back with its
+  reference line above the figure it referred to — every word present, in an
+  order nobody wrote. Lines are now placed by where they sit on the page. Both
+  platforms share that code, which also stopped Windows returning a whole page
+  run together as a single line.
+- **A page that cannot be read in order is refused rather than guessed at.** Two
+  columns, or two pictures where it is not clear which one is the scan, now says
+  so by name. Reading columns properly means redrawing the page, which this app
+  deliberately does not do, and returning them interleaved is worse than
+  refusing.
+- **Text read from a picture says so to you, not only to the model.** A scanned
+  attachment carries an OCR mark, before you send it and in the saved chat. A
+  recogniser can misread a figure or miss a line with nothing to show for it,
+  and a filename with a character count looks identical whether a document was
+  read or recognised.
+- **An edit the provider refuses no longer destroys the reply it replaced.**
+  Editing discards what came after a message and asks again; if that request was
+  then refused — a bad key, no network, a quota — the conversation had been
+  shortened for nothing and the shortening was saved. It is put back now, and
+  put back even when you have moved to another chat while it failed, which is
+  the case where nothing on screen would have told you.
+- **Editing keeps the settings the message was sent with.** A question asked
+  with web search forced replayed unforced and was answered from memory instead;
+  a picture prompt could reach the chat provider, or a question the image
+  provider, depending which buttons happened to be on. Each turn now records how
+  it was sent.
+- **A document with a part this app cannot open is refused whole.** A Word,
+  PowerPoint, Excel or OpenDocument file containing something unreadable — an
+  unsupported compression, or a password — used to have that part quietly
+  skipped and the rest read, which also made it invisible to the checks that
+  look at what a file contains.
+- **Several ways a PDF can describe an image were misread rather than refused.**
+  Malformed compression labels, decoding parameters this app cannot apply, and
+  colour mappings in an unexpected form now name themselves instead of producing
+  pixels that are not the ones in the file.
+
+### Security
+- **The interface is granted what it uses, rather than a bundle.** Tauri's
+  default permission sets, taken here as a whole, include reading a file from
+  disk and handing back its pixels, along with file open and save dialogs this
+  interface has never called. None of it was reachable through this app's own
+  commands, which is why an audit of those commands did not find it. The main
+  window now holds nine named permissions, with no image or file-picker access.
+- **A conversation from a file cannot decide where a later request goes.** An
+  imported chat is data, and its record of how a message was sent is checked
+  rather than believed.
 
 ### New
 - **Search your saved chats.** A field above the chat list searches what was

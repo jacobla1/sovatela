@@ -66,3 +66,47 @@ describe("the third-party manifest exists, ships, and is current", () => {
     expect(licenses).toContain("scripts/gen-third-party-manifest.mjs");
   });
 });
+
+// Every file and folder the app opens on request is chosen through a dialog
+// Rust opened. The interface never names a path.
+//
+// Templates and the history folder used to work the other way round: the
+// renderer opened the picker and handed the backend a path, so those commands
+// would open whatever they were given. That is not a way to read a file's
+// contents — the checks around them are thorough — but it tells a compromised
+// interface whether a path exists, and lets it point the history folder or copy
+// an Office file wherever it likes.
+describe("no file path crosses into the backend from the interface", () => {
+  it("the interface opens no file or folder dialog of its own", () => {
+    for (const f of [
+      "src/lib/KeyPage.svelte",
+      "src/lib/Chat.svelte",
+      "src/App.svelte",
+      "src/lib/History.svelte",
+    ]) {
+      const src = read(f);
+      // `ask` is a confirmation, not a picker, and stays.
+      expect(
+        src.replace(/import \{ ask \}[^\n]*\n/g, ""),
+        `${f} opens a file dialog in the renderer, which means a path travels to Rust`,
+      ).not.toMatch(/\bopen\s+as\s+openDialog\b|from "@tauri-apps\/plugin-dialog".*\bopen\b/);
+    }
+  });
+
+  it("the picking commands take no path from the caller", () => {
+    const rust = read("src-tauri/src/lib.rs");
+    for (const [name, forbidden] of [
+      ["set_template", "path: String"],
+      ["choose_history_dir", "dir: String"],
+      ["choose_workspace_dir", "path: String"],
+    ]) {
+      const at = rust.indexOf(`fn ${name}(`);
+      expect(at, `${name} is gone`).toBeGreaterThan(-1);
+      const signature = rust.slice(at, rust.indexOf(")", at));
+      expect(
+        signature,
+        `${name} accepts a path from the interface again`,
+      ).not.toContain(forbidden);
+    }
+  });
+});

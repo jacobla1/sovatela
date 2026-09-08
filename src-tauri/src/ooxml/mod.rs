@@ -189,11 +189,68 @@ pub(crate) fn parses(xml: &str) -> Result<(), String> {
     }
 }
 
+/// Refuse a package holding an entry this build cannot decompress.
+///
+/// OOXML and ODT are Deflate by specification, and `zip` is built with only
+/// Deflate for that reason: the alternatives are C libraries whose allocations
+/// the helper's memory ceiling cannot see. Opening such an entry therefore
+/// fails — which is right, and was not enough.
+///
+/// Every scan of an archive's *names* was written as `by_index(i).ok()`, and an
+/// entry that cannot be decompressed returns `Err` from `by_index`. So it did
+/// not appear as a refusal; it disappeared. A required part missing produces a
+/// later, vaguer complaint, but an optional one — a header, a slide, a style —
+/// is simply not there, and `vbaProject.bin` stored that way slips past the
+/// macro check by not existing as far as the check can tell.
+///
+/// `by_index_raw` reads the entry's header without decompressing it, so the
+/// method is visible whether or not this build can undo it. Called before
+/// anything interprets the package, so the refusal is about the file rather
+/// than about whatever the missing part was needed for.
+pub fn refuse_unreadable_entries(
+    zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>,
+) -> Result<(), String> {
+    for i in 0..zip.len() {
+        let entry = zip
+            .by_index_raw(i)
+            .map_err(|e| format!("part {i} of that file could not be read ({e})"))?;
+        // Encryption is checked as well as compression, and for the same
+        // reason: an encrypted entry cannot be read either, so it disappears
+        // from a name scan exactly as an unsupported method does. A method-only
+        // check let a package hide a part behind a password instead of behind
+        // bzip2 and get the same silence.
+        if entry.encrypted() {
+            return Err(format!(
+                "\"{}\" inside that file is encrypted, so this app cannot read it. A \
+                 password-protected document has to be opened and saved without the \
+                 password before it can be read here.",
+                entry.name()
+            ));
+        }
+        match entry.compression() {
+            zip::CompressionMethod::Stored | zip::CompressionMethod::Deflated => {}
+            other => {
+                return Err(format!(
+                    "\"{}\" inside that file is compressed with {other:?}, which this app \
+                     does not read. Word, PowerPoint, Excel and LibreOffice do not write \
+                     it — something has repacked the file — so open it and save it again \
+                     from the application it belongs to.",
+                    entry.name()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn validate(bytes: &[u8]) -> Result<(), Vec<String>> {
     let mut problems = Vec::new();
     let Ok(mut zip) = zip::ZipArchive::new(std::io::Cursor::new(bytes)) else {
         return Err(vec!["not a readable zip archive".into()]);
     };
+    if let Err(why) = refuse_unreadable_entries(&mut zip) {
+        return Err(vec![why]);
+    }
 
     let names: Vec<String> = (0..zip.len())
         .filter_map(|i| zip.by_index(i).ok().map(|f| f.name().to_string()))

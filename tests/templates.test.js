@@ -8,6 +8,13 @@ const settings = readFileSync(
   "utf8",
 );
 
+// The picker moved into Rust so that no path crosses from the interface, which
+// took the extension filters with it.
+const backend = readFileSync(
+  resolve(import.meta.dirname, "../src-tauri/src/lib.rs"),
+  "utf8",
+);
+
 // Assertions about wording match against collapsed whitespace. Prose in a
 // component is wrapped to fit the file, so where the line happens to break is
 // not a fact about the copy — and pinning it means the test fails when the
@@ -31,10 +38,14 @@ describe("a template can be chosen from Settings", () => {
     // a reason that could have been prevented. But `.dotx` and `.potx` are
     // what Word and PowerPoint save a template *as*, so filtering to the
     // kind's own extension alone hid the likeliest right answer.
-    expect(settings).toMatch(/\["docx", "dotx"\]/);
-    expect(settings).toMatch(/\["pptx", "potx"\]/);
+    // In `set_template` now, not the component: the dialog is opened by Rust so
+    // the interface never names a path.
+    const picker = backend.slice(backend.indexOf("async fn set_template("));
+    const body = picker.slice(0, picker.indexOf("\n#[tauri::command]"));
+    expect(body).toMatch(/\["docx", "dotx"\]/);
+    expect(body).toMatch(/\["pptx", "potx"\]/);
     // The macro-enabled variants are not offered.
-    expect(settings).not.toMatch(/dotm|potm/);
+    expect(body).not.toMatch(/dotm|potm/);
   });
 
   it("shows which file is in use and when it was added", () => {

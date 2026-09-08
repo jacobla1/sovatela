@@ -311,6 +311,11 @@ pub fn load(name: &str, bytes: &[u8]) -> Result<Template, String> {
         ));
     }
 
+    // Before the names are read, because the macro refusal below is a check on
+    // the names: an entry this build cannot decompress does not fail that
+    // check, it disappears from it.
+    super::refuse_unreadable_entries(&mut archive)?;
+
     let names: Vec<String> = (0..archive.len())
         .filter_map(|i| archive.by_index(i).ok().map(|f| f.name().to_string()))
         .collect();
@@ -1441,6 +1446,108 @@ mod tests {
             w.write_all(data).unwrap();
         }
         w.finish().unwrap().into_inner()
+    }
+
+    /// Restamp one named entry's compression method to `method`, leaving the
+    /// rest of the archive readable.
+    ///
+    /// This build links only Deflate, so it cannot *write* a bzip2 entry — and
+    /// an archive that merely claims to be one is exactly what has to be
+    /// refused, because the claim is all any reader has to go on before it
+    /// tries. Only the named entry is restamped: an archive where nothing at
+    /// all opens is refused by the first part anyone touches, which would not
+    /// show that a single hidden part is caught.
+    ///
+    /// The method field sits at offset 8 of a local file header (`PK\x03\x04`,
+    /// name length at 26, name at 30) and offset 10 of a central directory
+    /// header (`PK\x01\x02`, name length at 28, name at 46). Both copies have
+    /// to agree, or the archive fails to open for an unrelated reason.
+    fn restamp_compression(mut zip: Vec<u8>, entry: &str, method: u16) -> Vec<u8> {
+        let m = method.to_le_bytes();
+        let want = entry.as_bytes();
+        let u16_at = |z: &[u8], i: usize| u16::from_le_bytes([z[i], z[i + 1]]) as usize;
+        let mut i = 0;
+        let mut hits = 0;
+        while i + 46 <= zip.len() {
+            let (method_at, len_at, name_at) = match &zip[i..i + 4] {
+                b"PK\x03\x04" => (i + 8, i + 26, i + 30),
+                b"PK\x01\x02" => (i + 10, i + 28, i + 46),
+                _ => {
+                    i += 1;
+                    continue;
+                }
+            };
+            let n = u16_at(&zip, len_at);
+            if name_at + n <= zip.len() && &zip[name_at..name_at + n] == want {
+                zip[method_at] = m[0];
+                zip[method_at + 1] = m[1];
+                hits += 1;
+            }
+            i += 1;
+        }
+        assert_eq!(hits, 2, "{entry}: expected a local and a central header");
+        zip
+    }
+
+    /// 12 is bzip2 — a method this build has no decoder for, by choice: it is
+    /// a C library whose allocations the extraction helper's memory ceiling
+    /// cannot count.
+    const BZIP2: u16 = 12;
+
+    #[test]
+    fn a_part_this_build_cannot_decompress_is_refused_rather_than_skipped() {
+        // Every scan of an archive's names was `by_index(i).ok()`, and an entry
+        // that cannot be decompressed makes `by_index` return `Err`. So it did
+        // not fail a check — it vanished from the list the checks run over.
+        let bytes = restamp_compression(
+            zip_of(&[
+                ("[Content_Types].xml", b"<Types/>"),
+                ("word/vbaProject.bin", b"macro payload"),
+            ]),
+            "word/vbaProject.bin",
+            BZIP2,
+        );
+
+        // First, that the mechanism is real: the name is genuinely absent from
+        // the enumeration this code used to trust. Without this the test below
+        // could pass against an archive that was simply malformed.
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&bytes[..]))
+            .expect("the restamped archive must still open");
+        let seen: Vec<String> = (0..archive.len())
+            .filter_map(|i| archive.by_index(i).ok().map(|f| f.name().to_string()))
+            .collect();
+        assert!(
+            !seen.iter().any(|n| n.contains("vbaProject")),
+            "the fixture does not reproduce the disappearance, so it proves nothing"
+        );
+
+        // And that the preflight sees it anyway, by name.
+        let why = super::super::refuse_unreadable_entries(&mut archive)
+            .expect_err("an undecodable part was accepted");
+        assert!(why.contains("vbaProject.bin"), "{why}");
+    }
+
+    #[test]
+    fn a_macro_hidden_behind_an_unreadable_compression_is_still_refused() {
+        // The consequence of the above, and the reason it is not merely tidy.
+        // The macro refusal is a check on the *names*, so a `vbaProject.bin`
+        // stored with a method this build cannot open was not refused as a
+        // macro file — it was not there at all, and the template loaded.
+        let bytes = restamp_compression(
+            zip_of(&[
+                ("[Content_Types].xml", content_types(&[]).as_bytes()),
+                ("word/vbaProject.bin", b"macro payload"),
+            ]),
+            "word/vbaProject.bin",
+            BZIP2,
+        );
+        let why = load("house-style.docx", &bytes)
+            .expect_err("a template carrying a hidden macro part was accepted");
+        // Either refusal is correct — what must not happen is acceptance.
+        assert!(
+            why.contains("vbaProject.bin") || why.contains("macro"),
+            "refused, but not for the part that is actually in there: {why}"
+        );
     }
 
     fn content_types(overrides: &[(&str, &str)]) -> String {

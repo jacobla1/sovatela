@@ -173,9 +173,32 @@ makes it plan searches badly and take *more* steps.
 Text extraction runs locally in Rust and supports PDF, `.docx`, `.odt`, and
 plain text/code. It will fail on:
 
-- **Scanned PDFs** — images of text, with no text layer. There is no OCR.
 - **Encrypted or password-protected documents.**
 - **Legacy `.doc`** (pre-2007). Convert to `.docx`.
+- **Scans whose compression this app cannot read** — fax (CCITT), JBIG2 and
+  JPEG 2000. The message names which one, rather than reporting an empty page.
+
+### Scanned PDFs
+
+A scan is a picture of a page with no text in it. From 1.8.3 the app reads one
+with the recogniser built into the operating system — Vision on macOS, the
+Windows OCR engine on Windows 10 and later. Nothing is uploaded: the reading
+happens on your machine. Linux has no recogniser available here and says so
+rather than returning an empty page.
+
+On Windows the engine needs the language pack for the document's language. If
+it is missing, the message says which one to add.
+
+**Check what it read.** The text is marked as having come from a picture, and a
+recogniser can misread a character or miss a line entirely — a poor scan can
+lose a figure with nothing to mark the gap. Amounts, dates and names are worth
+comparing against the original before relying on an answer about them.
+
+Reading is limited to simple scans: one picture per page, a single column of
+text. A page laid out in columns, or carrying two pictures of similar size where
+the app cannot tell which one is the scan, is **refused by name** rather than
+returned in an order that reads plausibly and is wrong. A small logo beside a
+scan is fine — that is a letterhead, not an ambiguous page.
 
 ### My image was ignored
 

@@ -730,6 +730,27 @@
     return `${Math.round(chars / 1000)}k characters`;
   }
 
+  // The opening of `OCR_PREAMBLE` in src-tauri/src/ocr.rs, which every
+  // recognised document carries. A test asserts the two still agree: this is a
+  // copied string, and copied strings drift apart silently.
+  const OCR_MARK = "[This document is a scan";
+
+  // Whether a document's text was recognised from a picture rather than read
+  // out of the file.
+  //
+  // It was not shown anywhere. The preamble goes into the model's context, so
+  // the model hedges — and the person is told nothing. They see a filename and
+  // a character count, which look identical for a document that was read and
+  // one that was guessed at, while a recogniser can misread a figure or drop a
+  // line with nothing to mark that it happened.
+  function wasRecognised(content) {
+    return (content || "").startsWith(OCR_MARK);
+  }
+
+  const OCR_WARNING =
+    "Read from a picture by this device. Check names, dates and amounts against " +
+    "the original — text can be misread, or missed altogether.";
+
   async function onFiles(fileList) {
     for (const file of Array.from(fileList)) {
       // The whole message, not just this file. Per-file limits let forty
@@ -851,10 +872,131 @@
     if (cid !== conversationId) doneIds = { ...doneIds, [cid]: true };
   }
 
-  async function send() {
+  // How a turn was sent, recorded on the turn itself.
+  //
+  // Editing a message or pressing "Try again" re-asks a question that was
+  // already asked of a particular provider, with search either on or off. The
+  // composer's toggles at the moment of the edit are not that: they are
+  // whatever the user last left them at, possibly in a different conversation.
+  // Following them sends an old prompt — and any images attached to it — to a
+  // provider that never saw it.
+  //
+  // The first version of this fix forced *chat* for every replay, which closed
+  // the chat→image direction and opened image→chat: editing an image prompt
+  // then sent it and its reference pictures to the chat and search providers.
+  // Nothing about "the thing that replied" can be recovered from a global
+  // toggle, so each turn now carries its own answer.
+  // The conservative reading, and what an unrecognised record falls back to:
+  // chat, no search, no forcing. Guessing any of those *on* would spend money
+  // and reach the search provider on the strength of nothing.
+  const PLAIN_CHAT = { mode: "chat", webSearch: false, force: false, quick: false };
+
+  // Normalise a stored `sentAs` into the small set of things it may say.
+  //
+  // Stored messages are not this application's output — a conversation can be
+  // imported from a file someone was sent, and `import_conversation` checks
+  // roles, text and attachments but passes the rest of each message through
+  // untouched. So a crafted file could carry `sentAs: { mode: "image" }` on an
+  // ordinary question and have a later edit send it, and its attachments, to
+  // the image provider. Not a compromise of anything, but a document deciding
+  // where a request goes, which is not its business.
+  //
+  // Booleans are read as booleans rather than for truthiness, because the
+  // string "false" is true in JavaScript and that is exactly the shape a
+  // hostile file would use.
+  function normaliseSentAs(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    if (raw.mode === "image") return { mode: "image" };
+    if (raw.mode !== "chat") return null; // unknown mode: treat as no record
+    const flag = (v) => v === true;
+    return {
+      mode: "chat",
+      webSearch: flag(raw.webSearch),
+      force: flag(raw.force),
+      quick: flag(raw.quick),
+    };
+  }
+
+  function provenanceOf(mi) {
+    // What the conversation visibly is: an image turn is one with a picture
+    // under it. This is the corroboration the record is checked against, and
+    // the principle behind it is that routing should follow what the person
+    // can see rather than what the file says about itself.
+    const reply = messages[mi + 1];
+    const producedImage =
+      reply?.role === "assistant" && !!(reply.image || reply.imagePrompt);
+
+    const stored = normaliseSentAs(messages[mi]?.sentAs);
+    if (stored?.mode === "image") {
+      // Not taken on the record's word. A conversation can come from a file
+      // someone was sent, and a record claiming an ordinary question was an
+      // image turn would send that question, and whatever is attached to it,
+      // to the image provider — a paid generation, to a different endpoint,
+      // from a prompt nobody chose to send again. A file can of course also
+      // fake the picture; but then the conversation shows a picture, and
+      // regenerating from a prompt that visibly produced one is what should
+      // happen.
+      //
+      // The cost is a real one: an image turn whose generation *failed* has no
+      // picture under it, so editing it replays through chat. The model will
+      // say it cannot draw and point at the 🎨 button. That is a poor outcome
+      // for an honest case, and it is the right way round — the other error
+      // spends money.
+      return producedImage ? { mode: "image" } : PLAIN_CHAT;
+    }
+    if (stored) return stored;
+
+    // No usable record: written before 1.8.3, or malformed. The reply is the
+    // only evidence left.
+    return producedImage ? { mode: "image" } : PLAIN_CHAT;
+  }
+
+  // Undo an edit whose request was never accepted.
+  //
+  // Editing commits immediately: the old reply and everything below it are
+  // dropped before the provider is asked. When the provider then refuses — a
+  // bad key, no network, a quota — the conversation had been shortened in
+  // exchange for nothing, and the shortening was saved. Stopping a reply on
+  // purpose is different and stays as it is: there the user asked for the new
+  // branch and then ended it, and what arrived is theirs to keep.
+  // Restoring is two separate things, and conflating them lost conversations.
+  //
+  // The *data* is always restored: the refused edit did not happen, so the
+  // stored conversation must go back to what it was, whichever chat is on
+  // screen. The *view* is only restored if that conversation is still the one
+  // being looked at — putting a different chat's messages on screen, or
+  // refilling the composer someone is now typing in, would be its own bug.
+  //
+  // This returned false when the user had switched away, and the caller read
+  // that as "could not undo": it then wrote the truncated branch over the
+  // original. Editing a message and looking at another chat while it failed
+  // therefore destroyed the first conversation on disk, silently, with nothing
+  // on screen to show it. The two answers are now separate.
+  function putBack({ messages: before, input: text, pending: atts, cid }) {
+    if (cid !== conversationId) return false; // data restored by the caller; view untouched
+    messages = before;
+    input = text;
+    pending = atts;
+    return true;
+  }
+
+  // `replay` is a `sentAs` record to reproduce instead of reading the live
+  // toggles. `restore` is what to put back if the request is rejected before
+  // anything is accepted; see `resendFrom`.
+  async function send({ replay = null, restore = null } = {}) {
     const text = input.trim();
     const atts = pending.filter((a) => a.kind !== "error");
     if ((!text && atts.length === 0) || sending) return;
+
+    const mode = replay ? replay.mode : imageMode ? "image" : "chat";
+    // Replaying an image turn needs the image provider still configured. It
+    // can have been removed since, and falling through to chat is precisely
+    // the disclosure this is here to prevent.
+    if (mode === "image" && !imageConfigured) {
+      if (restore) putBack(restore);
+      announce("Image generation is not configured, so this cannot be sent again.");
+      return;
+    }
 
     // Snapshot the conversation this send belongs to. The user can switch or
     // start another chat while we stream — everything below must keep writing
@@ -863,12 +1005,18 @@
     const pid = chatProjectId;
     const msgs = messages;
     const requestId = newConversationId();
+    // Set when a rejected edit has been rolled back, so the `finally` blocks
+    // below save the restored conversation rather than the discarded one.
+    let undone = false;
 
     // Image-generation mode: send the prompt to the user's image endpoint.
-    if (imageMode) {
+    if (mode === "image") {
       // A picture needs describing even when one is attached: the reference says
       // what it should look like, the prompt says what to make of it.
-      if (!text) return;
+      if (!text) {
+        if (restore) putBack(restore);
+        return;
+      }
       // Attached images are what FLUX generates from — all of them, since
       // FLUX.2 holds a style across a set. Over its model's limit the backend
       // refuses before spending anything, and the composer has already said so.
@@ -881,6 +1029,7 @@
         text,
         attachments: references,
         at: imageStartedAt,
+        sentAs: { mode: "image" },
       });
       msgs.push({ role: "assistant", text: "", status: "🎨 Generating image…", image: null });
       const reply = msgs[msgs.length - 1];
@@ -901,20 +1050,50 @@
         reply.status = "";
       } catch (e) {
         const msg = String(e);
-        reply.text = msg === "Stopped." ? "⏹ Stopped." : `⚠️ ${msg}`;
-        reply.status = "";
-        // Nothing was generated, so put the references back in the composer —
-        // the likeliest failures ("this provider can't take one", "too many for
-        // this model") are fixed in Settings and the same thing sent again.
-        const back = references.filter((a) => !pending.includes(a));
-        if (back.length) pending = [...back, ...pending];
+        const stopped = msg === "Stopped." || stoppedRequests.has(requestId);
+        // A regenerate that failed gets the old picture back: no new image
+        // exists, so the one it replaced should not have been thrown away.
+        //
+        // Not "and nothing was charged", which this comment used to say and
+        // cannot support. `generate_image` is one call that either returns a
+        // picture or throws, so from here a provider that refused the job and
+        // one that accepted it and failed while polling look identical — and
+        // the second may well have been billed. Giving image generation a real
+        // submitted/accepted phase, the way the chat path now has, is the fix
+        // for that and is not this change.
+        //
+        // As on the chat path, `undone` does not depend on `putBack`: the
+        // stored conversation is restored whether or not the user is still
+        // looking at it.
+        if (restore && !stopped) {
+          undone = true;
+          if (putBack(restore)) {
+            announce(`Could not send that again: ${msg}`);
+          }
+        } else {
+          reply.text = stopped ? "⏹ Stopped." : `⚠️ ${msg}`;
+          reply.status = "";
+          // Nothing was generated, so put the references back in the composer —
+          // the likeliest failures ("this provider can't take one", "too many
+          // for this model") are fixed in Settings and the same thing sent
+          // again.
+          const back = references.filter((a) => !pending.includes(a));
+          if (back.length) pending = [...back, ...pending];
+        }
       } finally {
-        reply.at = Date.now();
-        reply.took = reply.at - imageStartedAt;
         endRun(cid, requestId);
         stoppedRequests.delete(requestId);
         if (cid === conversationId) scrollToBottom();
-        persist(cid, msgs, pid);
+        // The restored branch is what gets saved, not the one that was rolled
+        // back — a `return` in the block above still runs this, and persisting
+        // `msgs` here would write the discarded version over the good one.
+        if (undone) {
+          persist(cid, restore.messages, pid);
+        } else {
+          reply.at = Date.now();
+          reply.took = reply.at - imageStartedAt;
+          persist(cid, msgs, pid);
+        }
       }
       return;
     }
@@ -922,8 +1101,34 @@
     input = "";
     pending = [];
 
+    // The routing for this turn, fixed here and recorded on the message. A
+    // replay reproduces what the original turn used; a fresh send reads the
+    // composer once, so a toggle flipped mid-stream cannot change a request
+    // that is already in flight.
+    const useSearch = replay ? replay.webSearch === true : webSearch;
+    const useQuick = replay ? replay.quick === true : quickMode;
+    // Forcing is decided here too, and recorded, because it was the one routing
+    // input the record left out: `sentAs` stored mode, search and quick, and
+    // the replay read `replay.force`, which nothing ever set. A turn that was
+    // forced to search therefore replayed unforced and quietly answered from
+    // the model's own knowledge instead.
+    //
+    // The armed flag is consumed only by a fresh send. It belongs to the
+    // message the user is about to type, not to one being asked again.
+    const useForce = useSearch && (replay ? replay.force === true : forceSearch);
+    if (useForce && !replay) {
+      forceSearch = false;
+      rememberToggles();
+    }
+
     const startedAt = Date.now();
-    msgs.push({ role: "user", text, attachments: atts, at: startedAt });
+    msgs.push({
+      role: "user",
+      text,
+      attachments: atts,
+      at: startedAt,
+      sentAs: { mode: "chat", webSearch: useSearch, force: useForce, quick: useQuick },
+    });
     msgs.push({ role: "assistant", text: "", status: "", steps: [] });
     const reply = msgs[msgs.length - 1];
     startRun(cid, msgs, requestId);
@@ -936,7 +1141,7 @@
     // anyway makes it promise a search it can't run (and can spiral). When off,
     // it answers from its own knowledge and points to the 🌐 button for current
     // info.
-    const researchBlock = webSearch && searchConfigured
+    const researchBlock = useSearch && searchConfigured
       ? `You can research across multiple steps: use web_search to find ` +
         `sources, then fetch_page to read a promising result in full for exact ` +
         `figures, tables, or quotes, and calculate for any arithmetic on the ` +
@@ -1053,10 +1258,26 @@
     // working indicator survives a long reasoning block instead of being dropped
     // by the first token that renders as nothing.
     let sawVisible = false;
+    // Whether the provider took the request, which decides whether a rejected
+    // edit can still be un-done: once a turn is under way the branch it
+    // replaced is gone for good, and until then it can be put back.
+    //
+    // Set by the `Accepted` event alone. It used to be set by *any* event on
+    // this channel, which was wrong in precisely the case the rollback exists
+    // for: the backend emits `Error` and then fails, so a bad key or an
+    // exhausted quota looked like acceptance and the conversation stayed
+    // destroyed. Every event here other than `Accepted` is sent by the
+    // application around the request; only that one comes from the provider
+    // having taken it.
+    let accepted = false;
 
     const channel = new Channel();
     channel.onmessage = (msg) => {
       const onScreen = cid === conversationId;
+      if (msg.type === "Accepted") {
+        accepted = true;
+        return;
+      }
       if (msg.type === "Token") {
         if (connState !== "ok") connState = "ok"; // a token proves the key works
         reply.text += msg.data;
@@ -1096,30 +1317,52 @@
       }
     };
 
-    // Consume the armed flag before awaiting, so a follow-up sent while this
-    // turn is still streaming doesn't force a second search.
-    const force = webSearch && forceSearch;
-    if (force) {
-      forceSearch = false;
-      rememberToggles();
-    }
+    // Decided and consumed further up, where the turn's routing is settled and
+    // written onto the message. Kept as one decision so the value sent and the
+    // value recorded cannot drift apart — which is how the record came to be
+    // missing this one in the first place.
+    const force = useForce;
 
     try {
       await invoke("send_chat", {
         messages: history,
-        webSearch,
+        webSearch: useSearch,
         forceSearch: force,
-        quick: quickMode,
+        quick: useQuick,
         projectId: pid,
         conversationId: cid,
         requestId,
         onEvent: channel,
       });
     } catch (e) {
-      reply.text = cleanText(reply.text || "").trimEnd();
-      reply.text += `${reply.text ? "\n\n" : ""}⚠️ ${e}`;
+      // Refused before the provider took it: the edit bought nothing, so it is
+      // rolled back rather than saved with an error under it. `sawVisible` is
+      // not the test — a turn can be accepted and stream only reasoning — and
+      // neither is "an event arrived", which is what this used to check.
+      //
+      // `undone` does not depend on `putBack`. The rollback is about the stored
+      // conversation, and that has to happen whether or not the user is still
+      // looking at it; `putBack` only says whether the view was refreshed too.
+      const stopped = stoppedRequests.has(requestId);
+      if (restore && !accepted && !stopped) {
+        undone = true;
+        if (putBack(restore)) {
+          announce(`Could not send that again: ${e}`);
+        }
+      } else {
+        reply.text = cleanText(reply.text || "").trimEnd();
+        reply.text += `${reply.text ? "\n\n" : ""}⚠️ ${e}`;
+      }
       checkConnection(); // a failed send may mean the key/connection went bad — re-verify
     } finally {
+      if (undone) {
+        // Rolled back. The restored conversation is what gets saved: this block
+        // runs whatever the one above did, and persisting `msgs` here would
+        // write the discarded version straight back over it.
+        stoppedRequests.delete(requestId);
+        endRun(cid, requestId);
+        persist(cid, restore.messages, pid);
+      } else {
       // Stamped when the reply finished, not when it started, so the time shown
       // next to it is the time it actually appeared.
       reply.at = Date.now();
@@ -1140,11 +1383,22 @@
       endRun(cid, requestId);
       if (cid === conversationId) {
         scrollToBottom();
-        // If this reply produced artifacts, auto-open the newest (last in the list).
-        const made = parseParts(reply.text).filter((p) => p.type === "artifact" && !p.pending);
-        if (made.length) activeIndex = artifacts.length - 1;
+        // An artifact is *not* opened here any more.
+        //
+        // Opening it ran model-written JavaScript the moment a reply landed,
+        // without anyone asking for it. The iframe is capability-isolated —
+        // opaque origin, no IPC, no network, no storage — so this was never a
+        // way out of the sandbox. But it shares the webview's CPU and memory,
+        // so a loop or an allocation storm freezes the application, and the
+        // code that decides to write one can be steered by a document or a web
+        // page the model read. Running it is now a thing the person does, and
+        // the chip in the reply says what it is before they do.
+        //
+        // The announcement still fires, so someone not watching the screen
+        // learns an artifact arrived.
       }
       persist(cid, msgs, pid);
+      }
     }
   }
 
@@ -1260,13 +1514,37 @@
     if (sending) return;
     const original = messages[mi];
     if (original?.role !== "user") return;
+
+    // Everything `send` would refuse for is checked here, before a single
+    // message is discarded. It used to truncate first and let `send` return
+    // early: pressing Enter on a box holding only spaces destroyed the edited
+    // message and every reply below it, asked nothing, and left the chat
+    // shorter with no request in flight. The Send button was disabled for that
+    // case; the keyboard was not, and the keyboard is how people finish typing.
+    const trimmed = (text || "").trim();
+    const attachments = (original.attachments || []).filter((a) => a.kind !== "error");
+    if (!trimmed && attachments.length === 0) return;
+
+    // How the original turn was sent, so the replay reaches the same provider
+    // with the same search setting rather than whatever the composer says now.
+    const replay = provenanceOf(mi);
+    // Everything needed to put the conversation back if the request is refused
+    // before it is accepted. Taken before anything is discarded — a copy, since
+    // the array itself is about to be replaced.
+    const restore = {
+      messages: messages.slice(),
+      input: text,
+      pending: attachments,
+      cid: conversationId,
+    };
+
     cancelEdit();
     // The attachments come with it: editing the words of a message is not a
     // reason to drop the file it was asking about.
-    pending = (original.attachments || []).filter((a) => a.kind !== "error");
+    pending = attachments;
     input = text;
     messages = messages.slice(0, mi);
-    await send();
+    await send({ replay, restore });
   }
 
   // Regenerate is offered on the last reply only. Anywhere else it would mean
@@ -1804,7 +2082,16 @@
                 {#if a.kind === "image"}
                   <img class="thumb" src={a.dataUrl} alt={a.name} />
                 {:else if a.kind === "text"}
-                  <span class="att-chip">📄 {a.name}</span>
+                  <span class="att-chip">
+                    📄 {a.name}
+                    <!-- Kept in the history too: an answer about a scanned
+                         contract is worth re-reading months later knowing the
+                         figures were recognised rather than read. -->
+                    {#if wasRecognised(a.content)}<span
+                        class="att-ocr"
+                        title={OCR_WARNING}>OCR</span
+                      >{/if}
+                  </span>
                 {/if}
               {/each}
             </div>
@@ -1815,8 +2102,17 @@
                 {#if part.type === "artifact" && part.pending}
                   <div class="artifact-chip pending">◆ Building {titleFor(part)}…</div>
                 {:else if part.type === "artifact"}
-                  <button class="artifact-chip" onclick={() => openArtifact(part)}>
-                    ◆ {titleFor(part)} · open ↗
+                  <!-- Pressing this runs code the model wrote, in a frame with
+                       no network, no storage and no way back into the app. The
+                       label says "run" rather than "open" because that is what
+                       it does, and because until 1.8.3 it happened by itself
+                       the moment a reply arrived. -->
+                  <button
+                    class="artifact-chip"
+                    title="Runs this generated code in a sandboxed frame — no network, no access to your files or this app"
+                    onclick={() => openArtifact(part)}
+                  >
+                    ◆ {titleFor(part)} · run ↗
                   </button>
                 {:else if part.content.trim()}
                   <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
@@ -1954,6 +2250,10 @@
                    until the reply is wrong, and this is the only place the
                    difference is visible before sending. -->
               <span class="att-size">{extractedSize(a.content)}</span>
+              {#if wasRecognised(a.content)}
+                <!-- Before sending, which is when it can still be checked. -->
+                <span class="att-ocr" title={OCR_WARNING}>OCR</span>
+              {/if}
             {/if}
             <button
               class="att-x"

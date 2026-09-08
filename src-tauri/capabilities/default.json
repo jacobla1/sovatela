@@ -1,7 +1,17 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capabilities for the main window. `opener:default` was removed after the September 2026 review: it let the renderer hand the operating system any URL, and a URL is not only an address — file:// opens a local file in its registered handler and a custom scheme launches whatever claimed it, so a rendering bug became a way to start a program. Links now go through the `open_external` command in Rust, which accepts http(s) only, without credentials. The plugin stays registered because Rust calls it.",
+  "description": "Capabilities for the main window. Listed one by one rather than taken as `core:default` and `dialog:default`, because those two bundles are the effective IPC surface and nobody had read them. `core:default` pulls in `core:image:default`, whose `allow-from-path` reads a file off disk and whose `allow-rgba` hands its pixels back — a way to read the user's pictures that survives every check on this application's own commands, because it is not one of them. `dialog:default` grants open and save pickers the interface never asks for: it imports `ask` and nothing else, and every folder and file this app chooses is chosen by a dialog opened in Rust. Image is absent here rather than denied, because the frontend imports no image API at all; if that changes, this is the file that has to say so. `opener:default` went the same way after the September 2026 review — it let the renderer hand the operating system any URL, and a URL is not only an address: file:// opens a local file in its registered handler and a custom scheme launches whatever claimed it. Links go through `open_external` in Rust, which accepts http(s) only, without credentials. The plugins stay registered because Rust calls them.",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:default"]
+  "permissions": [
+    "core:app:default",
+    "core:event:default",
+    "core:menu:default",
+    "core:path:default",
+    "core:resources:default",
+    "core:tray:default",
+    "core:webview:default",
+    "core:window:default",
+    "dialog:allow-ask"
+  ]
 }

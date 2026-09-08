@@ -1,11 +1,12 @@
 # Privacy policy
 
-Last updated: 2026-09-05 · Applies to: Sovatela v1.8.2
+Last updated: 2026-09-05 · Applies to: Sovatela v1.8.3
 
 > **How this was written, since you are entitled to know.** By the publisher,
 > not by a lawyer. It is written to be accurate about what the software does,
 > and that half is checkable rather than asserted: every destination named in
-> § 4 was confirmed by capturing a released build's network traffic, and the
+> § 4 was confirmed by capturing the network traffic of the **1.7.3** released
+> build — the most recent one published at the time of writing — and the
 > code that decides each one is public. What has *not* had professional review
 > is the legal characterisation in § 5 — who is a controller for what. That is
 > said here rather than left to be discovered, because an unreviewed policy you

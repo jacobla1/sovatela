@@ -1,19 +1,23 @@
-# Release notes — Sovatela 1.8.2
+# Release notes — Sovatela 1.8.3
 
-Release date: 2026-09-07 · [All releases](https://github.com/jacobla1/sovatela/releases)
+Release date: 2026-09-08 · [All releases](https://github.com/jacobla1/sovatela/releases)
 
-> **Why the version jumps from 1.7.3 to 1.8.2.** Two tags were pushed and then
-> withdrawn: `v1.8.0` when the release was held back for more work, and `v1.8.1`
-> when its build stopped at the test gate before producing anything. A tag that
-> has been public once is not made to point somewhere else, so both numbers are
-> burned. This release is everything they were going to be, and what the extra
-> time found.
+> **Why the version jumps from 1.7.3 to 1.8.3.** Three tags were pushed and then
+> withdrawn: `v1.8.0` when the release was held back for more work, `v1.8.1`
+> when its build stopped at the test gate before producing anything, and
+> `v1.8.2` when an independent review of the frozen source found defects — in
+> the code that had been written to fix the previous round's findings. A tag
+> that has been public once is not made to point somewhere else, so all three
+> numbers are burned. This release is everything they were going to be, and what
+> the extra time found.
 
 The chat list stops being a pile of chats you can only scroll. You can search
 what was said, name a chat yourself, save one to a file and read it back — and
 you can edit a message you have already sent.
 
-## New in 1.8.2
+Scanned PDFs are read on your own machine, and say so where you can see it.
+
+## New in 1.8.3
 
 - **Search your saved chats.** A field above the list searches what was said,
   not just the titles: message text, attachment names, and the contents of text
@@ -108,6 +112,39 @@ every chat is stored, and not one to make quietly in a feature release.
 
 Replies cannot be edited either, only your own messages. A saved chat is meant
 to be a record of what happened, and one you can rewrite both sides of is not.
+
+## Corrected before this was released
+
+None of these was ever in a released version. They were found by an independent
+reviewer reading the frozen source, and by testing that ran the built app rather
+than only its parts — three rounds of it, which is why `v1.8.2` was withdrawn.
+They are listed because several changed what the app does, and because a release
+note that records only what users noticed is not a record of what happened.
+
+- **A scan is read down the page rather than across it.** The recogniser does
+  not promise to return lines in reading order, and this app was using the order
+  they arrived in. On a clean scan that is top to bottom and nothing looks
+  wrong; on a poor one it is not, and a test contract came back with its
+  reference line above the figure it referred to — every word present, in an
+  order nobody wrote. Lines are now placed by where they sit on the page.
+- **A page that cannot be read in order is refused by name.** Two columns, or
+  two pictures where it is unclear which is the scan. Reading columns properly
+  means redrawing the page, which this app does not do; interleaved text would
+  be worse than a refusal.
+- **An edit the provider refuses no longer destroys the reply it replaced.** If
+  the request was rejected — a bad key, no network, a quota — the conversation
+  had been shortened for nothing and the shortening was saved. It is put back
+  now, including when you have moved to another chat while it failed, which is
+  the case where nothing on screen would have told you.
+- **Editing keeps the settings the message was sent with.** A question asked
+  with search forced replayed unforced and was answered from memory; a picture
+  prompt could reach the chat provider depending on which buttons were on.
+- **A document with a part this app cannot open is refused whole**, rather than
+  having that part quietly skipped and the rest read.
+- **The interface holds nine named permissions** instead of the framework's
+  default bundles, which included reading a file from disk and returning its
+  pixels. Nothing reached it through this app's own commands — which is why
+  reviewing those commands did not find it.
 
 ## Fixed and hardened
 

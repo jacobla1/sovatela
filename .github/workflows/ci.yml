@@ -71,6 +71,103 @@ jobs:
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
+      # The extraction helper, run the way the application runs it.
+      #
+      # This exists because a unit test could not have found what it is looking
+      # for. Two tests that constructed the system recogniser killed the Windows
+      # test process with an access violation — no failure reported, the process
+      # simply gone — and that was the first time that code had executed on
+      # Windows anywhere: CI had compiled it on every run for weeks and never
+      # once called it. A test cannot assert anything after an access violation,
+      # because the asserting process is the one that dies. So the helper is
+      # spawned as a subprocess, exactly as the app spawns it, and judged on how
+      # it exits.
+      #
+      # Only two exits are acceptable: 0, meaning text came back, and 33,
+      # meaning a clean refusal — no recogniser, no language pack, a page it
+      # will not read. Anything else is a death, and a death here is the fault
+      # this is watching for.
+      #
+      # The runners almost certainly have no OCR language pack, so on Windows
+      # the expected result is 33 and not 0. That is the point: a missing
+      # language pack must be a refusal rather than a crash, and that is the
+      # half of the question CI can settle. Whether it can actually *read* a
+      # scan still needs a machine with a language pack on it.
+      - name: The extraction helper reads a scanned PDF
+        shell: bash
+        run: |
+          set -u
+          node qa/ocr/make-scan.mjs scan.pdf "SOVATELA OCR" "INVOICE 12345"
+          bin=src-tauri/target/debug/scale
+          [ -x "$bin" ] || bin=src-tauri/target/debug/scale.exe
+          set +e
+          "$bin" --sovatela-extract-doc-helper pdf < scan.pdf > helper-out.txt 2> helper-err.txt
+          code=$?
+          set -e
+          echo "helper exit: $code"
+          echo "--- stdout ---"; head -c 2000 helper-out.txt || true
+          echo; echo "--- stderr ---"; head -c 2000 helper-err.txt || true; echo
+
+          # A death is a death everywhere. 0 means text came back, 33 a clean
+          # refusal; anything else is a crash, a hang, or an exit this binary
+          # does not use — which is the fault this step exists for.
+          if [ "$code" -ne 0 ] && [ "$code" -ne 33 ]; then
+            echo "::error::the extraction helper did not exit cleanly (code $code)."
+            exit 1
+          fi
+
+          if [ "${{ matrix.platform }}" = "ubuntu-22.04" ]; then
+            # Linux has no system recogniser and is not expected to grow one.
+            # What it must do is say so, rather than report an empty document.
+            [ "$code" -eq 33 ] || { echo "::error::Linux returned text it cannot read"; exit 1; }
+            grep -qi "recogniser built into the operating system" helper-out.txt \
+              || { echo "::error::Linux did not explain why it cannot read a scan"; exit 1; }
+            echo "Linux refused, and said why."
+            exit 0
+          fi
+
+          # macOS and Windows have a recogniser, so the page must actually be
+          # read: text has to come back, and it has to be the text on the page.
+          [ "$code" -eq 0 ] || {
+            echo "::error::nothing was read from a scan with words on it (exit $code)"
+            exit 1
+          }
+
+          # What is asserted, and why it is not the whole string.
+          #
+          # The letters are drawn from a 5×7 bitmap alphabet, which is a hard
+          # input rather than a representative one: at five pixels wide a V and
+          # a U differ by two rows. Windows reads "SOURTELR" for "SOVATELA" and
+          # "INUOICE" for "INVOICE"; macOS reads both exactly. That is the
+          # fixture's fault more than the engine's, and holding a release gate
+          # to character-perfect recognition of a bitmap font would make it a
+          # test of my glyphs.
+          #
+          # So this asserts what a working recogniser must produce and a broken
+          # one cannot: the digits, which are unambiguous at this size and which
+          # both engines read exactly; the word OCR; and enough characters
+          # overall that a single stray mark cannot pass. Whether the prose is
+          # accurate on a *real* scan is a question for a real document, and it
+          # is a QA row rather than a CI gate.
+          got=$(tr -d '\r' < helper-out.txt | tr '[:lower:]' '[:upper:]' | tr -cd 'A-Z0-9')
+          # Drop the preamble, which is this app's own words and not the page's.
+          page=${got#*MISTAKES}
+          for want in 12345 OCR; do
+            case "$page" in
+              *"$want"*) ;;
+              *)
+                echo "::error::the recogniser did not read \"$want\" from the scan."
+                echo "::error::what came back, normalised: $page"
+                exit 1
+                ;;
+            esac
+          done
+          if [ "${#page}" -lt 15 ]; then
+            echo "::error::almost nothing was read: $page"
+            exit 1
+          fi
+          echo "Read from the picture: $page"
+
       # The same command the release gate runs, and for the reason it exists:
       # until 1.8.1 this ran *only* at release time, so a lint that fires on one
       # platform was first seen when a tag had already been pushed. A

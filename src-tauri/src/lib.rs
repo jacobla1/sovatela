@@ -1475,13 +1475,84 @@ fn get_history_settings(app: tauri::AppHandle) -> Result<HistorySettings, String
     })
 }
 
+/// Pick the history folder, and keep the one that was picked.
+///
+/// The dialog is opened here for the same reason as the template picker and
+/// `choose_workspace_dir`: the interface used to open it and hand the path to
+/// `set_history_settings`, which meant a command that would point the history
+/// folder anywhere the interface named. Nothing else can set the folder — there
+/// is no field to type one into — so opening the dialog here removes the
+/// capability rather than merely discouraging its use.
+///
+/// Returns the folder now in force, so a declined dialog leaves the setting
+/// alone and the interface still shows the truth.
 #[tauri::command]
-fn set_history_settings(app: tauri::AppHandle, settings: HistorySettings) -> Result<(), String> {
-    let mut s = load_settings(&app)?;
-    let old_dir = history_dir_for(&app, &s)?;
-    s.save_history = settings.save_history;
-    s.history_dir = settings.dir.trim().to_string();
-    let new_dir = history_dir_for(&app, &s)?;
+async fn choose_history_dir(app: tauri::AppHandle) -> Result<String, String> {
+    let picked = tokio::task::spawn_blocking({
+        let app = app.clone();
+        move || {
+            use tauri_plugin_dialog::DialogExt;
+            app.dialog()
+                .file()
+                .set_title("Choose a folder for chat history")
+                .blocking_pick_folder()
+                .and_then(|p| p.into_path().ok())
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let Some(dir) = picked else {
+        return Ok(load_settings(&app)?.history_dir); // declined: unchanged
+    };
+    let save_history = load_settings(&app)?.save_history;
+    // Through the ordinary path, so the move, the claim check and the
+    // warning-versus-refusal behaviour are the same as they have always been.
+    apply_history_settings(&app, save_history, &dir.to_string_lossy())?;
+    Ok(load_settings(&app)?.history_dir)
+}
+
+/// Turn recording of chat history on or off, leaving the folder alone.
+///
+/// Deliberately narrower than the setting it writes. The interface needs to
+/// flip this switch; it does not need to say where the chats go, and until
+/// 1.8.3 one command did both — so a compromised renderer could relocate every
+/// recorded conversation into a shared or cloud-synced folder without a dialog
+/// ever opening. Moving the picker into `choose_history_dir` did not close
+/// that, because the setter it delegated to stayed registered and still took a
+/// path. The two capabilities are separated here rather than guarded: a check
+/// on a path is only as good as the next person to read it, and there is
+/// nothing to check if the path never arrives.
+#[tauri::command]
+fn set_history_saving(app: tauri::AppHandle, save_history: bool) -> Result<(), String> {
+    let dir = load_settings(&app)?.history_dir;
+    apply_history_settings(&app, save_history, &dir)
+}
+
+/// Go back to the folder the application owns.
+///
+/// The counterpart to `choose_history_dir`, and the only other way the folder
+/// changes. It names no path either: the default is computed from the app's
+/// own config directory.
+#[tauri::command]
+fn use_default_history_dir(app: tauri::AppHandle) -> Result<String, String> {
+    let save_history = load_settings(&app)?.save_history;
+    apply_history_settings(&app, save_history, "")?;
+    Ok(load_settings(&app)?.history_dir)
+}
+
+/// The one place the history folder actually changes. Not a command — each of
+/// the three callers above is, and each decides the path itself.
+fn apply_history_settings(
+    app: &tauri::AppHandle,
+    save_history: bool,
+    dir: &str,
+) -> Result<(), String> {
+    let mut s = load_settings(app)?;
+    let old_dir = history_dir_for(app, &s)?;
+    s.save_history = save_history;
+    s.history_dir = dir.trim().to_string();
+    let new_dir = history_dir_for(app, &s)?;
     // Claiming happens here, where the user has just chosen the folder, rather
     // than as a side effect of working out a path. If the folder cannot be
     // claimed — a `Sovatela` directory already there with someone else's files
@@ -1517,7 +1588,7 @@ fn set_history_settings(app: tauri::AppHandle, settings: HistorySettings) -> Res
         // setting has to be saved regardless: the chats are in the new folder,
         // and refusing to point the app at them is how they vanish.
         if !outcome.warnings.is_empty() {
-            save_settings(&app, &s)?;
+            save_settings(app, &s)?;
             return Err(format!(
                 "Your chats were moved successfully and this app is now using the new \
                  folder. One thing afterwards did not finish:\n\n  {}\n\nNo chat is \
@@ -1526,7 +1597,7 @@ fn set_history_settings(app: tauri::AppHandle, settings: HistorySettings) -> Res
             ));
         }
     }
-    save_settings(&app, &s)
+    save_settings(app, &s)
 }
 
 // ---------- Memory (personalization applied as a system prompt) ----------
@@ -3179,15 +3250,46 @@ fn templates_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
 /// edited to something else after it was checked — and the last of those turns
 /// a vetted file into an unvetted one without anybody touching this app.
 #[tauri::command]
-async fn set_template(
-    app: tauri::AppHandle,
-    kind: String,
-    path: String,
-) -> Result<TemplateInfo, String> {
+async fn set_template(app: tauri::AppHandle, kind: String) -> Result<Option<TemplateInfo>, String> {
     if kind != "docx" && kind != "pptx" {
         return Err("templates are only used for Word documents and presentations".into());
     }
-    let source = std::path::PathBuf::from(&path);
+
+    // The dialog is opened here, not in the interface.
+    //
+    // It used to be opened in the renderer, which then handed this command the
+    // path it had chosen — so the command would open any path it was given.
+    // Every other file this app reads on request works the other way round:
+    // the backend asks, and the only destination that exists is the one the
+    // person picked. The checks below are thorough enough that this was not a
+    // way to read a file's contents, but a command that opens an arbitrary
+    // path still tells a compromised interface whether a path exists, and lets
+    // it copy any valid Office file into application storage.
+    let (label, extensions): (&str, &[&str]) = if kind == "docx" {
+        // `.dotx`/`.potx` are what Word and PowerPoint save a template as, so
+        // they are the likeliest file to bring here.
+        ("Word document", &["docx", "dotx"])
+    } else {
+        ("PowerPoint presentation", &["pptx", "potx"])
+    };
+    let picked = tokio::task::spawn_blocking({
+        let app = app.clone();
+        move || {
+            use tauri_plugin_dialog::DialogExt;
+            app.dialog()
+                .file()
+                .set_title("Choose a document to use as a template")
+                .add_filter(label, extensions)
+                .blocking_pick_file()
+                .and_then(|p| p.into_path().ok())
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let Some(source) = picked else {
+        return Ok(None); // declining the dialog is not a failure
+    };
     let name = source
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -3256,7 +3358,7 @@ async fn set_template(
 
     write_atomic_bytes(&dest, &bytes).map_err(|e| format!("Could not save the template: {e}"))?;
 
-    Ok(TemplateInfo { kind, name, added })
+    Ok(Some(TemplateInfo { kind, name, added }))
 }
 
 /// The templates currently in use, for Settings to display.
@@ -3861,10 +3963,19 @@ fn zip_entry_string(bytes: &[u8], entry: &str) -> Result<String, String> {
 }
 
 /// Entry names in a zip, in archive order.
+///
+/// Empty on a package holding an entry this build cannot decompress, rather
+/// than the same list with that entry quietly absent — the caller decides which
+/// parts of a document to read from these names, and a name that is missing
+/// because the part could not be opened is indistinguishable from one that was
+/// never there.
 fn zip_entry_names(bytes: &[u8]) -> Vec<String> {
     let Ok(mut archive) = zip::ZipArchive::new(std::io::Cursor::new(bytes)) else {
         return Vec::new();
     };
+    if ooxml::refuse_unreadable_entries(&mut archive).is_err() {
+        return Vec::new();
+    }
     (0..archive.len())
         .filter_map(|i| archive.by_index(i).ok().map(|f| f.name().to_string()))
         .collect()
@@ -4659,6 +4770,30 @@ fn document_text(name: &str, bytes: &[u8]) -> Result<String, String> {
             what.to_string()
         }
     };
+    // Every zip-derived format is checked whole before any of it is
+    // interpreted.
+    //
+    // The preflight existed before this and was called from the wrong places.
+    // `document_text` reached `word/document.xml` directly, and the name scan
+    // that would have refused the package ran *after* that — and turned its
+    // refusal into an empty list besides. So a package with a valid body and
+    // one unreadable part was accepted and its body returned: the parser was
+    // green over precisely the condition the preflight exists to stop, and the
+    // hidden part might be `vbaProject.bin`.
+    //
+    // Here it is one call in front of all four parsers, which is the only
+    // arrangement where "this package is refused" is a property of the package
+    // rather than of which entry a given parser happened to look at first.
+    if lower.ends_with(".docx")
+        || lower.ends_with(".odt")
+        || lower.ends_with(".pptx")
+        || lower.ends_with(".xlsx")
+    {
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
+            .map_err(|_| "not a readable document".to_string())?;
+        ooxml::refuse_unreadable_entries(&mut archive)?;
+    }
+
     let text = if lower.ends_with(".pdf") {
         pdf_to_text(bytes)?
     } else if lower.ends_with(".docx") {
@@ -4721,6 +4856,27 @@ fn document_text(name: &str, bytes: &[u8]) -> Result<String, String> {
     Ok(text)
 }
 
+/// How many extraction requests may hold a decoded document at once.
+///
+/// One helper runs at a time — `doc_sandbox` serialises them — but that mutex
+/// is acquired *inside* the helper call, so any number of requests could queue
+/// behind it, each already holding up to 20 MB of decoded file in the parent
+/// process. The helper was contained and the thing waiting to enter it was not.
+///
+/// Two: one being extracted, one ready to start the moment it finishes, so an
+/// attachment queued behind another is not refused for being second. Anything
+/// beyond that is told to wait, which is true and is what the interface would
+/// have to say anyway.
+const CONCURRENT_EXTRACTIONS: usize = 2;
+
+/// `OnceLock` rather than `LazyLock`, which would read better and is stable
+/// only from 1.80. This crate declares 1.77.2, and CI treats clippy warnings as
+/// errors, so the neater spelling is a build failure rather than a preference.
+fn extraction_permits() -> &'static tokio::sync::Semaphore {
+    static PERMITS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    PERMITS.get_or_init(|| tokio::sync::Semaphore::new(CONCURRENT_EXTRACTIONS))
+}
+
 /// Extract readable text from an uploaded document so attaching a PDF/Word
 /// file feeds the model real text instead of decoded-binary garbage.
 /// `async` keeps parsing (seconds, for large PDFs) off the UI thread.
@@ -4736,6 +4892,11 @@ async fn extract_document(name: String, data_base64: String) -> Result<String, S
             MAX_UPLOAD_BYTES / (1024 * 1024)
         ));
     }
+    // Before the decode, not after: the permit is what bounds how many decoded
+    // documents exist at once, and one taken afterwards would bound nothing.
+    let _permit = extraction_permits()
+        .try_acquire()
+        .map_err(|_| "another document is being read — try that one again in a moment.")?;
     let bytes = BASE64_STANDARD
         .decode(data_base64.as_bytes())
         .map_err(|_| "could not read the file data".to_string())?;
@@ -5423,6 +5584,16 @@ enum StreamEvent {
     /// the flag but a research turn ignores it — so the UI marks the replies
     /// that really are less reliable rather than inferring it from the toggle.
     Quick,
+    /// The provider took the request. Forwarded from `glm::CompletionEvent`,
+    /// which emits it immediately after the response status check.
+    ///
+    /// The interface uses this, and nothing else, to decide whether an edited
+    /// message can still be un-edited. Every other event in this enum is sent
+    /// by this application *around* a request rather than by the provider in
+    /// reply to one — `Error` most of all, which is emitted and then followed
+    /// by a failure. Treating any of them as acceptance destroys the branch the
+    /// rollback exists to save, which is what happened on every bad key.
+    Accepted,
     Done,
     Error(String),
 }
@@ -5522,6 +5693,10 @@ async fn stream_completion_max(
             }
             glm::CompletionEvent::Truncated => {
                 saw_truncation.store(true, Ordering::SeqCst);
+                true
+            }
+            glm::CompletionEvent::Accepted => {
+                let _ = on_event.send(StreamEvent::Accepted);
                 true
             }
         },
@@ -5811,6 +5986,10 @@ async fn stream_tool_round(
         let _ = on_event.send(StreamEvent::Error(msg.clone()));
         return Err(msg);
     }
+    // The research path posts its own rounds rather than going through
+    // `glm::complete`, so acceptance is announced here for the same reason and
+    // at the same point: the status check just above is what makes it true.
+    let _ = on_event.send(StreamEvent::Accepted);
 
     let mut acc = RoundAccum::default();
     let mut stream = resp.bytes_stream();
@@ -7752,8 +7931,11 @@ fn validate_imported_conversation(v: &serde_json::Value) -> Result<(), String> {
     let Some(obj) = v.as_object() else {
         return Err("that file does not contain a conversation".into());
     };
-    let schema = obj.get("schema").and_then(|s| s.as_u64()).unwrap_or(0) as u32;
-    if schema > CONV_SCHEMA_VERSION {
+    let schema = obj.get("schema").and_then(|s| s.as_u64()).unwrap_or(0);
+    // Compared as it was read. Narrowing to u32 first made 4294967296 wrap to
+    // 0, which walked straight past this check as though the file were the
+    // oldest possible format rather than an impossibly new one.
+    if schema > u64::from(CONV_SCHEMA_VERSION) {
         return Err(format!(
             "that chat was saved by a newer version of Sovatela (format {schema}, this version \
              reads {CONV_SCHEMA_VERSION}). Update the app to import it."
@@ -8263,8 +8445,9 @@ async fn rename_conversation(
     let mut v: serde_json::Value = serde_json::from_str(&s).map_err(|e| e.to_string())?;
     // The same refusal `load_conversation` makes, for the same reason: writing
     // this version's shape over a newer one loses what this version cannot see.
-    let schema = v.get("schema").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
-    if schema > CONV_SCHEMA_VERSION {
+    let schema = v.get("schema").and_then(|x| x.as_u64()).unwrap_or(0);
+    // As above: compared before narrowing, or a value past u32 wraps to 0.
+    if schema > u64::from(CONV_SCHEMA_VERSION) {
         return Err(format!(
             "this chat was saved by a newer version of Sovatela (format {schema}, this version \
              reads {CONV_SCHEMA_VERSION}). Update the app to rename it."
@@ -8895,6 +9078,174 @@ mod tests {
         include_str!("lib.rs").replace("\r\n", "\n")
     }
 
+    /// The commands the interface is allowed to call, read from the handler
+    /// list itself rather than from a copy that could drift away from it.
+    fn registered_commands(src: &str) -> Vec<String> {
+        // Anchored on the call, and assembled from pieces so that this line is
+        // not itself a match. `lib_source()` is this file, tests included:
+        // written as one literal, the search found its own needle, read an
+        // empty command list out of the text after it, and every check made
+        // against that list passed for having nothing to check.
+        let call = concat!(".invoke_handler(", "tauri::generate_handler![");
+        let at = src.find(call).expect("the invoke handler list moved");
+        let start = at + call.len();
+        let end = start + src[start..].find("])").expect("unterminated handler list");
+        src[start..end]
+            .split(',')
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty() && !n.starts_with("//"))
+            .collect()
+    }
+
+    /// The parameter list of `fn name(...)`, brackets balanced.
+    fn params_of(src: &str, name: &str) -> String {
+        let needle = format!("fn {name}(");
+        let at = src
+            .find(&needle)
+            .unwrap_or_else(|| panic!("{name} is registered but not defined here"));
+        let start = at + needle.len();
+        let mut depth = 1usize;
+        let mut i = start;
+        for c in src[start..].chars() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            i += c.len_utf8();
+        }
+        src[start..i].to_string()
+    }
+
+    #[test]
+    fn the_granted_capabilities_do_not_reach_the_filesystem() {
+        // The test below checks this application's own commands. It said
+        // nothing about the ones Tauri and its plugins register, which are the
+        // rest of the renderer's reach — and that is exactly where the sixth
+        // review found a path to the filesystem that every check here passed
+        // over, while reporting 63 commands and no offenders.
+        //
+        // `core:default` bundles `core:image:default`, whose `allow-from-path`
+        // opens a file by name and whose `allow-rgba` hands back its pixels: a
+        // renderer that had been taken over could read the user's pictures
+        // without touching a command in the handler list at all.
+        // `dialog:default` granted open and save pickers the interface has
+        // never asked for.
+        //
+        // So the grant is enumerated rather than bundled, and this keeps it
+        // that way. It reads the capability file, because that file is the
+        // boundary — not the command list, and not which modules the frontend
+        // imports, which is a convention rather than a limit.
+        let raw = include_str!("../capabilities/default.json");
+        let capability: serde_json::Value =
+            serde_json::from_str(raw).expect("the capability file is not valid JSON");
+        let granted: Vec<String> = capability["permissions"]
+            .as_array()
+            .expect("no permissions array")
+            .iter()
+            .map(|p| {
+                // An entry is either a bare string or an object carrying an
+                // `identifier`, and both have to be looked at.
+                p.as_str()
+                    .map(str::to_string)
+                    .or_else(|| p["identifier"].as_str().map(str::to_string))
+                    .expect("a permission entry names nothing")
+            })
+            .collect();
+
+        // The bundles by name: each pulls in more than it says, and reading
+        // what they contain is the work this replaces.
+        for bundle in ["core:default", "dialog:default", "opener:default"] {
+            assert!(
+                !granted.iter().any(|g| g == bundle),
+                "{bundle} is granted again, which re-opens whatever it happens to contain"
+            );
+        }
+        // And the reach itself, however it might come back.
+        for forbidden in [
+            "core:image",
+            "fs:",
+            "dialog:allow-open",
+            "dialog:allow-save",
+        ] {
+            assert!(
+                !granted.iter().any(|g| g.starts_with(forbidden)),
+                "the interface is granted {forbidden}, which reaches the filesystem without \
+                 going through any command in the handler list"
+            );
+        }
+    }
+
+    #[test]
+    fn no_command_takes_a_filesystem_path_from_the_interface() {
+        // Where the app reads and writes is decided by a native dialog, and a
+        // dialog is only a boundary if there is no way around it. Four commands
+        // used to take a path beside one: the workspace folder, the document
+        // templates, and — until 1.8.3 — the history folder, whose picker was
+        // moved into Rust while the setter that took a path stayed registered.
+        // The dialog was moved and the capability was not removed.
+        //
+        // So this is not a check on those four. It is the property: nothing the
+        // interface can call names a location on disk. A command that needs one
+        // works it out in Rust, from a dialog or from the app's own directories.
+        let src = lib_source();
+        let mut offenders = Vec::new();
+        for name in registered_commands(&src) {
+            let params = params_of(&src, &name);
+            // A path by type, or by the name people give one.
+            let by_type = params.contains("PathBuf") || params.contains("HistorySettings");
+            let by_name = params
+                .split(',')
+                .filter_map(|p| p.split(':').next())
+                .map(|p| p.trim().trim_start_matches("mut ").trim())
+                .any(|p| matches!(p, "dir" | "path" | "folder" | "file" | "filename"));
+            if by_type || by_name {
+                offenders.push(format!(
+                    "{name}({})",
+                    params.split_whitespace().collect::<Vec<_>>().join(" ")
+                ));
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "these commands take a location on disk from the interface:\n  {}",
+            offenders.join("\n  ")
+        );
+    }
+
+    #[test]
+    fn the_history_folder_is_set_only_by_commands_that_choose_it_themselves() {
+        // The specific case behind the property above, kept because the shape
+        // is easy to reintroduce: a setter that takes the whole settings
+        // struct, called by a picker, and registered alongside it.
+        let src = lib_source();
+        let commands = registered_commands(&src);
+        assert!(
+            !commands.iter().any(|c| c == "set_history_settings"),
+            "the path-taking history setter is registered again"
+        );
+        assert!(
+            commands.iter().any(|c| c == "choose_history_dir")
+                && commands.iter().any(|c| c == "use_default_history_dir"),
+            "the two commands that decide the folder in Rust are not both registered"
+        );
+        // And the function that actually writes it is not reachable from the
+        // interface at all.
+        let at = src
+            .find("\nfn apply_history_settings")
+            .expect("the folder is written somewhere else now");
+        let before = &src[at.saturating_sub(200)..at];
+        assert!(
+            !before.contains("#[tauri::command]"),
+            "the folder-writing function is a command again"
+        );
+    }
+
     fn temp_dir(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "scale-test-{tag}-{}-{:?}",
@@ -9028,7 +9379,7 @@ mod tests {
         )
         .expect("write fixture");
 
-        // Tables on slides. Until 1.8.2 a table was flattened to one line per
+        // Tables on slides. Until 1.8.3 a table was flattened to one line per
         // row, so this fixture is new work rather than a defect that shipped —
         // and a graphic frame is exactly the kind of addition the pattern
         // above predicts will be structurally perfect and wrong on screen. It
@@ -12587,7 +12938,7 @@ mod tests {
         );
 
         // The caller saves the new folder on a warning, and refuses on a failure.
-        let at = src.find("\nfn set_history_settings").unwrap();
+        let at = src.find("\nfn apply_history_settings").unwrap();
         let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
         let warn = body
             .find("outcome.warnings")
@@ -12893,6 +13244,148 @@ mod tests {
             .unwrap();
         w.write_all(contents.as_bytes()).unwrap();
         w.finish().unwrap().into_inner()
+    }
+
+    /// Restamp one entry's compression method in both headers.
+    ///
+    /// This build links Deflate only, so it cannot write a bzip2 entry — and an
+    /// archive that merely *claims* one is the thing to refuse, since the claim
+    /// is all a reader has before it tries. Local headers are `PK\x03\x04`
+    /// (method at +8, name length at +26, name at +30); central directory
+    /// headers are `PK\x01\x02` (+10, +28, +46). Both copies must agree.
+    fn restamp_method(mut zip: Vec<u8>, entry: &str, method: u16) -> Vec<u8> {
+        let m = method.to_le_bytes();
+        let want = entry.as_bytes();
+        let mut i = 0;
+        let mut hits = 0;
+        while i + 46 <= zip.len() {
+            let (at, len_at, name_at) = match &zip[i..i + 4] {
+                b"PK\x03\x04" => (i + 8, i + 26, i + 30),
+                b"PK\x01\x02" => (i + 10, i + 28, i + 46),
+                _ => {
+                    i += 1;
+                    continue;
+                }
+            };
+            let n = u16::from_le_bytes([zip[len_at], zip[len_at + 1]]) as usize;
+            if name_at + n <= zip.len() && &zip[name_at..name_at + n] == want {
+                zip[at] = m[0];
+                zip[at + 1] = m[1];
+                hits += 1;
+            }
+            i += 1;
+        }
+        assert_eq!(hits, 2, "{entry}: expected a local and a central header");
+        zip
+    }
+
+    #[test]
+    fn a_package_with_one_unreadable_part_is_refused_whole() {
+        // The review's finding, at the level it was made: not "does the
+        // preflight see it" but "does the parser refuse the package".
+        //
+        // It did not. `document_text` read `word/document.xml` directly and the
+        // name scan that would have refused ran afterwards — and turned its
+        // refusal into an empty list. A file with a valid body and one part
+        // this build cannot open was accepted, its body returned, and the
+        // hidden part never mentioned. `vbaProject.bin` is the one that matters.
+        const BZIP2: u16 = 12;
+        let good = wp("Quarterly revenue rose.");
+        let bytes = restamp_method(
+            zip_with_entries(&[
+                ("word/document.xml", &good),
+                ("word/vbaProject.bin", "macro payload"),
+            ]),
+            "word/vbaProject.bin",
+            BZIP2,
+        );
+
+        // First: the fixture really does reproduce the disappearance. Without
+        // this the assertion below could pass against a merely malformed file.
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&bytes[..])).unwrap();
+        let seen: Vec<String> = (0..archive.len())
+            .filter_map(|i| archive.by_index(i).ok().map(|f| f.name().to_string()))
+            .collect();
+        assert!(
+            !seen.iter().any(|n| n.contains("vbaProject")),
+            "the fixture does not hide the part, so this proves nothing"
+        );
+
+        // And the extractor refuses the package rather than returning the body.
+        let why = document_text("report.docx", &bytes)
+            .expect_err("a package with an unreadable part was read anyway");
+        assert!(
+            !why.contains("Quarterly"),
+            "the body was returned despite the package being unreadable: {why}"
+        );
+    }
+
+    #[test]
+    fn every_zip_format_refuses_before_it_parses() {
+        // One preflight in front of all four, so the refusal is a property of
+        // the package rather than of which entry a given parser reads first.
+        // Each of these was a separate order-of-operations bug waiting to be
+        // found: PPTX read the presentation, XLSX the workbook, ODT never
+        // called the preflight at all.
+        const BZIP2: u16 = 12;
+        for (name, main, extra) in [
+            ("report.docx", "word/document.xml", "word/hidden.bin"),
+            ("notes.odt", "content.xml", "hidden.bin"),
+            ("deck.pptx", "ppt/presentation.xml", "ppt/hidden.bin"),
+            ("book.xlsx", "xl/workbook.xml", "xl/hidden.bin"),
+        ] {
+            let bytes = restamp_method(
+                zip_with_entries(&[(main, "<x/>"), (extra, "payload")]),
+                extra,
+                BZIP2,
+            );
+            let why =
+                document_text(name, &bytes).expect_err("{name}: an unreadable part was accepted");
+            assert!(
+                why.contains("compressed with") || why.contains("hidden.bin"),
+                "{name} was refused, but not for the part that is in it: {why}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_encrypted_part_is_refused_rather_than_skipped() {
+        // Encryption hides an entry exactly as an unsupported method does: it
+        // cannot be read, so it vanishes from a name scan. A method-only
+        // preflight let a package hide a part behind a password instead.
+        //
+        // Bit 0 of the general-purpose flag is the encryption bit, at +6 in a
+        // local header and +8 in a central one.
+        let mut bytes = zip_with_entries(&[
+            ("word/document.xml", &wp("Body text.")),
+            ("word/secret.bin", "payload"),
+        ]);
+        let want = b"word/secret.bin";
+        let mut i = 0;
+        let mut hits = 0;
+        while i + 46 <= bytes.len() {
+            let (flag_at, len_at, name_at) = match &bytes[i..i + 4] {
+                b"PK\x03\x04" => (i + 6, i + 26, i + 30),
+                b"PK\x01\x02" => (i + 8, i + 28, i + 46),
+                _ => {
+                    i += 1;
+                    continue;
+                }
+            };
+            let n = u16::from_le_bytes([bytes[len_at], bytes[len_at + 1]]) as usize;
+            if name_at + n <= bytes.len() && &bytes[name_at..name_at + n] == want {
+                bytes[flag_at] |= 1;
+                hits += 1;
+            }
+            i += 1;
+        }
+        assert_eq!(hits, 2, "the encryption bit was not set in both headers");
+
+        let why = document_text("report.docx", &bytes).expect_err("an encrypted part was accepted");
+        assert!(
+            why.contains("encrypted"),
+            "refused, but not for being encrypted: {why}"
+        );
     }
 
     #[test]
@@ -13356,6 +13849,62 @@ mod tests {
         ] {
             assert!(!is_private_host(h), "{h} should be allowed");
         }
+    }
+
+    #[tokio::test]
+    async fn a_flood_of_documents_is_refused_before_any_of_them_is_decoded() {
+        // One helper runs at a time, but that mutex is taken *inside* the
+        // helper call — so requests could pile up in front of it, each already
+        // holding up to 20 MB of decoded file in the parent. The helper was
+        // contained; the queue waiting to enter it was not.
+        let held: Vec<_> = (0..CONCURRENT_EXTRACTIONS)
+            .map(|_| {
+                extraction_permits()
+                    .try_acquire()
+                    .expect("the permits are not all available at the start of this test")
+            })
+            .collect();
+
+        // Big enough that decoding it is the cost being avoided, and refused
+        // without any of it being decoded.
+        let payload = BASE64_STANDARD.encode(vec![0u8; 4 * 1024 * 1024]);
+        let why = extract_document("flood.pdf".into(), payload)
+            .await
+            .expect_err("a document was accepted with no permit free");
+        assert!(
+            why.contains("another document"),
+            "refused, but not for being one too many: {why}"
+        );
+
+        // And the refusal is temporary: with a permit back, the same request
+        // gets as far as the extractor rather than being turned away.
+        drop(held);
+        let why = extract_document("flood.pdf".into(), BASE64_STANDARD.encode(b"not a pdf"))
+            .await
+            .expect_err("a nonsense PDF was read as one");
+        assert!(
+            !why.contains("another document"),
+            "the permit was not released: {why}"
+        );
+    }
+
+    #[test]
+    fn the_extraction_permit_is_taken_before_the_document_is_decoded() {
+        // A permit taken after the decode bounds nothing: the memory it exists
+        // to limit has already been allocated by the time it is asked for.
+        let src = lib_source();
+        let at = src
+            .find("\nasync fn extract_document")
+            .expect("the extraction command moved");
+        let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
+        let permit = body
+            .find("extraction_permits()")
+            .expect("the extraction command takes no permit");
+        let decode = body.find("BASE64_STANDARD").expect("nothing is decoded");
+        assert!(
+            permit < decode,
+            "the permit is taken after the document is already in memory"
+        );
     }
 
     /// Live-network check of the resolve-and-pin fetch path (real DNS + real
@@ -16226,7 +16775,9 @@ pub fn run() {
             get_image_settings,
             set_image_settings,
             get_history_settings,
-            set_history_settings,
+            set_history_saving,
+            choose_history_dir,
+            use_default_history_dir,
             get_memory_settings,
             set_memory_settings,
             get_workspace_dir,

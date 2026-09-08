@@ -3,7 +3,7 @@
   import { invoke, Channel } from "@tauri-apps/api/core";
   import { getVersion } from "@tauri-apps/api/app";
   import ScalewayKeySteps from "./ScalewayKeySteps.svelte";
-    import { open as openDialog, ask } from "@tauri-apps/plugin-dialog";
+    import { ask } from "@tauri-apps/plugin-dialog";
   import {
     fmtCost as fmtCostIn,
     fmtNum,
@@ -130,19 +130,11 @@
     templateError = "";
     templateBusy = kind;
     try {
-      const path = await openDialog({
-        multiple: false,
-        filters: [
-          {
-            name: kind === "docx" ? "Word document" : "PowerPoint presentation",
-            // `.dotx`/`.potx` are what Word and PowerPoint save a template as,
-            // so they are the likeliest file to bring here.
-            extensions: kind === "docx" ? ["docx", "dotx"] : ["pptx", "potx"],
-          },
-        ],
-      });
-      if (path) {
-        await invoke("set_template", { kind, path });
+      // The dialog is opened by Rust, which then reads only what was picked.
+      // This used to open the picker here and hand the backend a path, which
+      // meant a command that would open any path the interface named.
+      const chosen = await invoke("set_template", { kind });
+      if (chosen) {
         await refreshTemplates();
       }
     } catch (e) {
@@ -491,50 +483,65 @@
   // chats were.
   let historyError = $state("");
 
+  // Re-read what the backend actually kept. On a refusal it kept the old
+  // folder, and leaving the new one on screen would tell the user their chats
+  // had moved when they had not.
+  async function rereadHistorySettings() {
+    try {
+      const s = await invoke("get_history_settings");
+      if (s) {
+        saveHistory = s.save_history;
+        historyDir = s.dir || "";
+      }
+    } catch {
+      // If even reading back fails, the message already on screen is what the
+      // user has.
+    }
+  }
+
+  function historySavedBriefly() {
+    historySaved = true;
+    setTimeout(() => (historySaved = false), 2000);
+  }
+
+  // Only the switch. Nothing in this file names the folder any more: the three
+  // commands that can change it each work the path out in Rust, so there is no
+  // longer a call from here that a compromised renderer could point somewhere
+  // of its own choosing.
   async function saveHistorySettings() {
     historyError = "";
     try {
-      await invoke("set_history_settings", {
-        settings: { save_history: saveHistory, dir: historyDir.trim() },
-      });
-      historySaved = true;
-      setTimeout(() => (historySaved = false), 2000);
+      await invoke("set_history_saving", { saveHistory });
+      historySavedBriefly();
     } catch (e) {
       historyError = String(e?.message ?? e);
-      // Re-read what the backend actually kept. On a refusal it kept the old
-      // folder, and leaving the new one on screen would tell the user their
-      // chats had moved when they had not.
-      try {
-        const s = await invoke("get_history_settings");
-        if (s) {
-          saveHistory = s.save_history;
-          historyDir = s.dir || "";
-        }
-      } catch {
-        // If even reading back fails, the message above is what the user has.
-      }
+      await rereadHistorySettings();
     }
   }
 
   async function chooseHistoryFolder() {
     try {
-      const picked = await openDialog({
-        directory: true,
-        multiple: false,
-        title: "Choose a folder for chat history",
-      });
-      if (typeof picked === "string" && picked) {
-        historyDir = picked;
-        await saveHistorySettings();
-      }
+      // Rust opens the dialog and keeps what was chosen, the same way the
+      // workspace folder and the document templates work.
+      historyDir = await invoke("choose_history_dir");
     } catch (e) {
-      console.error("Could not pick a folder:", e);
+      historyError = String(e?.message ?? e);
+      await rereadHistorySettings();
     }
   }
 
   async function useDefaultFolder() {
-    historyDir = "";
-    await saveHistorySettings();
+    historyError = "";
+    try {
+      // The default is computed in Rust from the app's own config directory.
+      // Sending "" from here would work equally well and is exactly the shape
+      // that has to go: a folder the interface names.
+      historyDir = await invoke("use_default_history_dir");
+      historySavedBriefly();
+    } catch (e) {
+      historyError = String(e?.message ?? e);
+      await rereadHistorySettings();
+    }
   }
 
   function showHistoryFolder() {

@@ -67,7 +67,7 @@ pub enum PreviewBlock {
     },
     /// Bullets and numbered items alike.
     ///
-    /// `marker` is what Word will draw, not what the author typed. From 1.8.2
+    /// `marker` is what Word will draw, not what the author typed. From 1.8.3
     /// these are real numbering definitions, so Word numbers an ordered list
     /// itself: an author who writes `1.` three times — the ordinary Markdown
     /// idiom — gets 1, 2, 3 in the document, and the preview has to say so or
@@ -319,7 +319,7 @@ mod tests {
                 PreviewBlock::Heading { spans, .. } | PreviewBlock::Para { spans } => {
                     lines.push(text(spans))
                 }
-                // The marker is deliberately left out. From 1.8.2 a list item
+                // The marker is deliberately left out. From 1.8.3 a list item
                 // is in a real numbering definition, so Word draws the bullet
                 // or the number itself and it is not text in the file — it
                 // cannot appear in what is read back out, and including it

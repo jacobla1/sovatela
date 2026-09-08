@@ -4,6 +4,13 @@
 
 # Sovatela
 
+> **This branch may be ahead of the latest release.** `main` carries work that
+> has not been built, signed or published yet, and its version numbers name the
+> release being prepared rather than one you can download. What is released is
+> on the [releases page](https://github.com/jacobla1/sovatela/releases) and at
+> [sovatela.eu](https://sovatela.eu); a version tagged here and then withdrawn
+> is burned rather than reused, so a gap in the numbers is deliberate.
+
 A small, friendly **desktop chat client** for **Z.ai's GLM-5.2**, served from
 Europe on **Scaleway's Generative APIs**. Built with **Tauri v2 + Svelte 5**.
 
@@ -355,7 +362,11 @@ Full index: [`docs/README.md`](docs/README.md).
 - Chat history, memory, and projects are stored **on the user's device** (or a
   folder they choose); nothing goes to the app's developer. Settings can
   **reveal the history folder** and **delete all stored data** in one step.
-- Artifacts are sandboxed and CSP-restricted; generated code is fully isolated.
+- Artifacts run in an opaque-origin sandbox with a CSP that denies network,
+  storage and navigation: generated code cannot reach your files, this app, or
+  anything online. It is **not** isolated from the window's CPU and memory, so
+  code that loops forever can still make the app unresponsive — which is why
+  nothing runs until you press *run* on the artifact.
 
 ## Roadmap
 

@@ -19,22 +19,72 @@ let nextReply = "";
 let sent = 0;
 let stall = false;
 let renamedTo = "";
+// Set to a message to make the next provider call fail before delivering
+// anything — a bad key, no network, a quota refusal.
+let rejectWith = "";
+// Rows the sidebar shows, so a test can open one.
+let conversationList = [];
+// What `load_conversation` hands back — the way a conversation from a file
+// someone was sent reaches the component.
+let loaded = null;
+// The stalled request, held so a test can end it the way the backend would:
+// `reject` fails the invoke, `channel` emits events on the way.
+let inFlight = null;
+// What each command was called with, so a test can ask how a turn was routed
+// rather than only which endpoint it reached.
+let calls = [];
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd, args) => {
+    calls.push([cmd, args]);
     if (cmd === "send_chat") {
       sent += 1;
       // `stall` holds the app in its sending state, which is the only way to
-      // see which controls survive a reply in flight.
-      if (stall) return new Promise(() => {});
+      // see which controls survive a reply in flight. A stalled request ends
+      // the way a real one does — when Stop reaches the backend, the stream
+      // fails with "Stopped." — so `cancel_request` rejects it below.
+      if (stall) {
+        return new Promise((_, reject) => {
+          inFlight = { reject, channel: args.onEvent };
+        });
+      }
+      if (rejectWith) {
+        // The real backend emits an Error event and *then* returns the error:
+        //
+        //     let _ = on_event.send(StreamEvent::Error(message.clone()));
+        //     Err(message)
+        //
+        // This mock used to throw without emitting anything, which is why a
+        // rollback keyed on "any event arrived" passed here and did nothing on
+        // a real bad key. The protocol is the thing under test, so the mock
+        // follows it.
+        args.onEvent.onmessage({ type: "Error", data: rejectWith });
+        throw new Error(rejectWith);
+      }
+      // A real turn is accepted before it streams. Nothing below the first
+      // token is reachable without this event.
+      args.onEvent.onmessage({ type: "Accepted" });
       args.onEvent.onmessage({ type: "Token", data: nextReply });
       return null;
     }
+    if (cmd === "cancel_request") {
+      failInFlight("Stopped.", { emitError: false });
+      return null;
+    }
+    if (cmd === "generate_image") {
+      sent += 1;
+      if (rejectWith) throw new Error(rejectWith);
+      return { image: "data:image/png;base64,iVBORw0KGgo=", model: "flux-2" };
+    }
+    if (cmd === "load_conversation") return loaded;
     if (cmd === "rename_conversation") return renamedTo;
+    if (cmd === "get_search_settings") return { configured: true };
+    if (cmd === "get_image_settings") return { configured: true, url: "https://example.invalid" };
     if (cmd === "save_conversation") return true;
     if (cmd === "check_connection") return "ok";
     if (cmd === "get_memory_settings")
       return { about_you: "", custom_instructions: "", auto_memory: false };
+    if (cmd === "list_conversations") return conversationList;
     if (cmd.startsWith("list_")) return [];
     return null;
   }),
@@ -50,6 +100,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ ask: vi.fn().mockResolvedValue(true) }));
 
+import { invoke } from "@tauri-apps/api/core";
 import Chat from "../src/lib/Chat.svelte";
 
 // One exchange: the question goes in, the scripted answer comes back.
@@ -78,7 +129,45 @@ beforeEach(() => {
   sent = 0;
   stall = false;
   renamedTo = "";
+  rejectWith = "";
+  inFlight = null;
+  loaded = null;
+  conversationList = [];
+  calls = [];
 });
+
+// Image mode only turns on once the settings have loaded, which happens after
+// mount. Clicking the toggle before that silently does nothing.
+async function enableImageMode() {
+  const toggle = screen.getByLabelText("Toggle image generation mode");
+  await waitFor(() => expect(toggle.className).not.toContain("disabled"));
+  await fireEvent.click(toggle);
+}
+
+// The arguments of the last call to `cmd`.
+const lastCall = (cmd) => [...calls].reverse().find((c) => c[0] === cmd)?.[1];
+
+// End a stalled request the way the backend does. A provider failure emits an
+// Error event first and then returns the error; a Stop does not, because the
+// component records that separately when the button is pressed.
+function failInFlight(message, { emitError = true } = {}) {
+  const held = inFlight;
+  inFlight = null;
+  if (!held) return;
+  if (emitError) held.channel.onmessage({ type: "Error", data: message });
+  held.reject(new Error(message));
+}
+
+// The last state written for a given conversation, which is what survives a
+// reload — and therefore the only place a lost branch is visible once the
+// user has looked away from it.
+const lastSavedFor = (id) =>
+  [...calls]
+    .reverse()
+    .find((c) => c[0] === "save_conversation" && c[1]?.conversation?.id === id)?.[1]?.conversation;
+
+const conversationIdFromSaves = () =>
+  calls.find((c) => c[0] === "save_conversation")?.[1]?.conversation?.id;
 
 describe("editing a message and sending it again", () => {
   it("offers editing on what you said, not on what the model said", async () => {
@@ -191,6 +280,30 @@ describe("editing a message and sending it again", () => {
     expect(thread().getByText("The 09:40 sailing.")).toBeTruthy();
   });
 
+  // The Send button was disabled for whitespace and the keyboard was not — and
+  // the keyboard is how people finish typing. `resendFrom` truncated first and
+  // let `send` return early, so pressing Enter on a box of spaces destroyed the
+  // message and every reply below it, asked nothing, and left no request in
+  // flight to explain where they had gone.
+  it("destroys nothing when Enter is pressed on an emptied box", async () => {
+    render(Chat, { props: {} });
+    await exchange("what time is the ferry", "The 09:40 sailing.");
+    const before = sent;
+
+    await fireEvent.click(editButtons()[0]);
+    await fireEvent.input(editBox(), { target: { value: "   " } });
+    await fireEvent.keyDown(editBox(), { key: "Enter" });
+
+    expect(sent, "a request was sent for an empty edit").toBe(before);
+    expect(
+      thread().queryByText("The 09:40 sailing."),
+      "the reply was destroyed by an edit that was never sent",
+    ).toBeTruthy();
+    // The box stays open, holding what was typed: refusing an empty edit is not
+    // a reason to throw away the edit.
+    expect(editBox(), "the edit was discarded as well").toBeTruthy();
+  });
+
   it("will not send an edit that has been emptied", async () => {
     render(Chat, { props: {} });
     await exchange("what time is the ferry", "The 09:40 sailing.");
@@ -240,6 +353,300 @@ describe("a renamed chat keeps its name when the conversation continues", () => 
       screen.getByTitle(renamed),
       "the sidebar put the first message back over the chosen name",
     ).toBeTruthy();
+  });
+});
+
+// Editing and "Try again" re-ask a question that was asked of the chat model.
+// They used to go through the generic send path, which follows the composer's
+// image toggle — so with image mode on, an old chat prompt and any images
+// attached to it were sent to the image provider, starting a paid generation
+// nobody asked for. The action says "ask for a different reply".
+describe("editing and regenerating stay with the model that replied", () => {
+  it("does not send an edited chat message to the image provider", async () => {
+    render(Chat, { props: {} });
+    await exchange("what time is the ferry", "The 09:40 sailing.");
+
+    // Turn on image mode, the way the composer's 🎨 toggle does.
+    await enableImageMode();
+
+    nextReply = "The last one is at 21:15.";
+    await fireEvent.click(editButtons()[0]);
+    await fireEvent.input(editBox(), { target: { value: "what time is the last ferry" } });
+    await fireEvent.click(thread().getByText("Send"));
+
+    await waitFor(() => expect(sent).toBeGreaterThan(1));
+    const called = invoke.mock.calls.map((c) => c[0]);
+    expect(
+      called,
+      "an edited chat message was sent to the image endpoint",
+    ).not.toContain("generate_image");
+    expect(called).toContain("send_chat");
+  });
+
+  // The other direction, which the first version of this fix opened. Forcing
+  // chat for every replay closed chat→image and made image→chat certain: an
+  // edited picture prompt, and every reference image attached to it, went to
+  // the chat and search providers instead.
+  it("does not send an edited image prompt to the chat provider", async () => {
+    render(Chat, { props: {} });
+    await enableImageMode();
+    const box = screen.getByLabelText("Describe an image to generate");
+    await fireEvent.input(box, { target: { value: "a lighthouse at dusk" } });
+    await fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => expect(sent).toBe(1));
+
+    // Back to ordinary chat, which is where the composer is left most of the
+    // time and what the replay used to follow.
+    await fireEvent.click(screen.getByLabelText("Toggle image generation mode"));
+    calls = [];
+
+    await fireEvent.click(editButtons()[0]);
+    await fireEvent.input(editBox(), { target: { value: "a lighthouse at dawn" } });
+    await fireEvent.click(thread().getByText("Send"));
+    await waitFor(() => expect(sent).toBe(2));
+
+    const called = calls.map((c) => c[0]);
+    expect(called, "an edited image prompt was sent to the chat provider").not.toContain(
+      "send_chat",
+    );
+    expect(called).toContain("generate_image");
+  });
+
+  it("replays a forced search as forced, rather than quietly not searching", async () => {
+    // Turning 🌐 on arms a forced search for the next message, and sending
+    // consumes it. So by the time the message is edited the flag is long gone,
+    // and only the turn's own record can say it was forced.
+    //
+    // `sentAs` recorded mode, search and quick — and not force. The replay read
+    // `replay.force`, which nothing had ever written, so a question that was
+    // forced to search the web replayed unforced and was answered from the
+    // model's own knowledge instead. Same words on screen, different answer,
+    // no indication which.
+    render(Chat, { props: {} });
+    await waitFor(() =>
+      expect(screen.getByLabelText("Toggle web search").className).not.toContain("disabled"),
+    );
+    await fireEvent.click(screen.getByLabelText("Toggle web search"));
+
+    await exchange("what happened at the summit today", "It concluded this morning.");
+    expect(lastCall("send_chat").forceSearch, "the fixture did not force a search").toBe(true);
+
+    nextReply = "It concluded at 11:00.";
+    await fireEvent.click(editButtons()[0]);
+    await fireEvent.input(editBox(), { target: { value: "what happened at the summit" } });
+    await fireEvent.click(thread().getByText("Send"));
+    await waitFor(() => expect(sent).toBe(2));
+
+    expect(
+      lastCall("send_chat").forceSearch,
+      "a forced search replayed unforced, so the reply came from memory instead of the web",
+    ).toBe(true);
+  });
+
+  // Search is a provider too, and a different one.
+  it("does not turn search on for a turn that was asked without it", async () => {
+    render(Chat, { props: {} });
+    await exchange("what time is the ferry", "The 09:40 sailing.");
+    expect(lastCall("send_chat").webSearch, "the fixture sent with search on").toBe(false);
+
+    // Turn the 🌐 toggle on, as someone would before asking something else.
+    await fireEvent.click(screen.getByLabelText("Toggle web search"));
+
+    nextReply = "The last one is at 21:15.";
+    await fireEvent.click(editButtons()[0]);
+    await fireEvent.input(editBox(), { target: { value: "what time is the last ferry" } });
+    await fireEvent.click(thread().getByText("Send"));
+    await waitFor(() => expect(sent).toBe(2));
+
+    expect(
+      lastCall("send_chat").webSearch,
+      "editing sent the old question to the search provider because the composer said so",
+    ).toBe(false);
+  });
+});
+
+// A conversation can arrive from a file someone was sent. `import_conversation`
+// checks roles, text and attachments; everything else in a message is carried
+// through as opaque JSON, `sentAs` included. So the routing record is not this
+// application's own output, and reading it as if it were let a document decide
+// where a later request goes.
+describe("a conversation from a file cannot choose the provider", () => {
+  // Opened the way a person opens it: the row in the sidebar. Going through
+  // the real path matters here, because the question is what the component
+  // does with a conversation it loaded from disk.
+  async function openLoaded(messages) {
+    const id = "imported-1";
+    conversationList = [{ id, title: "Imported", updated_at: "2026-09-08T00:00:00Z" }];
+    loaded = { id, title: "Imported", messages };
+    render(Chat, { props: {} });
+    const onMac = navigator.platform.toLowerCase().includes("mac");
+    await fireEvent.keyDown(window, { key: "b", metaKey: onMac, ctrlKey: !onMac });
+    const row = await screen.findByTitle("Imported");
+    await fireEvent.click(row);
+    await waitFor(() => expect(thread().queryAllByText(/./).length).toBeGreaterThan(0));
+  }
+
+  it("ignores an imported record that claims a chat turn was an image turn", async () => {
+    // The shape that matters: an ordinary question, marked as having been sent
+    // to the image provider. Editing it would then send the question and its
+    // attachments to that provider and start a paid generation.
+    await openLoaded([
+      { role: "user", text: "summarise the attached contract", sentAs: { mode: "image" } },
+      { role: "assistant", text: "It runs to 60 days' notice." },
+    ]);
+    await waitFor(() => expect(editButtons().length).toBeGreaterThan(0));
+
+    nextReply = "Sixty days.";
+    await fireEvent.click(editButtons()[0]);
+    await fireEvent.input(editBox(), { target: { value: "summarise it again" } });
+    await fireEvent.click(thread().getByText("Send"));
+    await waitFor(() => expect(sent).toBe(1));
+
+    const called = calls.map((c) => c[0]);
+    expect(
+      called,
+      "an imported file sent an edited question to the image provider",
+    ).not.toContain("generate_image");
+    expect(called).toContain("send_chat");
+  });
+
+  it("reads the string \"false\" as false, the way a hostile file would write it", async () => {
+    // `!!\"false\"` is true. A record written by this application never contains
+    // a string here; one written to be read by this application would.
+    await openLoaded([
+      {
+        role: "user",
+        text: "what happened today",
+        sentAs: { mode: "chat", webSearch: "false", force: "false", quick: "false" },
+      },
+      { role: "assistant", text: "Nothing much." },
+    ]);
+    await waitFor(() => expect(editButtons().length).toBeGreaterThan(0));
+
+    nextReply = "Still nothing.";
+    await fireEvent.click(editButtons()[0]);
+    await fireEvent.input(editBox(), { target: { value: "what happened this morning" } });
+    await fireEvent.click(thread().getByText("Send"));
+    await waitFor(() => expect(sent).toBe(1));
+
+    const sentArgs = lastCall("send_chat");
+    expect(sentArgs.webSearch, 'the string "false" turned search on').toBe(false);
+    expect(sentArgs.forceSearch, 'the string "false" forced a search').toBe(false);
+  });
+});
+
+// Editing commits before the provider is asked: the old reply and everything
+// below it are dropped, then the request goes out. When the request is refused
+// outright, that trade bought nothing — and it had already been saved.
+describe("an edit the provider refuses does not destroy what was there", () => {
+  it("puts the conversation back when the request is rejected", async () => {
+    render(Chat, { props: {} });
+    await exchange("what time is the ferry", "The 09:40 sailing is the first.");
+
+    rejectWith = "401 Unauthorized";
+    await fireEvent.click(editButtons()[0]);
+    await fireEvent.input(editBox(), { target: { value: "what time is the last ferry" } });
+    await fireEvent.click(thread().getByText("Send"));
+    await waitFor(() => expect(sent).toBe(2));
+
+    // The reply that was replaced is still there.
+    await waitFor(() =>
+      expect(
+        thread().queryByText("The 09:40 sailing is the first."),
+        "a refused edit destroyed the reply it was replacing",
+      ).toBeTruthy(),
+    );
+    expect(thread().queryByText("what time is the ferry")).toBeTruthy();
+    // And the edited text is back in the composer, so the attempt is not lost
+    // either.
+    expect(screen.getByLabelText("Message GLM-5.2").value).toBe("what time is the last ferry");
+  });
+
+  it("saves the restored conversation, not the one it rolled back", async () => {
+    // The rollback happens in a `catch`, and the `finally` after it runs
+    // whatever that did. Persisting the truncated messages there would write
+    // the discarded version straight back over the good one — so the file
+    // would disagree with the screen, and the screen would lose on reload.
+    render(Chat, { props: {} });
+    await exchange("what time is the ferry", "The 09:40 sailing is the first.");
+
+    rejectWith = "401 Unauthorized";
+    await fireEvent.click(editButtons()[0]);
+    await fireEvent.input(editBox(), { target: { value: "what time is the last ferry" } });
+    await fireEvent.click(thread().getByText("Send"));
+    await waitFor(() => expect(sent).toBe(2));
+
+    const saved = lastCall("save_conversation");
+    const texts = saved.conversation.messages.map((m) => m.text);
+    expect(texts, "the rolled-back conversation was saved over the restored one").toContain(
+      "The 09:40 sailing is the first.",
+    );
+  });
+
+  it("restores the conversation even when the user has looked away from it", async () => {
+    // The case that loses data silently. Edit a message, and while the request
+    // is in flight switch to another chat. The failure then arrives for a
+    // conversation that is no longer on screen.
+    //
+    // Restoring the *view* would be wrong there — it would put another chat's
+    // messages in front of someone who has moved on. Restoring the *stored
+    // conversation* is not optional, and the two were one decision: because
+    // the view could not be restored, the rollback was abandoned and the
+    // truncated branch was written over the original. Nothing on screen showed
+    // it; the chat was simply shorter the next time it was opened.
+    render(Chat, { props: {} });
+    await exchange("what time is the ferry", "The 09:40 sailing is the first.");
+    const first = conversationIdFromSaves();
+    expect(first, "no conversation id to follow").toBeTruthy();
+
+    stall = true;
+    await fireEvent.click(editButtons()[0]);
+    await fireEvent.input(editBox(), { target: { value: "what time is the last ferry" } });
+    await fireEvent.click(thread().getByText("Send"));
+    await waitFor(() => expect(sent).toBe(2));
+
+    // Away to a new chat — Cmd/Ctrl+K, the way a person does it.
+    const onMac = navigator.platform.toLowerCase().includes("mac");
+    await fireEvent.keyDown(window, { key: "k", metaKey: onMac, ctrlKey: !onMac });
+
+    failInFlight("401 Unauthorized");
+    await waitFor(() => expect(lastSavedFor(first)).toBeTruthy());
+
+    const saved = lastSavedFor(first);
+    const texts = saved.messages.map((m) => m.text);
+    expect(
+      texts,
+      "the edit failed while the user was elsewhere, and the reply it replaced was written away",
+    ).toContain("The 09:40 sailing is the first.");
+  });
+
+  it("keeps the new branch when the user stopped it themselves", async () => {
+    // Stopping is not a refusal. The user asked for the new branch and then
+    // ended it, and what arrived is theirs to keep — rolling that back would
+    // discard a reply they chose to interrupt.
+    //
+    // Driven through the real Stop button rather than by rejecting the request
+    // with "Stopped.": the distinction the code makes is *who* ended the turn,
+    // and pressing Stop is what records that. A test that only threw the
+    // message would pass against a rollback keyed on the string alone.
+    render(Chat, { props: {} });
+    await exchange("what time is the ferry", "The 09:40 sailing is the first.");
+
+    stall = true;
+    await fireEvent.click(editButtons()[0]);
+    await fireEvent.input(editBox(), { target: { value: "what time is the last ferry" } });
+    await fireEvent.click(thread().getByText("Send"));
+    await waitFor(() => expect(sent).toBe(2));
+
+    await fireEvent.click(await screen.findByLabelText("Stop generating"));
+
+    await waitFor(() =>
+      expect(
+        thread().queryByText("The 09:40 sailing is the first."),
+        "a stopped edit was rolled back, discarding the branch the user asked for",
+      ).toBeNull(),
+    );
+    expect(thread().queryByText("what time is the last ferry")).toBeTruthy();
   });
 });
 

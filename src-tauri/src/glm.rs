@@ -106,6 +106,18 @@ pub enum CompletionEvent<'a> {
     /// ended from one that was cut off, which is how a truncated HTML artifact
     /// reached the UI as an empty chip with no explanation.
     Truncated,
+    /// The provider returned a success status; the turn is under way.
+    ///
+    /// Sent once, before any token, and it is the *only* event that means the
+    /// request was accepted. The interface discards the replies below an edited
+    /// message before asking, and can put them back only while nothing has been
+    /// accepted — so it needs to distinguish "taken" from "something happened".
+    /// Inferring that from the first event of any kind was wrong in exactly the
+    /// case it mattered: a bad key emits an error and *then* fails, which read
+    /// as acceptance and left the conversation destroyed for nothing.
+    ///
+    /// Emitted at the one place that knows, immediately after the status check.
+    Accepted,
 }
 
 /// Prompt (input) and completion (output) token counts, kept apart because
@@ -250,6 +262,13 @@ where
     if !response.status().is_success() {
         return Err(response_error(response).await);
     }
+    // Past the status check: the provider has taken the request. Announced
+    // before anything is read from the body, because everything after this
+    // point is the turn happening — and a caller that has thrown away state to
+    // make room for this reply needs to know the moment it can no longer be
+    // put back. The return value is ignored: cancelling here would leave the
+    // caller believing nothing was accepted when it was.
+    on_event(CompletionEvent::Accepted, "");
 
     if !options.stream {
         let body = read_body_capped(response, MAX_RESPONSE_BYTES, "The model's reply")

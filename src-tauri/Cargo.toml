@@ -1,6 +1,6 @@
 [package]
 name = "scale"
-version = "1.8.2"
+version = "1.8.3"
 description = "BYO-key desktop chat client for GLM-5.2 on Scaleway"
 authors = ["Jacob Bergmann Larsen"]
 license = "MIT"
@@ -32,7 +32,19 @@ keyring = { version = "3", features = [
 ] }
 # Document text extraction (PDF / .docx / .odt uploads)
 pdf-extract = "0.12"
-zip = "2"
+# Deflate only, which is the one method OOXML and ODT actually use — the
+# formats require it, and Word, Excel, PowerPoint and LibreOffice all write it.
+#
+# The default features add bzip2, lzma, zstd and deflate64, three of which are C
+# libraries. Their allocations do not pass through Rust's global allocator, and
+# that allocator is the whole basis of the extraction helper's memory ceiling:
+# `doc_sandbox` claimed "no allocation route bypasses Rust's allocator" on the
+# strength of flate2 being pure Rust, which was true of flate2 and not of these.
+# Turning them off removes the gap rather than bounding it, drops three C
+# dependencies and their advisory surface, and makes an archive using an exotic
+# method a refusal — which is the right answer for a format that does not permit
+# one.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 quick-xml = "0.41"
 # System locale, for the Staan search market
 sys-locale = "0.3"
