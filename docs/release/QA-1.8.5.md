@@ -178,6 +178,39 @@ more than had been checked.
 
 ### Release chain
 
+#### The provenance record was wrong, and was caught before the tag
+
+The first 1.8.5 mirror commit carried a `PROVENANCE.json` that did not describe
+its own tree. Verifying the mirror against itself — a step taken before tagging
+rather than after — refused it.
+
+The publisher asked the digest helper to work the file list out for itself.
+Given a directory that is the root of a repository, that helper answers with
+what git *tracks* there, and at the moment the publisher runs, the mirror's
+index is still the previous release's. So the digest covered 1.8.4's list of
+paths hashed against 1.8.5's bytes, while the `files:` count beside it was taken
+from the staged set. The record described two trees and matched neither.
+
+**1.8.4 passed this gate by ordering alone.** That publish happened to follow a
+`git add -A`, so the index already agreed with the disk. Nothing enforced it.
+1.8.5 added one file to a freshly published tree and the record came out wrong.
+
+This is the third digest to be wrong for the same underlying reason: asking the
+environment what the payload is, rather than the code that just produced it.
+`v1.8.3` was withdrawn when the check walked the workspace and counted the
+installers it had downloaded into it. The remedy then was to ask git instead of
+the disk, and this was that remedy's own blind spot — git is a better authority
+than the disk and it is still not the publisher, which is the only thing that
+knows what it wrote. Fixed in `0944998`, with the mirror re-published and
+verified against itself before this tag existed.
+
+Worth stating plainly, because it cuts the other way too: the release job would
+have caught this at the signing step, exactly as it caught `v1.8.3`. The gate
+works. What changed is that it was run early enough that no tag had to be
+burned for it.
+
+#### The chain itself
+
 Filled in from `scripts/verify-release.sh v1.8.5` once the tag exists.
 
 | Check | Result |
