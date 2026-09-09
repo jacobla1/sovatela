@@ -394,42 +394,117 @@ pub fn validate(bytes: &[u8]) -> Result<(), Vec<String>> {
 
 /// Namespace prefixes used by elements and attributes in an XML document.
 ///
-/// Deliberately small: these are files this module wrote, so the shapes are
-/// known. It looks for `<prefix:` and ` prefix:` followed by a name, which
-/// covers element and attribute positions, and skips `xmlns:` itself since
-/// that is the declaration rather than a use.
+/// Read from the markup, by parsing it. The previous version scanned the whole
+/// file as one string for `prefix:` — which finds prefixes, and also finds
+/// every colon in the *text* of the document. "The ship sank at 11:40 pm"
+/// contains ` 11:` in a position the scan could not tell from an attribute, so
+/// it reported the namespace prefix `11` as undeclared and the document was
+/// refused. A ratio did the same: `scaled 1:200`.
+///
+/// That reached a user. Asked for a two-page history, the assistant produced a
+/// document, was told the build had failed, guessed at times as the cause, and
+/// rewrote the content without them — so the file that arrived was not the one
+/// that had been asked for, and nothing said so. A validator that rejects
+/// ordinary prose is worse than no validator, because the failure is silent
+/// and the workaround is invisible.
+///
+/// Only element and attribute names can carry a prefix, and a parser is what
+/// knows where those are. Character data is not examined at all.
 fn prefixes_used(xml: &str) -> Vec<String> {
+    use quick_xml::events::Event;
     let mut out: Vec<String> = Vec::new();
-    let bytes: Vec<char> = xml.chars().collect();
-    for (i, c) in bytes.iter().enumerate() {
-        if *c != ':' || i == 0 {
-            continue;
+    let note = |raw: &[u8], out: &mut Vec<String>| {
+        let Some(at) = raw.iter().position(|b| *b == b':') else {
+            return;
+        };
+        let Ok(prefix) = std::str::from_utf8(&raw[..at]) else {
+            return;
+        };
+        if prefix.is_empty() || prefix == "xmlns" || prefix == "xml" {
+            return;
         }
-        // Walk back over the prefix.
-        let mut start = i;
-        while start > 0 && (bytes[start - 1].is_alphanumeric() || bytes[start - 1] == '-') {
-            start -= 1;
+        if !out.iter().any(|p| p == prefix) {
+            out.push(prefix.to_string());
         }
-        if start == i || start == 0 {
-            continue;
+    };
+
+    let mut reader = quick_xml::Reader::from_str(xml);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                note(e.name().as_ref(), &mut out);
+                for attr in e.attributes().flatten() {
+                    let key = attr.key.as_ref();
+                    // `xmlns:w="…"` declares a prefix rather than using one.
+                    if key.starts_with(b"xmlns:") || key == b"xmlns" {
+                        continue;
+                    }
+                    note(key, &mut out);
+                }
+            }
+            Ok(Event::End(e)) => note(e.name().as_ref(), &mut out),
+            Ok(Event::Eof) => break,
+            Ok(_) => {}
+            // Malformed XML is not this function's complaint to make: the
+            // well-formedness check runs separately and says so properly.
+            Err(_) => break,
         }
-        // It is a prefix only if it opens an element or an attribute.
-        let before = bytes[start - 1];
-        if before != '<' && before != ' ' && before != '\n' && before != '\t' {
-            continue;
-        }
-        // And only if a name follows the colon.
-        //  is newer than this crate's MSRV of 1.77.2.
-        if !bytes.get(i + 1).is_some_and(|n| n.is_alphanumeric()) {
-            continue;
-        }
-        let prefix: String = bytes[start..i].iter().collect();
-        if prefix == "xmlns" || prefix == "xml" || out.contains(&prefix) {
-            continue;
-        }
-        out.push(prefix);
     }
     out
+}
+
+#[cfg(test)]
+mod prefix_tests {
+    use super::*;
+
+    #[test]
+    fn ordinary_prose_containing_a_colon_is_not_a_namespace_prefix() {
+        // This reached a user. Asked for a two-page history, the assistant
+        // produced a document, was told the build failed, guessed that times
+        // were the cause, and rewrote the content without them — so the file
+        // that arrived was not the one that had been asked for.
+        //
+        // The scan this replaces read the whole file as one string looking for
+        // `prefix:`, which cannot tell an attribute from the middle of a
+        // sentence. Every one of these is ordinary text in a document body.
+        for prose in [
+            "The ship sank at 11:40 pm on a clear night.",
+            "The model is scaled 1:200 for display.",
+            "The vote was 3:1 against.",
+            "Read Genesis 1:1 aloud.",
+            "Note: this line begins with a labelled word.",
+            "See https://example.com for details.",
+        ] {
+            let bytes = docx::from_markdown(prose)
+                .unwrap_or_else(|e| panic!("{prose:?} would not generate: {e}"));
+            assert_eq!(
+                validate(&bytes),
+                Ok(()),
+                "{prose:?} was refused as a document"
+            );
+        }
+    }
+
+    #[test]
+    fn a_prefix_that_really_is_undeclared_is_still_caught() {
+        // The check has to keep working, or the fix has simply removed it.
+        // `w:` is declared by the wrapper below; `zz:` is not.
+        let xml = r#"<?xml version="1.0"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body><zz:para>text</zz:para></w:body>
+</w:document>"#;
+        assert_eq!(
+            prefixes_used(xml),
+            vec!["w".to_string(), "zz".to_string()],
+            "an undeclared prefix on a real element was not seen"
+        );
+    }
+
+    #[test]
+    fn a_prefix_on_an_attribute_is_seen_and_a_declaration_is_not() {
+        let xml = r#"<a xmlns:w="urn:x" w:val="1" plain="2"><b w:id="3"/></a>"#;
+        assert_eq!(prefixes_used(xml), vec!["w".to_string()]);
+    }
 }
 
 /// `word/document.xml` -> `word/_rels/document.xml.rels`

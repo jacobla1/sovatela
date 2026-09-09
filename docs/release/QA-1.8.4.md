@@ -9,8 +9,14 @@ Written 2026-09-07, before any of it was run · Jacob Bergmann Larsen
 > visible as gaps rather than as absences nobody noticed.
 >
 > Each row is filled in as it is run. A row that is not run stays empty and is
-> reported empty. **1.8.4 is not published while any row in "Must pass" is
-> blank.**
+> reported empty.
+>
+> **The rule this plan set — that nothing publishes while a "Must pass" row is
+> blank — was not followed.** 1.8.4 was published on 2026-09-09 with the
+> release chain fully verified and most of the interface rows still empty. That
+> was a deliberate decision by the maintainer, not an oversight, and it is
+> recorded here rather than quietly satisfied by filling rows in afterwards. The
+> rows below say what was actually run. What is still blank is still blank.
 
 ## Why this release exists
 
@@ -228,7 +234,7 @@ with exactly those is a runtime question, and only running it answers it.
 
 | Check | Result |
 | --- | --- |
-| The app starts and shows a conversation | |
+| The app starts and shows a conversation | **Pass** — release bundle at `d4d9b7f` launched and stayed running; the narrowed capability grant does not stop it starting. Not a walkthrough: no key was entered and nothing was clicked |
 | A reply streams (the event channel is inside this grant) | |
 | Delete and overwrite confirmations appear — `ask` is the one dialog the interface calls | |
 | Choosing a history folder, a workspace and a template still opens a picker — those are Rust-side and should be unaffected | |
@@ -238,16 +244,16 @@ with exactly those is a runtime question, and only running it answers it.
 
 | Check | Result |
 | --- | --- |
-| `shasum -a 256 -c SHA256SUMS.txt` — all six | |
-| `scripts/verify-notarization.sh` | |
-| `minisign -Vm SHA256SUMS.txt -p minisign.pub` | |
-| `gh attestation verify` | |
-| `PROVENANCE.txt` names the tag, public commit and run, and quotes the source record | |
-| The workflow's version check fired (or would have) — record version equals tag | |
-| Publisher re-run at the private commit reproduces `payload_sha256` | **Re-run pending for `v1.8.4`.** Passed for the withdrawn `v1.8.3`, which established the method but not this release |
-| Mirror `diff -r` against a fresh publish is empty | **Re-run pending for `v1.8.4`.** Passed at `75f8961` for the withdrawn `v1.8.3` |
-| Website bytes and `/version.json` identical to what was built | |
-| Immutable releases **enabled before the tag was pushed** | |
+| `shasum -a 256 -c SHA256SUMS.txt` — all six | **Pass** — 7 files, the six installers and `PROVENANCE.txt` |
+| `scripts/verify-notarization.sh` | **Pass** — signed, notarized and stapled |
+| `minisign -Vm SHA256SUMS.txt -p minisign.pub` | **Pass** — trusted comment `Sovatela v1.8.4 checksums` |
+| `gh attestation verify` | **Pass** — 6 files |
+| `PROVENANCE.txt` names the tag, public commit and run, and quotes the source record | **Pass** — names `v1.8.4`, `public_commit` is `0a1056245514` which is what the tag points at, and it is itself inside the signed checksum list |
+| The workflow's version check fired (or would have) — record version equals tag | **Pass.** Not the check that withdrew `v1.8.3` — that was the payload digest, in the same step. The version check passed there too |
+| Publisher re-run at the private commit reproduces `payload_sha256` | **Pass** — 253 files, `08f00e0dbb68`, private `d4d9b7f` |
+| Mirror `diff -r` against a fresh publish is empty | **Pass** — re-published from a worktree at `d4d9b7f`, `diff -r` empty against the tagged tree |
+| Website bytes and `/version.json` identical to what was built | **Pass** — all nine served resources byte-identical to `deploy/web/dist`: the six pages, `version.json` (1.8.4), `SHA256SUMS.txt` and the release feed |
+| Immutable releases **enabled before the tag was pushed** | **Pass** — enabled while `v1.8.3` was at the gate, so before this tag existed |
 
 ### Generated documents
 
@@ -290,7 +296,7 @@ Carried forward and still true. None of these is a regression in 1.8.4.
 | Accessibility | No further investment planned for now |
 | Reproducible builds | Not attempted |
 | Website response headers | GitHub Pages cannot set them; the meta CSP and referrer policy stand in |
-| Notification sign-up | Deliberately absent — it would make this project a data processor in EU terms |
+| Notification sign-up | Deliberately absent. Holding a list of subscribers would make the publisher a **controller** of that data, with the duties that follow — not a processor, which is the term used here before and is the wrong one: a processor acts on another controller's instructions |
 
 ## What would stop the release
 

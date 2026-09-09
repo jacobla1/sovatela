@@ -1,5 +1,82 @@
 # Changelog
 
+## 1.8.5 — 2026-09-10
+
+*A patch release for one defect in 1.8.4 that people can hit, and three more
+found by finally running the walkthrough that 1.8.4 published without.*
+
+*1.8.4 is not withdrawn. It stays installable, its signatures verify as they
+always did, and its release notes now carry a notice naming the defect below.*
+
+### Fixed
+
+- **A scan whose pages could not all be read no longer loses the ones that
+  failed.** A page that could not be decoded recorded its reason and then had it
+  thrown away the moment any *other* page succeeded — so a two-page contract
+  whose second page failed came back as a complete-looking one-page document.
+  No warning, no gap, nothing to say a page had ever been there. Every page is
+  now named, and a page that could not be read says so where its text would have
+  been. Someone who can see which page is missing can go and look at it; the
+  previous behaviour gave them nothing to look for. Found by an external review,
+  reproduced against the published 1.8.4 installer before it was believed.
+- **The warning that comes with a scan says what actually goes wrong.** It said
+  the text "may contain mistakes", which points at the words you can see. The
+  danger is the sentence you cannot: words, figures or whole lines can be
+  missing with nothing marking where, and it now says so — and asks that names,
+  dates and amounts not be repeated back as certain. That warning also used to
+  be a tooltip on something you could not focus, so it reached a mouse and
+  nobody else. It has an accessible name now.
+- **A time of day no longer breaks document generation.** A prompt containing
+  `11:40 pm` failed to build, because the colon was being read as the separator
+  in an XML namespace rather than as part of an ordinary sentence.
+- **Text quoted from your document stays in the reply.** Quoted passages were
+  being classified as code and lifted out of the message into the artifact
+  panel, so the answer referred to a quotation you could not see.
+- **A refusal is allowed to finish its sentence.** When a file was refused, the
+  attachment chip clipped the message with an ellipsis — and the half it cut was
+  the half that told you what to do about it.
+
+### Corrected
+
+*Not code. Things the project said about itself that did not survive being
+checked, which for a release whose claim is "verifiable" is its own kind of
+defect. All seven were found by an external review.*
+
+- `SECURITY.md` said `SHA256SUMS.txt` "is not signed". True when written, false
+  for several releases, and contradicted a few paragraphs further down the same
+  page by the instructions for verifying the signature.
+- `TECHNICAL-SPEC.md` asserted "No keys" in the renderer. A key you type is
+  typed into a field in the renderer. What actually holds — and what
+  `SECURITY.md` already said correctly — is that no *stored* key is ever handed
+  back to it, and no provider request is made from there.
+- `PRIVACY.md` said the three non-provider destinations are "each a button you
+  press", twenty-five lines after correctly describing the opt-in version check
+  that runs at launch.
+- `ACCESSIBILITY.md` claimed to be "partially conformant with WCAG 2.1 AA". That
+  formulation is for content outside the author's control, not for an author's
+  own known gaps. It now says plainly that it does not yet conform, and lists
+  both what is met and what is not.
+- The 1.8.4 release notes claimed that marking a scan makes the assistant
+  "hedge". Nothing here can compel a model to do anything. They also described
+  unreadable pages as "refused by name" — behaviour the code did not have, which
+  is the defect at the top of this entry.
+- A mailing list would make the publisher a **controller** of that data, not a
+  processor. The wrong term was used in three places.
+- The conversations row in the privacy table implied that a folder you chose is
+  the normal case. A fresh install uses the app's own.
+
+### Known, and not fixed here
+
+- **The conversation list flashes empty while a refused edit rolls back.** The
+  edit commits first and is undone after, so if the provider refuses — or your
+  connection drops — you watch your history vanish and come back. Nothing is
+  lost and your text is returned to the composer, but there is no indication it
+  is coming back. Removing the flash means staging the edit until the provider
+  accepts, which is a design change rather than a patch.
+- **OCR can still drop a *line* within a page** without marking it, on a scan
+  poor enough. What is fixed above is a whole page going missing. The warning
+  covers both, and it remains the whole mitigation.
+
 ## 1.8.4 — 2026-09-09
 
 *There is no 1.8.0, 1.8.1, 1.8.2 or 1.8.3. Each was tagged and then withdrawn:

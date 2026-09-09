@@ -168,6 +168,43 @@ jobs:
           fi
           echo "Read from the picture: $page"
 
+          # A page that cannot be read must say so, even when another page was
+          # read fine.
+          #
+          # This is the defect that withdrew 1.8.4. A refusal was recorded and
+          # then discarded the moment any other page succeeded, so a two-page
+          # contract came back as a complete-looking one-page document —
+          # success, no warning, no sign a page had existed. An external
+          # reviewer found it in the published binary; nothing here could,
+          # because every fixture was one page.
+          node qa/ocr/make-scan.mjs two.pdf "SOVATELA OCR" "INVOICE 12345" --with-refused-page
+          set +e
+          "$bin" --sovatela-extract-doc-helper pdf < two.pdf > two-out.txt 2>/dev/null
+          two_code=$?
+          set -e
+          echo "two-page helper exit: $two_code"
+          sed 's/^/  /' two-out.txt
+          if [ "$two_code" -ne 0 ] && [ "$two_code" -ne 33 ]; then
+            echo "::error::the helper did not exit cleanly on a two-page scan ($two_code)"
+            exit 1
+          fi
+          # On a platform with a recogniser page one is read, and page two must
+          # then be named. Where there is none the whole document is refused,
+          # and there is nothing to account for.
+          if grep -q "\[Page 1\]" two-out.txt; then
+            grep -q "\[Page 2\]" two-out.txt || {
+              echo "::error::page 2 vanished from a two-page scan — the 1.8.4 defect is back"
+              exit 1
+            }
+            grep -q "could not be read" two-out.txt || {
+              echo "::error::page 2 is listed but not as a failure"
+              exit 1
+            }
+            echo "The unreadable page was named rather than dropped."
+          else
+            echo "No page was read here, so the whole document was refused — nothing to account for."
+          fi
+
       # The same command the release gate runs, and for the reason it exists:
       # until 1.8.1 this ran *only* at release time, so a lint that fires on one
       # platform was first seen when a tag had already been pushed. A

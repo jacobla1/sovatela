@@ -25,8 +25,24 @@ export function hasVisibleText(text) {
   return cleanText(text || "").trim() !== "";
 }
 
+// Languages that are not code, and so are not artifacts.
+//
+// A fence with no language at all lands here too: `lang` falls back to "text".
+//
+// Every fenced block used to become an artifact. That was harmless while the
+// only things models fenced were code — and then OCR arrived, models began
+// quoting scanned pages back inside fences, and the app filed the document's
+// own text as an artifact. What a person saw was a chip offering to "run" the
+// contents of their contract, with the text they had attached the file to read
+// hidden behind it. Found in the first minute of a walkthrough, having survived
+// every test in this repository.
+const NOT_CODE = new Set(["text", "txt", "plain", "plaintext"]);
+
 // Split an assistant message into plain text and renderable artifacts
 // (```html / ```svg fenced blocks). Incomplete blocks stay as text until closed.
+// A block that is not code stays in the text, where the markdown renderer makes
+// it an ordinary code block: visible, selectable, and not offered as something
+// to run.
 export function parseParts(text) {
   text = cleanText(text);
   const parts = [];
@@ -39,6 +55,9 @@ export function parseParts(text) {
     const sp = info.indexOf(" ");
     const lang = (sp === -1 ? info : info.slice(0, sp)).toLowerCase() || "text";
     const title = sp === -1 ? "" : info.slice(sp + 1).trim();
+    // Left in the surrounding text run: `last` is not advanced, so the fence
+    // and its contents reach the markdown renderer intact.
+    if (NOT_CODE.has(lang)) continue;
     if (m.index > last)
       parts.push({ type: "text", content: text.slice(last, m.index) });
     parts.push({ type: "artifact", lang, code: m[2], title });
@@ -57,6 +76,12 @@ export function parseParts(text) {
       const sp = info.indexOf(" ");
       const lang = (sp === -1 ? info : info.slice(0, sp)).toLowerCase() || "text";
       const title = sp === -1 ? "" : info.slice(sp + 1).trim();
+      if (NOT_CODE.has(lang)) {
+        // Still arriving, and not code: show it as it comes rather than as a
+        // "Building…" placeholder for something that will never be built.
+        parts.push({ type: "text", content: rest });
+        return parts;
+      }
       parts.push({ type: "artifact", lang, code: open[2], title, pending: true });
     } else {
       parts.push({ type: "text", content: rest });

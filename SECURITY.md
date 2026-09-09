@@ -48,8 +48,10 @@ credential store on first launch and removed.
 ### Network
 
 All HTTPS calls are made from the Rust backend using `reqwest`, not from the
-webview. This keeps keys out of the renderer process and avoids relying on
-browser-side origin controls. There is no telemetry endpoint, no analytics, and
+webview. No stored key is returned to the renderer, and no provider request is
+made from it — the one moment a key is in the interface at all is while you are
+typing it into the field, on its way to the credential store. This avoids
+relying on browser-side origin controls. There is no telemetry endpoint, no analytics, and
 no remote asset loaded into the interface.
 
 Everything the app can contact, and when:
@@ -286,12 +288,19 @@ Checksums are published in two places: on the download page, and as a
 
 **What a checksum here does and does not prove.** It proves the file you have
 is the file that was published — a truncated download, a proxy that mangled
-bytes, a mirror serving something else. It does not prove *who* published it:
-`SHA256SUMS.txt` is not signed, so anyone who could replace an installer on the
-release could replace the list beside it. Comparing against the download page
-instead is a slightly better check, because the page and the release are served
-by different systems and both would have to be changed — but the same account
-controls both, so it is not independent either.
+bytes, a mirror serving something else.
+
+On its own it does not prove *who* published it: anyone who could replace an
+installer on the release could replace the list beside it. That is what the
+minisign signature is for, and it is why `SHA256SUMS.txt.minisig` is published
+with it — verifying the list against the key below establishes the publisher,
+not merely that the bytes match.
+
+This paragraph said flatly that `SHA256SUMS.txt` "is not signed", and went on
+saying it after the signature had been published for several releases, while the
+same page documented how to verify it a few paragraphs later. An external review
+found the two halves contradicting each other in the live page. It was true when
+written and nobody came back to it.
 
 On macOS this does not matter much, because notarization is the real check:
 Apple signs the ticket, and `spctl` verifies it against Apple rather than

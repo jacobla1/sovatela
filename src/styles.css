@@ -2351,6 +2351,19 @@ button.mini.primary:disabled {
   text-overflow: clip;
 }
 
+/* …and the message itself, which is where the sentence actually lives.
+   The rule above let the *chip* wrap and stopped there, so `.att-name` went on
+   truncating with its own `nowrap` and the ellipsis stayed exactly where it had
+   been. A person running the release walkthrough saw "it is laid out in more
+   than one column, w…" — the refusal naming the problem, cut off before the
+   part that says what it is. The fix was written one level away from the
+   behaviour, which is the same mistake twice in the same rule. */
+.att-chip.att-error .att-name {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
 .att-x {
   background: none;
   border: none;

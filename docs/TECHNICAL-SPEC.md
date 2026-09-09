@@ -1,6 +1,6 @@
 # Technical and security specification
 
-Sovatela v1.8.4 · Companion to Product spec ·
+Sovatela v1.8.5 · Companion to Product spec ·
 UX spec · [Security policy](../SECURITY.md)
 
 Fuller engineering rationale is kept internally in `ENGINEERING_NOTES.md`, which
@@ -14,7 +14,7 @@ is not part of the repository.
 ┌──────────────────────────────────────────────────────────┐
 │  Webview (Svelte 5)                                      │
 │  UI · markdown (marked + DOMPurify) · artifact iframe    │
-│  No keys. No direct network access.                      │
+│  No stored key returned to it. No direct network access. │
 └───────────────▲──────────────────────┬───────────────────┘
                 │  Channel (streaming) │  IPC (commands)
 ┌───────────────┴──────────────────────▼───────────────────┐
@@ -33,9 +33,18 @@ is not part of the repository.
 ```
 
 **The load-bearing decision:** all network calls and all secrets live in Rust.
-The webview never holds a key and never makes a provider request. This sidesteps
-browser CORS entirely, keeps credentials out of the renderer's memory, and means
-a rendering-layer compromise doesn't reach the credential store.
+The webview never makes a provider request, and no stored key is ever handed
+back to it — *Settings* shows the last five characters, and no command returns
+one.
+
+The exact claim matters, because a stronger version of it was written here and
+was not true. A key you type necessarily passes through the interface once, on
+its way to being stored: the field it is typed into is in the renderer. What
+holds is that it does not come back, and that the credential store is not
+reachable from a rendering-layer compromise. "The webview never holds a key"
+and "credentials stay out of the renderer's memory" both overstate that by
+ignoring the one moment when they are false. An external review found the spec
+asserting the absolute while the security page admitted the nuance.
 
 ### Stack
 

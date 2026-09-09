@@ -747,9 +747,15 @@
     return (content || "").startsWith(OCR_MARK);
   }
 
+  // Says what can go wrong, not merely that something might. A recogniser
+  // does not only misread a word you can see: on a poor scan it drops a figure
+  // or a whole line and leaves fluent, complete-looking prose behind. Whole
+  // pages are named in the extracted text itself; this covers what happens
+  // inside a page, which nothing can mark.
   const OCR_WARNING =
-    "Read from a picture by this device. Check names, dates and amounts against " +
-    "the original — text can be misread, or missed altogether.";
+    "Read from a picture by this device. Words, figures or whole lines may be " +
+    "missing with nothing marking where — check names, dates and amounts " +
+    "against the original.";
 
   async function onFiles(fileList) {
     for (const file of Array.from(fileList)) {
@@ -2089,7 +2095,9 @@
                          figures were recognised rather than read. -->
                     {#if wasRecognised(a.content)}<span
                         class="att-ocr"
-                        title={OCR_WARNING}>OCR</span
+                        title={OCR_WARNING}
+                        aria-label={`Read by optical character recognition. ${OCR_WARNING}`}
+                        role="note">OCR</span
                       >{/if}
                   </span>
                 {/if}
@@ -2251,8 +2259,17 @@
                    difference is visible before sending. -->
               <span class="att-size">{extractedSize(a.content)}</span>
               {#if wasRecognised(a.content)}
-                <!-- Before sending, which is when it can still be checked. -->
-                <span class="att-ocr" title={OCR_WARNING}>OCR</span>
+                <!-- Before sending, which is when it can still be checked.
+                     The warning is the badge's accessible name rather than a
+                     `title` alone: a tooltip on a non-focusable span reaches a
+                     mouse and nobody else, and this is the one mark on the chip
+                     that changes how far the text can be trusted. -->
+                <span
+                  class="att-ocr"
+                  title={OCR_WARNING}
+                  aria-label={`Read by optical character recognition. ${OCR_WARNING}`}
+                  role="note">OCR</span
+                >
               {/if}
             {/if}
             <button

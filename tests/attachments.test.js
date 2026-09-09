@@ -113,10 +113,17 @@ describe("a document read from a picture says so", () => {
     const pdf = new File(["x"], "contract.pdf", { type: "application/pdf" });
     await fireEvent.drop(chat, withFiles([pdf]));
     await waitFor(() => expect(document.querySelector(".att-ocr")).toBeTruthy());
-    // The mark alone says little; the sentence beside it is the point.
-    expect(document.querySelector(".att-ocr").getAttribute("title")).toMatch(
-      /misread, or missed/,
-    );
+    const badge = document.querySelector(".att-ocr");
+    // The mark alone says little; the sentence beside it is the point — and it
+    // has to name the failure that actually happens. "May contain mistakes"
+    // invites care over a word you can see; the risk is the line you cannot.
+    expect(badge.getAttribute("title")).toMatch(/missing with nothing marking where/);
+    // And it must reach someone who is not using a mouse. A `title` on a
+    // non-focusable span is a tooltip and nothing else.
+    expect(
+      badge.getAttribute("aria-label"),
+      "the warning is mouse-only — no accessible name carries it",
+    ).toMatch(/missing with nothing marking where/);
   });
 
   it("does not mark a document that was read rather than recognised", async () => {
@@ -221,5 +228,28 @@ describe("a generated artifact does not run by itself", () => {
   it("says that pressing the chip runs code", () => {
     const chip = chat.slice(chat.indexOf('class="artifact-chip"'));
     expect(chip.slice(0, 400)).toMatch(/Runs this generated code/);
+  });
+});
+
+// A refusal is a sentence, and the half that says what to do is at the end.
+describe("a refusal is legible, not truncated", () => {
+  it("lets the message wrap inside the chip", () => {
+    // `.att-chip.att-error` was given `white-space: normal` after a `.dotx`
+    // refusal was cut off mid-word — and the message renders in `.att-name`,
+    // whose own `nowrap` went on winning. A person running the release
+    // walkthrough saw "it is laid out in more than one column, w…": the
+    // refusal naming the problem, cut off before it says what the problem is.
+    const css = read("src/styles.css");
+    const at = css.indexOf(".att-chip.att-error .att-name");
+    expect(at, "nothing lets an error's own text wrap").toBeGreaterThan(-1);
+    const rule = css.slice(at, css.indexOf("}", at));
+    expect(rule).toMatch(/white-space:\s*normal/);
+    expect(rule).toMatch(/text-overflow:\s*clip/);
+
+    // And the plain `.att-name` must still truncate: a long filename giving up
+    // its width is the behaviour that rule exists for.
+    const plain = css.indexOf("\n.att-name {");
+    const plainRule = css.slice(plain, css.indexOf("}", plain));
+    expect(plainRule, "filenames stopped truncating").toMatch(/text-overflow:\s*ellipsis/);
   });
 });

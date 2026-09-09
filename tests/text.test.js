@@ -83,9 +83,18 @@ describe("parseParts", () => {
     expect(parts).toEqual([{ type: "text", content: "almost there ```htm" }]);
   });
 
-  it("defaults a bare fence to lang text", () => {
-    const [artifact] = parseParts("```\nplain\n```");
-    expect(artifact.lang).toBe("text");
+  it("leaves a bare fence in the message rather than making it an artifact", () => {
+    // This asserted the opposite until 1.8.5: a bare fence became an artifact
+    // labelled "text". That was fine while models only fenced code. Once the
+    // app could read scanned documents they began fencing *quoted pages*, and
+    // the result was a chip offering to run the contents of someone's
+    // contract, with the text hidden behind it. A person found it in the first
+    // minute of the release walkthrough.
+    //
+    // So the expectation changed on purpose, and this is what replaces it.
+    const parts = parseParts("```\nplain\n```");
+    expect(parts.some((p) => p.type === "artifact")).toBe(false);
+    expect(parts.some((p) => p.type === "text" && p.content.includes("plain"))).toBe(true);
   });
 
   it("cleans leaked markup before splitting", () => {

@@ -1,6 +1,117 @@
+# Release notes — Sovatela 1.8.5
+
+Release date: 2026-09-10 · [All releases](https://github.com/jacobla1/sovatela/releases)
+
+**If you use scanned PDFs, this one matters.** In 1.8.4 a page that could not be
+read was dropped from the document without a word — no gap, no warning, nothing
+to say it had ever been there. A two-page contract whose second page failed came
+back looking like a complete one-page contract. It is fixed here, and 1.8.4's
+release notes now carry a notice saying so.
+
+Nothing else in 1.8.4 is withdrawn or changed. It stays installable and its
+signatures verify exactly as they did. If you do not open scans, this is a small
+release: three interface defects and a set of corrections to things the project
+said about itself.
+
+## Fixed in 1.8.5
+
+- **Every page of a scan is accounted for.** A page that cannot be read now says
+  so, by number, with the reason, in the place its text would have gone. The old
+  behaviour kept the reason only until some *other* page succeeded, and then
+  discarded it — so a partly-readable scan produced a shorter document that read
+  as though it were whole. That is the worst shape this kind of bug can take: the
+  answer is confident, the source looks complete, and nothing points at the gap.
+
+  The document is not refused outright when one page fails. Throwing away
+  nineteen good pages because the twentieth is odd helps nobody, and a gap you
+  can see is a page you can go and look at yourself.
+
+  Found by an external reviewer, and reproduced against the binary inside the
+  published 1.8.4 installer before it was accepted as real.
+
+- **The warning attached to a scan says what actually goes wrong.** It used to
+  say the text "may contain mistakes", which points at words you can see. The
+  real risk is the sentence you cannot: words, figures, whole lines can be
+  missing with nothing marking where. It now says that, and asks the assistant
+  not to state names, dates and amounts as certain. That is a change in odds, not
+  a guarantee — nothing here can compel a model to do anything.
+
+  The same warning was previously a tooltip on something you could not focus or
+  tab to, so it reached a mouse pointer and nobody else. It now has a proper
+  accessible name.
+
+- **A time of day no longer breaks document generation.** Asking for a document
+  about something that happened at `11:40 pm` could fail to build, because the
+  colon was being read as the separator in an XML namespace rather than as part
+  of an ordinary English sentence.
+
+- **Text quoted from your own document stays in the reply.** A passage quoted
+  back from an attachment could be mistaken for code and lifted out of the
+  message into the artifact panel — leaving an answer that discussed a quotation
+  you could not see.
+
+- **A refusal gets to finish its sentence.** When a file was refused, the
+  attachment chip cut the message off with an ellipsis, and the part it cut was
+  the part that told you what to do about it.
+
+## Said more accurately
+
+An external review checked what this project claims about itself against what it
+does. Seven claims did not survive. None is a code defect; all are corrected.
+
+- `SECURITY.md` said the checksum file "is not signed". It has been signed for
+  several releases — and the same page explained how to verify that signature a
+  few paragraphs further down.
+- `TECHNICAL-SPEC.md` said "no keys" reach the interface layer. A key you type is
+  typed into a field in the interface. What is true, and what `SECURITY.md`
+  already said correctly, is that a *stored* key is never handed back to it and
+  no provider request is made from there.
+- `PRIVACY.md` said the three non-provider destinations are each reached by a
+  button you press — twenty-five lines after correctly describing the optional
+  version check that runs at launch if you switch it on.
+- `ACCESSIBILITY.md` claimed to be "partially conformant" with WCAG 2.1 AA. That
+  phrase is for content outside the author's control, not for the author's own
+  known gaps. It now says plainly that it does not yet conform, and lists what is
+  met and what is not.
+- The 1.8.4 notes said that marking a scan makes the assistant "hedge", and
+  described unreadable pages as named. The first overclaims what a prompt can do;
+  the second described behaviour the code did not have, which is the defect at
+  the top of this page.
+- A mailing list would make the publisher a **controller** of that data, not a
+  processor. The wrong word was used in three places. The conclusion is unchanged
+  and so is the reason: there is no sign-up, because holding a list of
+  subscribers to solve a notification problem is the opposite of what this
+  application is for.
+- The privacy table implied that a folder you chose is where conversations
+  normally live. A fresh install uses the app's own.
+
+## Known, and not fixed here
+
+- **The conversation list flashes empty while a refused edit is undone.** If you
+  edit a message and the provider refuses it — or your connection drops — the
+  edit is committed first and rolled back after, so the chats below appear to
+  vanish and then come back. Nothing is lost and your text is returned to the
+  message box, but you get no sign that it is returning. Removing the flash means
+  holding the edit back until the provider accepts, which is a design change
+  rather than a patch.
+- **A poor scan can still lose a line within a page.** What is fixed above is a
+  whole page going missing. At low resolution the recogniser can drop a figure
+  from a line it otherwise reads, and nothing marks the gap. The warning covers
+  it, and the warning is the whole mitigation.
+
+Everything below is unchanged from 1.8.4.
+
+---
+
 # Release notes — Sovatela 1.8.4
 
 Release date: 2026-09-09 · [All releases](https://github.com/jacobla1/sovatela/releases)
+
+> **Known issue, found after release and fixed in 1.8.5.** A scanned PDF whose
+> pages could not all be read produced a document with the failed pages silently
+> omitted, whenever at least one other page succeeded. There was no gap and no
+> warning. If you used 1.8.4 to read a scan, update and read it again. This
+> section is left as it was published otherwise.
 
 > **Why the version jumps from 1.7.3 to 1.8.4.** Four tags were pushed and then
 > withdrawn: `v1.8.0` when the release was held back for more work, `v1.8.1`
@@ -16,7 +127,9 @@ The chat list stops being a pile of chats you can only scroll. You can search
 what was said, name a chat yourself, save one to a file and read it back — and
 you can edit a message you have already sent.
 
-Scanned PDFs are read on your own machine, and say so where you can see it.
+Simple scanned PDFs are read on your own machine, on macOS and Windows, and say
+so where you can see it. (Which pages *could not* be read was the defect above,
+and is 1.8.5.)
 
 ## New in 1.8.4
 
@@ -90,8 +203,10 @@ can contain images.
   file is refused — with a message that says why and names `ocrmypdf` as the way
   round it, rather than the bare "no text found" it used to give.
 
-  Every scan says it is a scan, so the assistant hedges on a doubtful reading
-  rather than stating it as fact.
+  Every scan is marked as one, in the text the assistant receives and on the
+  attachment you can see. That is the mitigation, and it is not a guarantee:
+  nothing here can compel a model to hedge. What it does is make the assistant
+  far likelier to say where a figure came from than to state it flat.
 
   Models were nearly bundled so that Linux had something. They were removed
   before release for two reasons: the licence statement that exists covers files
@@ -128,10 +243,14 @@ note that records only what users noticed is not a record of what happened.
   wrong; on a poor one it is not, and a test contract came back with its
   reference line above the figure it referred to — every word present, in an
   order nobody wrote. Lines are now placed by where they sit on the page.
-- **A page that cannot be read in order is refused by name.** Two columns, or
-  two pictures where it is unclear which is the scan. Reading columns properly
-  means redrawing the page, which this app does not do; interleaved text would
-  be worse than a refusal.
+- **A page that cannot be read is named, and never silently dropped.** Two
+  columns, two pictures where it is unclear which is the scan, a compression
+  this app does not read — the page appears in the text with the reason beside
+  it. In 1.8.4 that was true only when *no* page could be read: a two-page
+  contract whose second page failed came back as a complete-looking one-page
+  document. An external reviewer found it in the published binary. Reading
+  columns properly means redrawing the page, which this app does not do;
+  interleaved text would still be worse than a refusal.
 - **An edit the provider refuses no longer destroys the reply it replaced.** If
   the request was rejected — a bad key, no network, a quota — the conversation
   had been shortened for nothing and the shortening was saved. It is put back
@@ -140,8 +259,10 @@ note that records only what users noticed is not a record of what happened.
 - **Editing keeps the settings the message was sent with.** A question asked
   with search forced replayed unforced and was answered from memory; a picture
   prompt could reach the chat provider depending on which buttons were on.
-- **A document with a part this app cannot open is refused whole**, rather than
-  having that part quietly skipped and the rest read.
+- **A Word, PowerPoint, Excel or OpenDocument file with a part this app cannot
+  open is refused whole**, rather than having that part quietly skipped and the
+  rest read. A scanned PDF is different and says so per page: there, refusing
+  the document would throw away every page that *was* readable.
 - **The interface holds nine named permissions** instead of the framework's
   default bundles, which included reading a file from disk and returning its
   pixels. Nothing reached it through this app's own commands — which is why

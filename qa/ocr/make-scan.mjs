@@ -24,9 +24,26 @@ import { deflateSync } from "node:zlib";
 import { writeFileSync } from "node:fs";
 import { glyph, GLYPH_W, GLYPH_H } from "./glyphs.mjs";
 
-const [out, ...rest] = process.argv.slice(2);
+const args = process.argv.slice(2);
+// A second page carrying two pictures of comparable size, which the extractor
+// refuses because it cannot tell which one is the scan.
+//
+// Here because of what it caught. Until 1.8.5 a page that could not be read was
+// dropped in silence as long as some other page had succeeded, so a two-page
+// contract arrived looking like a complete one-page document — found by an
+// external reviewer in the published binary, not by any test here. A one-page
+// fixture cannot express it, which is why this option exists and why CI uses
+// it.
+const withRefusedPage = args.includes("--with-refused-page");
+// Two columns of text side by side, which the extractor refuses because it
+// cannot vouch for the reading order. Reading columns properly means knowing
+// where the text is painted, which means redrawing the page — the dependency
+// this design avoids — so the page is refused rather than returned in an order
+// that reads plausibly and is wrong.
+const twoColumns = args.includes("--two-columns");
+const [out, ...rest] = args.filter((a) => !a.startsWith("--"));
 if (!out) {
-  console.error('usage: make-scan.mjs <out.pdf> ["LINE" ...]');
+  console.error('usage: make-scan.mjs <out.pdf> ["LINE" ...] [--with-refused-page]');
   process.exit(1);
 }
 const lines = rest.length ? rest : ["SOVATELA OCR", "INVOICE 12345"];
@@ -43,7 +60,11 @@ const MARGIN = 40;
 const LEADING = 5; // blank glyph-pixels between lines
 
 const cols = Math.max(...lines.map((l) => l.length));
-const width = MARGIN * 2 + cols * (GLYPH_W + TRACK) * SCALE;
+const width =
+  MARGIN * 2 +
+  (args.includes("--two-columns") ? cols + 6 + cols : cols) *
+    (GLYPH_W + TRACK) *
+    SCALE;
 const height =
   MARGIN * 2 + (lines.length * GLYPH_H + (lines.length - 1) * LEADING) * SCALE;
 
@@ -54,6 +75,13 @@ const ink = (x, y) => {
   if (x >= 0 && x < width && y >= 0 && y < height) page[y * width + x] = 0x00;
 };
 
+// The second column starts past the end of the first, with a gutter wide
+// enough to be one: the detector wants a gap of more than an eighth of the page
+// recurring on several lines, and a stride shorter than the text simply
+// overprints one column on the other — which is what the first attempt did, and
+// it read as one wide column exactly as it should have.
+const GUTTER_COLS = 6;
+const columnStride = twoColumns ? cols + GUTTER_COLS : 0;
 lines.forEach((line, row) => {
   const top = MARGIN + row * (GLYPH_H + LEADING) * SCALE;
   [...line].forEach((ch, col) => {
@@ -71,6 +99,29 @@ lines.forEach((line, row) => {
     }
   });
 });
+
+if (twoColumns) {
+  // The same words again, a clear gutter to the right — enough lines that the
+  // gap recurs, which is what makes it a column rather than a wide space.
+  const offset = columnStride * (GLYPH_W + TRACK) * SCALE;
+  lines.forEach((line, row) => {
+    const top = MARGIN + row * (GLYPH_H + LEADING) * SCALE;
+    [...line].forEach((ch, col) => {
+      const left = MARGIN + offset + col * (GLYPH_W + TRACK) * SCALE;
+      const bits = glyph(ch);
+      for (let gy = 0; gy < GLYPH_H; gy++) {
+        for (let gx = 0; gx < GLYPH_W; gx++) {
+          if (!bits[gy][gx]) continue;
+          for (let dy = 0; dy < SCALE; dy++) {
+            for (let dx = 0; dx < SCALE; dx++) {
+              ink(left + gx * SCALE + dx, top + gy * SCALE + dy);
+            }
+          }
+        }
+      }
+    });
+  });
+}
 
 // One pass of a 3×3 average, which is the difference between letters made of
 // hard square blocks and letters with edges. Recognisers are trained on
@@ -96,7 +147,11 @@ const objects = [];
 const add = (body) => objects.push(body); // returns the new length = object number
 
 add("<< /Type /Catalog /Pages 2 0 R >>");
-add("<< /Type /Pages /Count 1 /Kids [3 0 R] >>");
+add(
+  withRefusedPage
+    ? "<< /Type /Pages /Count 2 /Kids [3 0 R 6 0 R] >>"
+    : "<< /Type /Pages /Count 1 /Kids [3 0 R] >>",
+);
 add(
   "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] " +
     "/Resources << /XObject << /Im0 5 0 R >> >> /Contents 4 0 R >>",
@@ -112,6 +167,31 @@ add({
     `/Length ${image.length} >>`,
   stream: image,
 });
+
+if (withRefusedPage) {
+  // Two pictures of comparable size, so the extractor cannot say which is the
+  // scan and refuses the page. Blank on purpose: what matters is that this page
+  // is *refused*, and that the refusal survives page one having been read.
+  const flat = (w, h) => deflateSync(Buffer.alloc(w * h, 0xd0));
+  const a = flat(400, 500);
+  const b = flat(400, 480);
+  add(
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] " +
+      "/Resources << /XObject << /Im1 7 0 R /Im2 8 0 R >> >> /Contents 4 0 R >>",
+  );
+  add({
+    dict:
+      "<< /Type /XObject /Subtype /Image /Width 400 /Height 500 /ColorSpace " +
+      `/DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length ${a.length} >>`,
+    stream: a,
+  });
+  add({
+    dict:
+      "<< /Type /XObject /Subtype /Image /Width 400 /Height 480 /ColorSpace " +
+      `/DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length ${b.length} >>`,
+    stream: b,
+  });
+}
 
 const chunks = [Buffer.from("%PDF-1.5\n%\xE2\xE3\xCF\xD3\n", "latin1")];
 const offsets = [];
@@ -143,5 +223,6 @@ chunks.push(Buffer.from(xref));
 writeFileSync(out, Buffer.concat(chunks));
 console.log(
   `${out}: ${width}x${height} scan of ${JSON.stringify(lines.join(" / "))}, ` +
-    `image ${image.length} bytes compressed`,
+    `image ${image.length} bytes compressed` +
+    (withRefusedPage ? ", plus a second page that must be refused" : ""),
 );

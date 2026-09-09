@@ -1,6 +1,6 @@
 # Privacy policy
 
-Last updated: 2026-09-05 · Applies to: Sovatela v1.8.4
+Last updated: 2026-09-05 · Applies to: Sovatela v1.8.5
 
 > **How this was written, since you are entitled to know.** By the publisher,
 > not by a lawyer. It is written to be accurate about what the software does,
@@ -42,7 +42,7 @@ folder you nominate:
 
 | Data | Where | Removable by |
 | --- | --- | --- |
-| Conversations and attachments | `conversations/` in your data folder, or a folder you choose | Settings → Privacy & data; or delete the folder |
+| Conversations and attachments | `conversations/` in this app's own data folder unless you choose another | Settings → Privacy & data; or delete the folder |
 | Remembered facts, projects | Your data folder | Settings → Privacy & data |
 | Preferences and provider configuration | `settings.json` | Delete the folder |
 | Local usage and cost estimates | `usage.json` | Settings → Usage & cost → reset |
@@ -121,10 +121,13 @@ sees. Neither involves telling anyone here who you are, and the application
 itself does not fetch the feed; your reader does.
 
 Everything else waits for you. The three non-provider destinations above are
-each a button you press. Nothing is reported about you or your machine, no
-remote resource is loaded into the interface, and there is no automatic updater
-— the version check is a button in Settings ▸ About, and it fetches a static
-file.
+reached by a button you press, with the one exception described just above and
+repeated here — because a summary that quietly drops it is how a policy comes to
+contradict itself: *Check for a new version when Sovatela starts* is off by
+default, and switching it on moves the version check from a press to the moment
+the app opens. Nothing is reported about you or your machine, no remote resource
+is loaded into the interface, and nothing installs itself — the version check
+reads a static file and tells you what it said.
 
 **This paragraph is corrected.** Through 1.6.0 it said that nothing happens on
 its own and that nothing runs in the background. The launch connection check has

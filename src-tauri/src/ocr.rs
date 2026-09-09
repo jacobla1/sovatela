@@ -1051,9 +1051,24 @@ fn reading_order(mut fragments: Vec<Fragment>) -> Result<String, String> {
 /// the page was read from a picture will hedge where the reading is doubtful; a
 /// model handed it as ordinary document text will not. That makes this a
 /// correctness feature rather than a courtesy.
+///
+/// It used to say only that the text "may contain mistakes", which understates
+/// the failure that actually happens. A recogniser does not merely misread: on
+/// a 72 dpi contract Vision returned fluent, complete-looking prose with the
+/// fee — EUR 12,450 — simply absent, and nothing in the output marked the gap.
+/// Warning about mistakes invites a model to hedge on a word it can see; the
+/// risk is the sentence it cannot.
+///
+/// The instruction at the end is deliberate and is not a guarantee. Nothing
+/// here can compel a model to hedge, and the release notes must not claim it
+/// does — this raises the odds and says so.
 const OCR_PREAMBLE: &str = "\
 [This document is a scan — a picture of a page with no text in it. The text \
-below was read from the picture on this device, and may contain mistakes.]";
+below was read from the picture on this device. It may contain mistakes, and \
+words, figures or whole lines may be missing from it without anything marking \
+where. Any page that could not be read is named as such below. Do not state a \
+name, date or amount from this document as certain; say where it came from and \
+that it should be checked against the original.]";
 
 /// Which picture on a page is the scan.
 ///
@@ -1100,6 +1115,32 @@ fn page_image<'a, 'b>(
     Ok(Some(image))
 }
 
+/// Turn each page's outcome into the text a model and a person will read.
+///
+/// Every page appears, whether or not it could be read. That is the whole point
+/// of this function existing: until 1.8.5 a page that could not be read was
+/// dropped silently as long as some other page had succeeded, so a two-page
+/// contract arrived looking like a complete one-page document. The comment on
+/// [`MAX_OCR_PAGES`] already said why that is the failure to avoid — "a partial
+/// document read as a whole one is how a model ends up confidently answering
+/// from half a contract" — and the page *cap* was reported while the page
+/// *refusal* was not.
+///
+/// A gap is marked where it happens rather than the document being refused
+/// whole. Refusing throws away nineteen good pages because the twentieth is
+/// odd, and someone who can see which page is missing can go and look at it.
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
+fn render_pages(outcomes: &[(u32, Result<String, String>)]) -> String {
+    outcomes
+        .iter()
+        .map(|(number, outcome)| match outcome {
+            Ok(text) => format!("[Page {number}]\n{text}"),
+            Err(why) => format!("[Page {number}] could not be read: {why}."),
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 /// Read the text in a scanned PDF.
 pub fn scanned_pdf_text(bytes: &[u8]) -> Result<String, String> {
     let doc = lopdf::Document::load_mem(bytes)
@@ -1112,52 +1153,70 @@ pub fn scanned_pdf_text(bytes: &[u8]) -> Result<String, String> {
 
     let pages = doc.get_pages();
     let total = pages.len();
-    let mut out = String::new();
-    let mut read = 0usize;
-    // Kept so a document none of whose pages could be decoded can say why,
-    // rather than reporting that it contains no text.
-    let mut first_refusal: Option<String> = None;
+
+    // Each page's outcome, collected before any of it is turned into text.
+    //
+    // Separated because the defect that produced 1.8.5 was in the *reporting*,
+    // not in reading a page: refusals were recorded and then discarded as soon
+    // as any other page succeeded, so a two-page scan whose second page could
+    // not be decoded came back as a complete-looking one-page document. A test
+    // of the reading would have passed throughout. `render_pages` is where that
+    // decision now lives, and it can be tested without a recogniser — which
+    // matters, because the first test written for this bug drove the whole
+    // engine, found no text on a blank fixture, took the "nothing could be
+    // read" path, and passed against the defect it was written to catch.
+    let mut outcomes: Vec<(u32, Result<String, String>)> = Vec::new();
 
     for (number, id) in pages.into_iter().take(MAX_OCR_PAGES) {
         let images = match doc.get_page_images(id) {
             Ok(i) => i,
-            Err(_) => continue,
+            Err(e) => {
+                outcomes.push((
+                    number,
+                    Err(format!("its contents could not be listed ({e})")),
+                ));
+                continue;
+            }
         };
         let image = match page_image(&images) {
             Ok(Some(i)) => i,
-            Ok(None) => continue,
+            // A page with no image at all is not a failure — a scanned
+            // document can have a blank leaf — but it is still accounted for.
+            Ok(None) => {
+                outcomes.push((number, Err("there is no picture on it".to_string())));
+                continue;
+            }
             Err(why) => {
-                first_refusal.get_or_insert(why);
+                outcomes.push((number, Err(why)));
                 continue;
             }
         };
         let page = match decode(&doc, image) {
             Ok(p) => p,
             Err(why) => {
-                first_refusal.get_or_insert(why);
+                outcomes.push((number, Err(why)));
                 continue;
             }
         };
-
         let text = engine.read(&page)?;
-
-        if !text.trim().is_empty() {
-            if !out.is_empty() {
-                out.push_str("\n\n");
-            }
-            out.push_str(&format!("[Page {number}]\n{}", text.trim()));
-            read += 1;
+        if text.trim().is_empty() {
+            outcomes.push((number, Err("no text could be made out on it".to_string())));
+        } else {
+            outcomes.push((number, Ok(text.trim().to_string())));
         }
     }
 
-    if read == 0 {
-        return Err(match first_refusal {
+    if !outcomes.iter().any(|(_, r)| r.is_ok()) {
+        let why = outcomes.iter().find_map(|(_, r)| r.as_ref().err().cloned());
+        return Err(match why {
             Some(why) => format!("This PDF is a picture of a page, and {why}."),
             None => {
                 "This PDF is a picture of a page, and no text could be made out in it.".to_string()
             }
         });
     }
+
+    let mut out = render_pages(&outcomes);
     if total > MAX_OCR_PAGES {
         out.push_str(&format!(
             "\n\n[Only the first {MAX_OCR_PAGES} of {total} pages were read — this document is a \
@@ -1364,6 +1423,51 @@ mod tests {
         let mut out = Vec::new();
         doc.save_to(&mut out).unwrap();
         out
+    }
+
+    #[test]
+    fn a_page_that_could_not_be_read_is_named_even_when_another_page_was() {
+        // The defect an external reviewer found in the published 1.8.4 binary,
+        // and the reason there is a 1.8.5. A refusal was recorded and then
+        // discarded the moment any other page succeeded, so a two-page contract
+        // whose second page could not be decoded came back as a complete-
+        // looking one-page document: success, no warning, nothing to say a page
+        // had ever existed.
+        //
+        // Tested here rather than through `scanned_pdf_text`, and that is the
+        // second lesson. The first version of this test built a two-page PDF
+        // and ran the whole engine — but its first page was a blank image, so
+        // nothing was read, the "no text at all" path fired, and the test
+        // passed against the very defect it was written for. Driving more of
+        // the system is not the same as testing the thing that was wrong.
+        let out = render_pages(&[
+            (1, Ok("CONSULTING AGREEMENT\nFee: EUR 12,450".to_string())),
+            (2, Err("it has several pictures on a page".to_string())),
+        ]);
+        assert!(out.contains("[Page 1]"), "{out}");
+        assert!(out.contains("Fee: EUR 12,450"), "{out}");
+        assert!(
+            out.contains("[Page 2]"),
+            "a page that could not be read vanished from the document:\n{out}"
+        );
+        assert!(
+            out.contains("could not be read"),
+            "page 2 is listed but not as a failure:\n{out}"
+        );
+    }
+
+    #[test]
+    fn every_page_appears_in_order_whatever_became_of_it() {
+        let out = render_pages(&[
+            (1, Err("there is no picture on it".to_string())),
+            (2, Ok("the middle".to_string())),
+            (3, Err("no text could be made out on it".to_string())),
+        ]);
+        let lines: Vec<&str> = out.lines().filter(|l| l.starts_with("[Page")).collect();
+        assert_eq!(lines.len(), 3, "a page went missing:\n{out}");
+        assert!(lines[0].starts_with("[Page 1]"), "{out}");
+        assert!(lines[1].starts_with("[Page 2]"), "{out}");
+        assert!(lines[2].starts_with("[Page 3]"), "{out}");
     }
 
     #[test]

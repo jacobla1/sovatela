@@ -167,3 +167,54 @@ describe("the model is told the fences exist", () => {
     expect(chat).toMatch(/Never write the file format itself/);
   });
 });
+
+// A model quoting a document is not a model writing code.
+//
+// Every fenced block used to become an artifact, which was harmless while the
+// only things models fenced were code. Then OCR arrived: asked what a scanned
+// contract said, the assistant quoted the page back inside a fence, and the app
+// filed the document's own text as an artifact — a chip offering to "run" the
+// contract, with the text hidden behind it. Found in the first minute of the
+// 1.8.5 release walkthrough, having survived every test here.
+describe("quoted text is shown, not filed as something to run", () => {
+  const page =
+    "Here is what the scan said:\n\n```TEXT\nCONSULTING AGREEMENT\n" +
+    "Fee: EUR 12,450 payable within 30 days.\n```\n\nCheck it against the original.";
+
+  it("keeps a plain-text block in the message", () => {
+    const parts = parseParts(page);
+    expect(
+      parts.some((p) => p.type === "artifact"),
+      "the document's text was filed as an artifact",
+    ).toBe(false);
+    expect(
+      parts.some((p) => p.type === "text" && p.content.includes("EUR 12,450")),
+      "the figure the user attached the file to read is not in the message",
+    ).toBe(true);
+  });
+
+  it("treats a fence with no language the same way", () => {
+    // `lang` falls back to "text", which is how most quoted output arrives.
+    const parts = parseParts("Output:\n\n```\nsome quoted output\n```\n");
+    expect(parts.some((p) => p.type === "artifact")).toBe(false);
+  });
+
+  it("still makes an artifact of code", () => {
+    // The fix must not have simply turned artifacts off.
+    for (const lang of ["html", "svg", "python", "docx"]) {
+      const parts = parseParts("```" + lang + "\nbody\n```");
+      expect(
+        parts.some((p) => p.type === "artifact" && p.lang === lang),
+        `${lang} stopped being an artifact`,
+      ).toBe(true);
+    }
+  });
+
+  it("does not promise to build a plain-text block that is still arriving", () => {
+    // An unclosed fence becomes a pending artifact — a "Building…" placeholder
+    // for something that will never be built, if it is not code.
+    const parts = parseParts("Here:\n\n```text\nhalf a line");
+    expect(parts.some((p) => p.pending)).toBe(false);
+    expect(parts.some((p) => p.content?.includes("half a line"))).toBe(true);
+  });
+});
