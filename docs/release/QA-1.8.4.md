@@ -1,4 +1,4 @@
-# QA plan — Sovatela 1.8.3
+# QA plan — Sovatela 1.8.4
 
 Written 2026-09-07, before any of it was run · Jacob Bergmann Larsen
 
@@ -9,16 +9,33 @@ Written 2026-09-07, before any of it was run · Jacob Bergmann Larsen
 > visible as gaps rather than as absences nobody noticed.
 >
 > Each row is filled in as it is run. A row that is not run stays empty and is
-> reported empty. **1.8.3 is not published while any row in "Must pass" is
+> reported empty. **1.8.4 is not published while any row in "Must pass" is
 > blank.**
 
 ## Why this release exists
 
-1.8.3 carries what five external review rounds found, and one thing that was
+1.8.4 carries what five external review rounds found, and one thing that was
 built for it: OCR for scanned PDFs, on macOS through Vision and on Windows
 through the Windows Runtime recogniser.
 
-The reviews are the reason the version number is 1.8.3 and not 1.8.0. Three
+### Why the number is 1.8.4
+
+Four tags were cut and withdrawn. `v1.8.0` was held back for more work.
+`v1.8.1` stopped at the test gate before producing anything. `v1.8.2` was
+withdrawn when an independent review of the frozen source found defects in the
+code written to fix the previous round's findings.
+
+`v1.8.3` built all six installers and signed and notarized the macOS one, then
+refused itself at the last step. The provenance check added in that release —
+which confirms the record describes the files being signed — counted the
+installers the job had just downloaded into its own working directory as though
+they were published source: "record says 252 files, the tree has 264". The
+record was right and the check was wrong, which is the worse of the two
+directions for a gate to fail in. It now asks git what is tracked instead of
+walking the disk, and the regression test found a second bug in that fix before
+it shipped.
+
+The reviews are the reason the number is 1.8.4 and not 1.8.0. Four
 tags — `v1.8.0`, `v1.8.1`, `v1.8.2` — were cut and burned, each because a
 review round closed *after* the tag rather than before it. The fifth round
 reviewed `94bf1bb` pre-tag and returned three Medium findings, all of them
@@ -30,9 +47,9 @@ fixed in `a2f98b1` and go back to the same reviewer before anything is tagged.
 | Build | Used for |
 | --- | --- |
 | Local unsigned `.app` from the frozen commit | the macOS functional walkthrough, before any tag exists |
-| `v1.8.3` tag, draft release, **unpublished** | everything else |
-| `Sovatela_1.8.3_universal.dmg` from the draft | macOS install, notarization, the signed walkthrough |
-| `Sovatela_1.8.3_x64-setup.exe` from the draft | Windows install and OCR |
+| `v1.8.4` tag, draft release, **unpublished** | everything else |
+| `Sovatela_1.8.4_universal.dmg` from the draft | macOS install, notarization, the signed walkthrough |
+| `Sovatela_1.8.4_x64-setup.exe` from the draft | Windows install and OCR |
 
 The draft is the point, and it is the pattern 1.7.3 established: build, verify,
 walk, and only then publish, so the artifact examined is the artifact people
@@ -58,7 +75,7 @@ judgement, and the point is to put both in front of a person.
 
 | Check | Platform | Result |
 | --- | --- | --- |
-| A scanned PDF returns its text, from a built binary | macOS | **Pass at the frozen commit `a44737c`.** Release bundle reporting 1.8.3, run at 300 and 72 dpi, plus the drawn-word fixture CI uses. Same output as before the freeze; the 300 dpi contract reads in order, the 72 dpi one keeps the order the earlier defect broke |
+| A scanned PDF returns its text, from a built binary | macOS | **Pass.** Release bundle built at `92d594a`, `CFBundleShortVersionString` 1.8.4, run at 300 and 72 dpi plus the drawn-word fixture CI asserts on. Re-run rather than carried over from the withdrawn tag: the 300 dpi contract reads in order, the 72 dpi one keeps the order the pre-freeze defect broke, and the drawn words come back exactly |
 | The same PDF, same text, from the signed and notarized `.dmg` | macOS | — **not yet run**; needs the tag |
 | A scanned PDF returns its text | Windows | **Pass — CI reads the page on every run.** A real scan still needs a machine |
 | With the OCR language pack **absent** — refusal names what to install | Windows | Not reproducible on CI: the runner has a pack. Needs a machine without one |
@@ -180,7 +197,7 @@ is read well; a poor one can lose a figure without saying so, and no amount of
 care in this codebase changes that. It is why OCR announces itself — once, at
 the head of the extracted document, ahead of the first `[Page 1]` marker.
 
-That announcement goes to the *model*. Until 1.8.3 it went nowhere else: the
+That announcement goes to the *model*. Until 1.8.4 it went nowhere else: the
 attachment chip showed a filename and a character count, so a reader had no way
 to tell that a document had been recognised rather than read, or that a figure
 might be missing rather than merely misspelled. A visible marker on the
@@ -227,8 +244,8 @@ with exactly those is a runtime question, and only running it answers it.
 | `gh attestation verify` | |
 | `PROVENANCE.txt` names the tag, public commit and run, and quotes the source record | |
 | The workflow's version check fired (or would have) — record version equals tag | |
-| Publisher re-run at the private commit reproduces `payload_sha256` | |
-| Mirror `diff -r` against a fresh publish is empty | |
+| Publisher re-run at the private commit reproduces `payload_sha256` | **Re-run pending for `v1.8.4`.** Passed for the withdrawn `v1.8.3`, which established the method but not this release |
+| Mirror `diff -r` against a fresh publish is empty | **Re-run pending for `v1.8.4`.** Passed at `75f8961` for the withdrawn `v1.8.3` |
 | Website bytes and `/version.json` identical to what was built | |
 | Immutable releases **enabled before the tag was pushed** | |
 
@@ -260,7 +277,7 @@ than blocking.
 
 ## Known open, and disclosed rather than closed
 
-Carried forward and still true. None of these is a regression in 1.8.3.
+Carried forward and still true. None of these is a regression in 1.8.4.
 
 | | Status |
 | --- | --- |

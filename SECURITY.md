@@ -93,7 +93,7 @@ A link in a reply, or a button in Settings, is opened by asking Rust, which
 accepts **`https` and `http` only** and refuses a URL carrying a username or
 password. The renderer does not hold the opener permission.
 
-It does not hold the image or file-dialog permissions either. From 1.8.3 its
+It does not hold the image or file-dialog permissions either. From 1.8.4 its
 grant is nine permissions named one by one rather than the `core:default` and
 `dialog:default` bundles. Those two allowed opening a file by path and reading
 back its pixels — a reach no review of this application's own commands would

@@ -456,7 +456,7 @@ fn widen_gray(gray: &[u8]) -> Vec<u8> {
 // bounds, the ordering against the ordinary extraction — is shared.
 //
 // The recogniser is the operating system's or there is none. Models were
-// bundled for a while as a floor for Linux, and were removed in 1.8.3 for two
+// bundled for a while as a floor for Linux, and were removed in 1.8.4 for two
 // reasons that each stand on their own: the licence for the exact artifacts
 // that worked could not be established — the only statement anywhere covers
 // differently-hashed files — and what they produced was not good enough to be

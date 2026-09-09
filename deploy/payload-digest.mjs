@@ -15,18 +15,35 @@
 // That is why it is a *payload* digest and not a tree digest — the published
 // directory has one more file in it than this counts.
 
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { join, relative } from "node:path";
 
 export const PROVENANCE_FILE = "PROVENANCE.json";
 
-/// Every file in `dir` except the record itself, repo-relative, sorted.
+/// Every published file in `dir` except the record itself, repo-relative,
+/// sorted.
 ///
-/// `.git` is skipped: the public checkout has one and the staged tree does not,
-/// and a digest that disagreed with itself depending on where it was computed
-/// would be worse than no digest.
+/// In a git checkout this is what git *tracks*, and not what happens to be on
+/// the disk. The difference is not academic: the release workflow downloads the
+/// installers into `release-assets/` **inside** the workspace and then verifies
+/// that workspace, so walking the directory counted twelve build artefacts as
+/// part of the published source and the record failed against the tree it
+/// correctly describes. The first release to use this check died there.
+///
+/// The staged tree the publisher writes is not a repository, so that case walks
+/// the directory — there is nothing untracked in it to confuse, because the
+/// publisher put every file there itself. The two agree because the mirror
+/// commits exactly what was staged.
+///
+/// `tests/tracked.js` carries the same lesson for the test suites, in almost
+/// the same words. It was written after a directory walk made the suite's own
+/// test count depend on which scratch files a machine happened to have.
 export function payloadFiles(dir) {
+  const tracked = trackedFiles(dir);
+  if (tracked) return tracked.filter((p) => p !== PROVENANCE_FILE).sort();
+
   const out = [];
   const walk = (at) => {
     for (const entry of readdirSync(at).sort()) {
@@ -41,6 +58,43 @@ export function payloadFiles(dir) {
   };
   walk(dir);
   return out.sort();
+}
+
+/// The files git tracks at `dir`, or null when `dir` is not the root of a
+/// repository.
+///
+/// The root check matters. Asking a subdirectory returns the files git tracks
+/// *there*, with paths relative to the repository rather than to `dir`, which
+/// would be a different set silently mislabelled.
+///
+/// Asked as `--show-prefix` rather than by comparing paths. Two attempts at
+/// comparing them failed on the same rock from opposite sides: macOS hands out
+/// a temporary directory as `/var/folders/...` while git says
+/// `/private/var/folders/...`, and Windows hands out an 8.3 short name with
+/// backslashes while git says the long name with forward slashes. Each time the
+/// comparison called the same directory two different places, fell back to
+/// walking the disk, and defeated the test written to catch the walk.
+///
+/// `--show-prefix` is empty exactly at the top of a work tree, which is the
+/// question being asked. Git answers it about itself, so there is no path
+/// spelling for either side to disagree about.
+function trackedFiles(dir) {
+  try {
+    const prefix = execFileSync("git", ["-C", dir, "rev-parse", "--show-prefix"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    if (prefix !== "") return null; // a subdirectory, not the top of the tree
+    return execFileSync("git", ["-C", dir, "ls-files", "-z"], {
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .split("\0")
+      .filter(Boolean);
+  } catch {
+    return null; // not a repository, or no git here
+  }
 }
 
 /// Path, mode and content of every file, in path order.

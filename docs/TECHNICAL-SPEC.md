@@ -1,6 +1,6 @@
 # Technical and security specification
 
-Sovatela v1.8.3 · Companion to Product spec ·
+Sovatela v1.8.4 · Companion to Product spec ·
 UX spec · [Security policy](../SECURITY.md)
 
 Fuller engineering rationale is kept internally in `ENGINEERING_NOTES.md`, which
@@ -217,7 +217,7 @@ The main window holds nine permissions, named one by one:
     core:app  core:event  core:menu  core:path  core:resources
     core:tray  core:webview  core:window  dialog:allow-ask
 
-Until 1.8.3 it held `core:default` and `dialog:default` instead, and those two
+Until 1.8.4 it held `core:default` and `dialog:default` instead, and those two
 bundles were the real IPC surface while every check this project had was
 pointed at its own 63 commands. `core:default` includes `core:image:default`,
 whose `allow-from-path` opens a file by name and whose `allow-rgba` returns its
@@ -275,7 +275,7 @@ first, and array parameters, unsupported predictors and any filter outside
 those three are refused by name. A chain containing `DCTDecode` is refused too
 — only a lone one takes the JPEG path — because the shortcut hands over the raw
 stream, which for a wrapped JPEG is not JPEG. Until
-1.8.3 this code assumed `PdfImage::content` arrived decompressed — it does
+1.8.4 this code assumed `PdfImage::content` arrived decompressed — it does
 not — so an ordinary Flate-compressed scan had its compressed bytes read as
 pixels and was refused as a short image. Rendering would mean pdfium or MuPDF — a large native dependency
 to build, sign and notarize on three platforms — and a scanned page does not
@@ -284,7 +284,7 @@ CCITT fax and JBIG2 compression are not read; each is refused by name.
 
 The recogniser is the system's or there is none: Vision on macOS,
 `Windows.Media.Ocr` on Windows, and on Linux a refusal naming the reason.
-Bundling models as a floor was implemented and then removed before 1.8.3 — the
+Bundling models as a floor was implemented and then removed before 1.8.4 — the
 only licence statement for them covers artifacts with different hashes from the
 ones that worked, so the chain for the shipped bytes could not be established,
 and on a clean 400 dpi contract they read `EUR 12,450` as `EUR 2.450`. No model
@@ -513,7 +513,7 @@ checkout is a superset and is not part of the repository.
   express, and the gaps are worth naming. A `.xlsx` has one sheet and no
   formulas, though its columns are sized to their contents and its header row
   is bold and frozen; and none of the three can contain images.
-- A `.docx` list is a real list from 1.8.3: items sit in definitions in
+- A `.docx` list is a real list from 1.8.4: items sit in definitions in
   `word/numbering.xml`, so Word's list tools see them and adding an item
   renumbers the rest. Each run of adjacent items is its own instance, with a
   `w:startOverride` where the author did not start at 1 — a shared instance
@@ -524,7 +524,7 @@ checkout is a superset and is not part of the repository.
   makes the list quietly stop being a list. The splice keeps every
   `w:abstractNum` ahead of every `w:num`, an order Word declines a file for
   getting wrong.
-- A table **on a slide** is a real table from 1.8.3 —
+- A table **on a slide** is a real table from 1.8.4 —
   a graphic frame holding `a:tbl`, on a slide of its own, continuing with a
   repeated header. It wears the template's own table style when the template
   carries a `ppt/tableStyles.xml` that **defines** one, and plain borders drawn

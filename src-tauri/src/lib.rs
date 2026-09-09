@@ -1516,7 +1516,7 @@ async fn choose_history_dir(app: tauri::AppHandle) -> Result<String, String> {
 ///
 /// Deliberately narrower than the setting it writes. The interface needs to
 /// flip this switch; it does not need to say where the chats go, and until
-/// 1.8.3 one command did both — so a compromised renderer could relocate every
+/// 1.8.4 one command did both — so a compromised renderer could relocate every
 /// recorded conversation into a shared or cloud-synced folder without a dialog
 /// ever opening. Moving the picker into `choose_history_dir` did not close
 /// that, because the setter it delegated to stayed registered and still took a
@@ -9186,7 +9186,7 @@ mod tests {
         // Where the app reads and writes is decided by a native dialog, and a
         // dialog is only a boundary if there is no way around it. Four commands
         // used to take a path beside one: the workspace folder, the document
-        // templates, and — until 1.8.3 — the history folder, whose picker was
+        // templates, and — until 1.8.4 — the history folder, whose picker was
         // moved into Rust while the setter that took a path stayed registered.
         // The dialog was moved and the capability was not removed.
         //
@@ -9379,7 +9379,7 @@ mod tests {
         )
         .expect("write fixture");
 
-        // Tables on slides. Until 1.8.3 a table was flattened to one line per
+        // Tables on slides. Until 1.8.4 a table was flattened to one line per
         // row, so this fixture is new work rather than a defect that shipped —
         // and a graphic frame is exactly the kind of addition the pattern
         // above predicts will be structurally perfect and wrong on screen. It

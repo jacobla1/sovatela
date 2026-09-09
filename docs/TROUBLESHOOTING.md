@@ -180,7 +180,7 @@ plain text/code. It will fail on:
 
 ### Scanned PDFs
 
-A scan is a picture of a page with no text in it. From 1.8.3 the app reads one
+A scan is a picture of a page with no text in it. From 1.8.4 the app reads one
 with the recogniser built into the operating system — Vision on macOS, the
 Windows OCR engine on Windows 10 and later. Nothing is uploaded: the reading
 happens on your machine. Linux has no recogniser available here and says so

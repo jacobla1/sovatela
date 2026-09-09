@@ -1,15 +1,16 @@
-# Release notes — Sovatela 1.8.3
+# Release notes — Sovatela 1.8.4
 
-Release date: 2026-09-08 · [All releases](https://github.com/jacobla1/sovatela/releases)
+Release date: 2026-09-09 · [All releases](https://github.com/jacobla1/sovatela/releases)
 
-> **Why the version jumps from 1.7.3 to 1.8.3.** Three tags were pushed and then
+> **Why the version jumps from 1.7.3 to 1.8.4.** Four tags were pushed and then
 > withdrawn: `v1.8.0` when the release was held back for more work, `v1.8.1`
-> when its build stopped at the test gate before producing anything, and
-> `v1.8.2` when an independent review of the frozen source found defects — in
-> the code that had been written to fix the previous round's findings. A tag
-> that has been public once is not made to point somewhere else, so all three
-> numbers are burned. This release is everything they were going to be, and what
-> the extra time found.
+> when its build stopped at the test gate before producing anything, `v1.8.2`
+> when an independent review of the frozen source found defects in the code
+> written to fix the previous round's findings, and `v1.8.3` when a new
+> provenance check rejected a release it should have passed. A tag that has been
+> public once is not made to point somewhere else, so all four numbers are
+> burned. This release is everything they were going to be, and what the extra
+> time found.
 
 The chat list stops being a pile of chats you can only scroll. You can search
 what was said, name a chat yourself, save one to a file and read it back — and
@@ -17,7 +18,7 @@ you can edit a message you have already sent.
 
 Scanned PDFs are read on your own machine, and say so where you can see it.
 
-## New in 1.8.3
+## New in 1.8.4
 
 - **Search your saved chats.** A field above the list searches what was said,
   not just the titles: message text, attachment names, and the contents of text

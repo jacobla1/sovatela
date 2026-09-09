@@ -946,7 +946,7 @@
     }
     if (stored) return stored;
 
-    // No usable record: written before 1.8.3, or malformed. The reply is the
+    // No usable record: written before 1.8.4, or malformed. The reply is the
     // only evidence left.
     return producedImage ? { mode: "image" } : PLAIN_CHAT;
   }
@@ -2105,7 +2105,7 @@
                   <!-- Pressing this runs code the model wrote, in a frame with
                        no network, no storage and no way back into the app. The
                        label says "run" rather than "open" because that is what
-                       it does, and because until 1.8.3 it happened by itself
+                       it does, and because until 1.8.4 it happened by itself
                        the moment a reply arrived. -->
                   <button
                     class="artifact-chip"

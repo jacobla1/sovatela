@@ -473,6 +473,42 @@ describe("the published tree says where it came from", () => {
     expect(verify, "the digest is checked after the record is already signed").toBeLessThan(signs);
   });
 
+  it("counts what git tracks, not what is lying in the directory", async () => {
+    // This killed the first release that used the check. The workflow
+    // downloads the installers into `release-assets/` *inside* the workspace
+    // and then verifies that workspace, so a digest that walked the disk saw
+    // twelve build artefacts as published source and reported that the record
+    // did not describe a tree it described perfectly well.
+    //
+    // The failure mode is the one worth guarding: not a wrong digest, but a
+    // correct record rejected — a gate that cries wolf gets removed, and then
+    // it is not a gate.
+    const { execFileSync } = await import("node:child_process");
+    const { mkdtempSync, writeFileSync, mkdirSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { payloadFiles } = await import("../deploy/payload-digest.mjs");
+
+    const dir = mkdtempSync(join(tmpdir(), "payload-"));
+    writeFileSync(join(dir, "README.md"), "# published\n");
+    writeFileSync(join(dir, "PROVENANCE.json"), "{}\n");
+    const git = (...args) => execFileSync("git", ["-C", dir, ...args], { stdio: "ignore" });
+    git("init", "-q");
+    git("config", "user.email", "t@example.invalid");
+    git("config", "user.name", "t");
+    git("add", "-A");
+    git("commit", "-qm", "published");
+
+    // Now the workspace as the release job leaves it.
+    mkdirSync(join(dir, "release-assets"));
+    writeFileSync(join(dir, "release-assets", "Sovatela_9.9.9_universal.dmg"), "x");
+    writeFileSync(join(dir, "release-assets", "SHA256SUMS.txt"), "x");
+
+    expect(
+      payloadFiles(dir),
+      "downloaded artefacts were counted as published source",
+    ).toEqual(["README.md"]);
+  });
+
   it("keeps one copy of the digest construction, not two", () => {
     // The publisher writes the digest and the workflow now checks it. Written
     // out twice, the two drift the first time either is edited — and a record

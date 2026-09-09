@@ -1,15 +1,22 @@
 # Changelog
 
-## 1.8.3 — 2026-09-08
+## 1.8.4 — 2026-09-09
 
-*There is no 1.8.0, 1.8.1 or 1.8.2. Each was tagged and then withdrawn — the
-first when the release was held back for more work, the second when its build
-failed at the test gate before anything was produced, the third when an
+*There is no 1.8.0, 1.8.1, 1.8.2 or 1.8.3. Each was tagged and then withdrawn:
+the first when the release was held back for more work; the second when its
+build failed at the test gate before anything was produced; the third when an
 external review of the frozen source found defects in the code written to fix
-the previous round's. A tag that has been public once is not made to point
-somewhere else, because anyone who fetched in that window holds it against a
-commit that no longer exists, so all three numbers are burned rather than
-reused. Everything intended for them is below.*
+the previous round's; the fourth when a new check — one that confirms the
+release's own provenance record describes the files being signed — rejected a
+release it should have passed. That last one built all six installers, signed
+and notarized the macOS one, and then refused itself at the final step, because
+the check counted the installers it had just downloaded into its own working
+directory as though they were part of the published source.*
+
+*A tag that has been public once is not made to point somewhere else, because
+anyone who fetched in that window holds it against a commit that no longer
+exists. So all four numbers are burned rather than reused. Everything intended
+for them is below.*
 
 ### Corrected before release
 *Found by review and testing of unreleased code, not reported from a released
