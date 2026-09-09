@@ -509,6 +509,84 @@ describe("the published tree says where it came from", () => {
     ).toEqual(["README.md"]);
   });
 
+  it("records a digest of what it staged, not of the target's git index", async () => {
+    // 1.8.5 was published with a PROVENANCE.json that did not describe its own
+    // tree, and the release job would have refused it at the last step — the
+    // same place `v1.8.3` died, for a sibling reason.
+    //
+    // The publisher asked `payloadDigest(target)` to work out the file list for
+    // itself. Given a directory that is the root of a repository, it answers
+    // with what git *tracks* — and the mirror's index, at the moment the
+    // publisher runs, is still the previous release's. So the digest covered
+    // last release's list of paths hashed against this release's bytes, while
+    // `files:` beside it was counted from the staged set. A record describing
+    // two different trees at once.
+    //
+    // It passed in 1.8.4 purely by ordering: that publish followed a
+    // `git add -A`, so the index already agreed. Nothing enforced that, and the
+    // next release quietly broke it.
+    //
+    // The target here is a repository whose index is deliberately stale — one
+    // committed file standing in for the previous release, one new file on disk
+    // that the publisher has just staged and nobody has added yet.
+    //
+    // Driving the real publisher was tried and is the wrong instrument: it
+    // refuses to run while the private working tree is dirty, so the test would
+    // pass or fail on whether someone had unsaved work, and the failure it
+    // produced was that refusal rather than anything about a digest. A test that
+    // cannot be run while you are working on the thing it guards gets run once.
+    const { execFileSync } = await import("node:child_process");
+    const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { payloadDigest, verifyPayload } = await import("../deploy/payload-digest.mjs");
+
+    const dir = mkdtempSync(join(tmpdir(), "stale-index-"));
+    try {
+      const git = (...args) => execFileSync("git", ["-C", dir, ...args], { stdio: "ignore" });
+      git("init", "-q");
+      git("config", "user.email", "t@example.invalid");
+      git("config", "user.name", "t");
+      writeFileSync(join(dir, "README.md"), "# published\n");
+      git("add", "-A");
+      git("commit", "-qm", "previous release");
+
+      // This release adds a file. On disk, not yet in the index — exactly the
+      // state the mirror is in when the publisher runs.
+      writeFileSync(join(dir, "NEW.md"), "# new in this release\n");
+      const staged = ["NEW.md", "README.md"];
+
+      // The trap: same directory, two different answers. If these ever agree,
+      // this test has stopped reproducing the defect and needs rewriting rather
+      // than believing.
+      const fromIndex = payloadDigest(dir);
+      const fromStaged = payloadDigest(dir, staged);
+      expect(fromIndex, "the stale index must give a different answer").not.toBe(fromStaged);
+
+      // And the staged answer is the correct one, not merely a different one:
+      // once the index catches up, it is what the release job recomputes.
+      writeFileSync(
+        join(dir, "PROVENANCE.json"),
+        JSON.stringify({
+          schema: 2,
+          private_commit: "0".repeat(40),
+          files: staged.length,
+          payload_sha256: fromStaged,
+        }),
+      );
+      git("add", "-A");
+      expect(verifyPayload(dir)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("passes the staged list to the digest rather than letting it guess", () => {
+    // The behavioural test above proves the two answers differ. This one pins
+    // which of them the publisher asks for, because that is a single argument
+    // and it is the whole of the defect.
+    expect(publisher).toMatch(/payloadDigest\(\s*target\s*,/);
+  });
+
   it("keeps one copy of the digest construction, not two", () => {
     // The publisher writes the digest and the workflow now checks it. Written
     // out twice, the two drift the first time either is edited — and a record

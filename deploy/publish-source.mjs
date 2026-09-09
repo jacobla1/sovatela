@@ -352,7 +352,27 @@ if (leaked.length || dangling.length || pointing.length) {
 // release workflow now recomputes it over the public checkout before signing
 // the record — and two copies of a hash construction is a record that quietly
 // stops meaning anything the first time one of them is edited.
-const digest_hex = payloadDigest(target);
+//
+// **The staged list is passed in, and that is the whole point.** Calling
+// `payloadDigest(target, [...shipping].sort())` and letting it work the list out for itself reads
+// like the same thing and is not: asked about a directory that is the root of a
+// repository, it answers with what git *tracks* there — and when the publisher
+// runs, the mirror's index is still the previous release's. So it hashed last
+// release's list of paths against this release's bytes, and wrote that into
+// PROVENANCE.json as a description of a tree it does not describe.
+//
+// It survived 1.8.4 only by ordering: that publish followed a `git add -A`, so
+// the index happened to already agree. 1.8.5 added one file, nothing had been
+// staged, and the record came out wrong — caught by verifying the mirror
+// against itself before tagging rather than by the release job at the last step.
+//
+// This is the third time a digest has been wrong for the same underlying
+// reason: asking the environment what the payload is, instead of the code that
+// just produced it. `v1.8.3` died when it walked the workspace and counted the
+// downloaded installers. The fix then was to ask git rather than the disk. This
+// is that fix's own blind spot — git is a better authority than the disk and it
+// is still not the publisher, which is the only thing that knows what it wrote.
+const digest_hex = payloadDigest(target, [...shipping].sort());
 const provenance = {
   schema: 2,
   version: JSON.parse(readFileSync(join(repo, "package.json"), "utf8")).version,
