@@ -62,7 +62,8 @@ it.
 | --- | --- |
 | Published `Sovatela_1.8.4_universal.dmg` | reproducing the announcement blocker — the defect was confirmed against the artifact people downloaded, not against a development build |
 | Local `.app` from the fix commits | the macOS walkthrough |
-| `v1.8.5` tag, draft release, **unpublished** | the release chain |
+| `v1.8.5` draft release | the release chain, verified before the draft was published |
+| Published `Sovatela_1.8.5_universal.dmg` | re-checking the blocker in the shipped artifact |
 
 ## Must pass
 
@@ -211,18 +212,39 @@ burned for it.
 
 #### The chain itself
 
-Filled in from `scripts/verify-release.sh v1.8.5` once the tag exists.
+`scripts/verify-release.sh v1.8.5` against the published release, 2026-09-10:
+**10 passed, 0 failed, 0 skipped.**
 
 | Check | Result |
 | --- | --- |
-| `shasum -a 256 -c SHA256SUMS.txt` — all six | |
-| `scripts/verify-notarization.sh` | |
-| `minisign -Vm SHA256SUMS.txt -p minisign.pub` | |
-| `gh attestation verify` | |
-| `PROVENANCE.txt` names the tag, public commit and run | |
-| Publisher re-run at the private commit reproduces `payload_sha256` | |
-| Mirror `diff -r` against a fresh publish is empty | |
-| Website bytes and `/version.json` identical to what was built | |
+| `shasum -a 256 -c SHA256SUMS.txt` | **Pass** — 7 files, the six installers and `PROVENANCE.txt`; the list covers exactly those 7 |
+| `minisign -Vm SHA256SUMS.txt` | **Pass** — trusted comment `Sovatela v1.8.5 checksums` |
+| `gh attestation verify` | **Pass** — 6 files |
+| `scripts/verify-notarization.sh` | **Pass** — signed, notarized and stapled |
+| `PROVENANCE.txt` names the tag, public commit and run | **Pass** — names `v1.8.5`, quotes a source record for 1.8.5, `public_commit` is `9dcec5cdab05` which is what the tag points at, and it is itself inside the signed checksum list |
+| Publisher re-run at the private commit reproduces the published tree | **Pass** — re-run at `4d1f30c309b7` reproduces it exactly |
+| Website bytes identical to what was built | **Pass** — all nine served resources byte-identical to `deploy/web/dist`: six pages, `version.json` (1.8.5), `SHA256SUMS.txt` and the release feed |
+
+#### The blocker, re-checked in the artifact people download
+
+The announcement review's finding was reproduced against the **published** 1.8.4
+`.dmg`, so confirming the fix anywhere else would have been a weaker claim than
+the defect. The same two-page fixture CI uses — page one readable, page two
+deliberately unreadable — was run through the helper inside the **published,
+signed, notarized 1.8.5 `.dmg`**, mounted from the release:
+
+```
+[Page 1]
+SOVATELA OCR
+INVOICE 12345
+
+[Page 2] could not be read: it has several pictures on a page and this app
+cannot tell which one is the scan.
+```
+
+Exit 0, page two named with its reason rather than dropped. In the published
+1.8.4 binary the same input produces a one-page document that does not mention
+page two at all.
 
 ## Should pass
 
