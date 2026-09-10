@@ -747,6 +747,34 @@
     return (content || "").startsWith(OCR_MARK);
   }
 
+  // Which pages could not be read, by number, from the extracted text itself.
+  //
+  // The extractor names a failed page — `[Page 2] could not be read: …` — and
+  // until 1.8.6 that sentence went only to the model. The person saw a filename
+  // and an OCR badge, which look identical for a scan that was read whole and
+  // one missing a page, and the attachment's text is not rendered anywhere they
+  // can reach. So "a gap you can see is a page you can go and look at yourself"
+  // was true of the model's copy of the document and not of theirs. An external
+  // review made that point after 1.8.5 shipped.
+  //
+  // Read back out of the text rather than carried beside it, because that is
+  // where the fact actually lives: the helper's contract with the app is the
+  // document it returns, and a parallel channel for the same fact is two things
+  // to keep in step. `render_pages` in `ocr.rs` writes this exact shape, and a
+  // test holds the two together.
+  function unreadablePages(content) {
+    if (!wasRecognised(content)) return [];
+    return [...(content || "").matchAll(/^\[Page (\d+)\] could not be read/gm)].map((m) => m[1]);
+  }
+
+  // "page 2", "pages 2 and 5", "pages 2, 5 and 9" — and past that a count,
+  // because a chip listing eleven numbers is a chip nobody reads.
+  function unreadableLabel(pages) {
+    if (pages.length === 1) return `page ${pages[0]}`;
+    if (pages.length > 3) return `${pages.length} pages`;
+    return `pages ${pages.slice(0, -1).join(", ")} and ${pages[pages.length - 1]}`;
+  }
+
   // Says what can go wrong, not merely that something might. A recogniser
   // does not only misread a word you can see: on a poor scan it drops a figure
   // or a whole line and leaves fluent, complete-looking prose behind. Whole
@@ -2088,6 +2116,7 @@
                 {#if a.kind === "image"}
                   <img class="thumb" src={a.dataUrl} alt={a.name} />
                 {:else if a.kind === "text"}
+                  {@const missing = unreadablePages(a.content)}
                   <span class="att-chip">
                     📄 {a.name}
                     <!-- Kept in the history too: an answer about a scanned
@@ -2098,6 +2127,16 @@
                         title={OCR_WARNING}
                         aria-label={`Read by optical character recognition. ${OCR_WARNING}`}
                         role="note">OCR</span
+                      >{/if}
+                    <!-- Which page, not merely that something went wrong. The
+                         number is the whole value: it is what turns "some of
+                         this document may be missing" into a page the reader
+                         can open the original at. -->
+                    {#if missing.length}<span
+                        class="att-ocr att-ocr-missing"
+                        title={`${unreadableLabel(missing)} could not be read — the rest of the document was.`}
+                        aria-label={`${unreadableLabel(missing)} of this scan could not be read. The rest was. Check the original for what is missing.`}
+                        role="note">{unreadableLabel(missing)} unreadable</span
                       >{/if}
                   </span>
                 {/if}
@@ -2271,6 +2310,20 @@
                   role="note">OCR</span
                 >
               {/if}
+              <!-- Named before sending, which is the moment it is worth
+                   knowing: a scan missing page 2 can be re-made or the
+                   question narrowed, and neither is possible once the reply
+                   has been written from an incomplete document. -->
+              {#each [unreadablePages(a.content)] as missing}
+                {#if missing.length}
+                  <span
+                    class="att-ocr att-ocr-missing"
+                    title={`${unreadableLabel(missing)} could not be read — the rest of the document was.`}
+                    aria-label={`${unreadableLabel(missing)} of this scan could not be read. The rest was. Check the original for what is missing.`}
+                    role="note">{unreadableLabel(missing)} unreadable</span
+                  >
+                {/if}
+              {/each}
             {/if}
             <button
               class="att-x"

@@ -2331,6 +2331,22 @@ button.mini.primary:disabled {
   cursor: help;
 }
 
+/* "page 2 unreadable", beside the OCR badge rather than instead of it. The two
+   say different things — one is "this was read from a picture, so check it",
+   the other is "part of this document is not here" — and they sat identically.
+
+   The difference is carried by the words, and the styling only has to stop the
+   pair reading as one badge: a heavier border and ordinary letter-spacing,
+   since this one is a sentence rather than an initialism. Deliberately no new
+   colour. Every foreground/background pair in this file is computed against its
+   requirement on each build by `tests/contrast.test.js`, and a filled variant
+   would need a token whose contrast nobody had measured — which is how nine
+   pairs came to be short the first time that test was written. */
+.att-ocr-missing {
+  border-width: 2px;
+  letter-spacing: 0;
+}
+
 /* A chip with a picture in it is a row, not a line of text. */
 .att-chip {
   max-width: 260px;

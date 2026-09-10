@@ -2,7 +2,7 @@
 #
 # Walk the whole chain for a published (or draft) release and print a transcript.
 #
-#   scripts/verify-release.sh v1.8.5 [<private-repo>]
+#   scripts/verify-release.sh v1.8.6 [<private-repo>]
 #
 # Every release so far was verified by typing the commands out and pasting the
 # results into the QA record. That works, and it has two faults: what was

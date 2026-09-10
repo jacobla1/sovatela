@@ -210,6 +210,63 @@ describe("quoted text is shown, not filed as something to run", () => {
     }
   });
 
+  // The first fix named four labels — text, txt, plain, plaintext — and left
+  // every other one open. An external review found the next one in about a
+  // minute: a model asked to quote a document reaches for ```markdown at least
+  // as readily as ```text, and the quotation went straight back behind the chip.
+  it("keeps a quotation in the message whatever the model labelled it", () => {
+    for (const lang of ["markdown", "md", "quote", "quotation", "TEXT", "Plain"]) {
+      const parts = parseParts("It says:\n\n```" + lang + "\nEUR 12,450\n```\n");
+      expect(
+        parts.some((p) => p.type === "artifact"),
+        `a quotation labelled ${lang} was filed as an artifact`,
+      ).toBe(false);
+      expect(
+        parts.some((p) => p.type === "text" && p.content.includes("EUR 12,450")),
+        `the figure is not in the message for ${lang}`,
+      ).toBe(true);
+    }
+  });
+
+  // The property that matters more than any particular label, and the reason
+  // this is an allowlist now rather than a longer denylist.
+  //
+  // A denylist of prose labels cannot be completed — there is no end to what a
+  // model may write after the backticks — so the real question is which way an
+  // unrecognised label should fail. Inline is recoverable and visible; behind a
+  // "run" chip is how a person loses the text they attached the file to read.
+  it("defaults an unrecognised label to staying visible", () => {
+    for (const lang of ["transcript", "letter", "notat", "zzz"]) {
+      const parts = parseParts("```" + lang + "\nEUR 12,450\n```");
+      expect(
+        parts.some((p) => p.type === "artifact"),
+        `an unknown label ${lang} became an artifact — the default is the wrong way round`,
+      ).toBe(false);
+    }
+  });
+
+  // The renderable set is written down twice: `text.js` decides what becomes an
+  // artifact, `Artifact.svelte` decides what it can draw. If they drift, either
+  // the panel opens on something it cannot show, or a document it could have
+  // previewed never reaches it.
+  it("agrees with the artifact panel about what it can render", () => {
+    const declared = [
+      ...[...artifact.matchAll(/lang === "([a-z]+)"/g)].map((m) => m[1]),
+      ...[...artifact.matchAll(/^ {4}([a-z]+): \{ label:/gm)].map((m) => m[1]),
+    ];
+    expect(
+      declared.length,
+      "could not read the panel's renderable set — this test has stopped checking anything",
+    ).toBeGreaterThan(4);
+    for (const lang of declared) {
+      const parts = parseParts("```" + lang + "\nbody\n```");
+      expect(
+        parts.some((p) => p.type === "artifact"),
+        `${lang} renders in the panel but never reaches it`,
+      ).toBe(true);
+    }
+  });
+
   it("does not promise to build a plain-text block that is still arriving", () => {
     // An unclosed fence becomes a pending artifact — a "Building…" placeholder
     // for something that will never be built, if it is not code.

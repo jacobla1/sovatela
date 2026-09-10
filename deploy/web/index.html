@@ -306,10 +306,12 @@
 
     <p class="signing">
       <strong>macOS</strong> builds are signed and notarized by the developer, so
-      they open normally. <strong>Windows and Linux</strong> builds are not signed
-      yet — on Windows, SmartScreen will say the publisher is unknown, and opening
-      it takes <em>More info → Run anyway</em>. That warning is accurate: it means
-      nobody has paid a certificate authority to vouch for this installer.
+      they open normally. <strong>Windows and Linux</strong> builds are unsigned by
+      choice and experimental; signing them is not planned. On Windows, SmartScreen
+      will say the publisher is unknown, and opening it takes
+      <em>More info → Run anyway</em>. That warning is accurate: it means nobody has
+      paid a certificate authority to vouch for this installer, and on this app
+      nobody is going to.
     </p>
 
     <p class="signing">
@@ -331,9 +333,11 @@
     <details class="sums">
       <summary>Be told about new versions</summary>
       <p class="sums-note">
-        Sovatela has no automatic updater, and <em>Check for updates</em> only
-        helps if you press it. Two ways to hear about a release — including a
-        security release — without one:
+        Sovatela has no automatic updater — nothing installs itself. You can press
+        <em>Check for updates</em>, or turn on <em>Check for a new version when
+        Sovatela starts</em>, which is off until you enable it; either one reads a
+        static file and tells you a release exists. Two ways to hear about one —
+        including a security release — without opening the app at all:
       </p>
       <ul class="sums-note">
         <li>

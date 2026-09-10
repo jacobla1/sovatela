@@ -25,18 +25,60 @@ export function hasVisibleText(text) {
   return cleanText(text || "").trim() !== "";
 }
 
-// Languages that are not code, and so are not artifacts.
+// Which fenced blocks become artifacts. **An allowlist: anything not named here
+// stays in the message.**
 //
-// A fence with no language at all lands here too: `lang` falls back to "text".
+// This was a denylist of four labels — `text`, `txt`, `plain`, `plaintext` —
+// written after a walkthrough found the app filing a scanned contract's own
+// text as an artifact, so what a person saw was a chip offering to "run" their
+// contract with the quotation hidden behind it. That fix closed the four labels
+// it named and left every other one open. An external review then found the
+// next one in about a minute: a model quoting a document as ```markdown, ```md
+// or ```quote put it straight back behind the chip.
 //
-// Every fenced block used to become an artifact. That was harmless while the
-// only things models fenced were code — and then OCR arrived, models began
-// quoting scanned pages back inside fences, and the app filed the document's
-// own text as an artifact. What a person saw was a chip offering to "run" the
-// contents of their contract, with the text they had attached the file to read
-// hidden behind it. Found in the first minute of a walkthrough, having survived
-// every test in this repository.
-const NOT_CODE = new Set(["text", "txt", "plain", "plaintext"]);
+// A denylist of things that are not code cannot be finished. There is no end to
+// the labels a model may reach for when quoting prose — `quote`, `output`,
+// `log`, `email`, `transcript`, a language name in another language — and every
+// one of them is found the same way, by someone losing their own text. So the
+// default is inverted: an unrecognised label is *not* an artifact, and the worst
+// case for a missing entry below is that a code block renders inline in the
+// message instead of in the side panel. That is a smaller harm, and a visible
+// one, rather than a document disappearing behind a button.
+//
+// Two sets, because they earn their place differently.
+//
+// `RENDERABLE` is what the panel can actually display, and it must stay in step
+// with `renderable` and `DOCUMENTS` in `Artifact.svelte` — a test fails if they
+// diverge.
+const RENDERABLE = new Set(["html", "svg", "docx", "xlsx", "pptx"]);
+
+// `CODE` is everything else the panel is still worth opening for. It cannot
+// render these, but it shows them in a scrollable pane with a Copy button,
+// which is the reason not to simply allow `RENDERABLE` and be done: that would
+// have quietly removed the side panel from every code block in the app, which
+// is a regression nobody asked for and which no test here would have caught.
+//
+// Prose labels are deliberately absent — `markdown`, `md`, `quote`, `text`,
+// `log`, `output`, `csv`, `email`. A model quoting a document reaches for those,
+// and a person quoting a document needs to see it.
+const CODE = new Set([
+  "javascript", "js", "jsx", "mjs", "cjs",
+  "typescript", "ts", "tsx",
+  "python", "py", "rust", "rs", "go", "golang",
+  "java", "kotlin", "kt", "swift", "objc",
+  "c", "h", "cpp", "c++", "cc", "hpp", "cs", "csharp",
+  "php", "ruby", "rb", "perl", "lua", "r", "scala", "haskell", "hs",
+  "elixir", "erlang", "clojure", "dart", "zig", "nim", "ocaml", "fsharp",
+  "sh", "bash", "zsh", "shell", "fish", "powershell", "ps1", "bat",
+  "sql", "graphql", "regex",
+  "css", "scss", "sass", "less",
+  "vue", "svelte", "astro",
+  "json", "jsonc", "yaml", "yml", "toml", "ini", "xml",
+  "dockerfile", "makefile", "cmake", "nix", "terraform", "hcl",
+  "diff", "patch",
+]);
+
+const isArtifactLang = (lang) => RENDERABLE.has(lang) || CODE.has(lang);
 
 // Split an assistant message into plain text and renderable artifacts
 // (```html / ```svg fenced blocks). Incomplete blocks stay as text until closed.
@@ -57,7 +99,7 @@ export function parseParts(text) {
     const title = sp === -1 ? "" : info.slice(sp + 1).trim();
     // Left in the surrounding text run: `last` is not advanced, so the fence
     // and its contents reach the markdown renderer intact.
-    if (NOT_CODE.has(lang)) continue;
+    if (!isArtifactLang(lang)) continue;
     if (m.index > last)
       parts.push({ type: "text", content: text.slice(last, m.index) });
     parts.push({ type: "artifact", lang, code: m[2], title });
@@ -76,7 +118,7 @@ export function parseParts(text) {
       const sp = info.indexOf(" ");
       const lang = (sp === -1 ? info : info.slice(0, sp)).toLowerCase() || "text";
       const title = sp === -1 ? "" : info.slice(sp + 1).trim();
-      if (NOT_CODE.has(lang)) {
+      if (!isArtifactLang(lang)) {
         // Still arriving, and not code: show it as it comes rather than as a
         // "Building…" placeholder for something that will never be built.
         parts.push({ type: "text", content: rest });

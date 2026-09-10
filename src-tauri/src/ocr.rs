@@ -1141,6 +1141,48 @@ fn render_pages(outcomes: &[(u32, Result<String, String>)]) -> String {
         .join("\n\n")
 }
 
+/// Why a scan was refused outright, when not one of its pages could be read.
+///
+/// Separate from [`scanned_pdf_text`] for the same reason [`render_pages`] is:
+/// it decides what a person is told, it needs no recogniser to do so, and the
+/// last defect here lived in exactly this kind of code and survived every test
+/// that drove the engine instead of the decision.
+///
+/// It used to be `outcomes.iter().find_map(...)` — the *first* error, formatted
+/// without the page it came from. A two-page scan that failed twice for two
+/// different reasons reported one of them and accounted for neither page, while
+/// the release notes claimed every page was named. An external review found
+/// that after 1.8.5 shipped.
+///
+/// The document is still refused rather than returned. Nothing was read, so
+/// there is no text to hand over; what changes is that the refusal says what
+/// happened to each page instead of picking one page's reason and dropping the
+/// rest on the floor.
+fn refusal_message(outcomes: &[(u32, Result<String, String>)]) -> String {
+    // Only reachable with an `Ok` in the list if a caller misuses this, and a
+    // page that succeeded has no reason to give. Saying so beats `unwrap`.
+    let reason = |r: &Result<String, String>| {
+        r.as_ref()
+            .err()
+            .cloned()
+            .unwrap_or_else(|| "it could not be read".to_string())
+    };
+    match outcomes {
+        [] => "This PDF has no pages in it.".to_string(),
+        // One page, so naming its number would be noise: "page 1" adds nothing
+        // a reader of a one-page document does not already know.
+        [(_, only)] => format!("This PDF is a picture of a page, and {}.", reason(only)),
+        many => {
+            let each = many
+                .iter()
+                .map(|(number, r)| format!("page {number}: {}", reason(r)))
+                .collect::<Vec<_>>()
+                .join("; ");
+            format!("This PDF is a picture of its pages, and none of them could be read — {each}.")
+        }
+    }
+}
+
 /// Read the text in a scanned PDF.
 pub fn scanned_pdf_text(bytes: &[u8]) -> Result<String, String> {
     let doc = lopdf::Document::load_mem(bytes)
@@ -1198,22 +1240,30 @@ pub fn scanned_pdf_text(bytes: &[u8]) -> Result<String, String> {
                 continue;
             }
         };
-        let text = engine.read(&page)?;
-        if text.trim().is_empty() {
-            outcomes.push((number, Err("no text could be made out on it".to_string())));
-        } else {
-            outcomes.push((number, Ok(text.trim().to_string())));
+        // Every other failure in this loop records an outcome and carries on.
+        // This one used to be `engine.read(&page)?`, which propagated out of the
+        // whole function and took every page already read with it — including,
+        // because `reading_order` is called from inside `read`, the ordinary
+        // case of one two-column page in an otherwise readable report. Twenty
+        // good pages were discarded because the twenty-first was laid out
+        // differently.
+        //
+        // That is the same shape as the defect this file was rewritten to fix:
+        // a failure recorded in one place and dropped in another. The release
+        // notes for 1.8.5 said the document is not refused outright when one
+        // page fails, which described `render_pages` and not the line above it.
+        // An external review found it after that release shipped.
+        match engine.read(&page) {
+            Ok(text) if text.trim().is_empty() => {
+                outcomes.push((number, Err("no text could be made out on it".to_string())));
+            }
+            Ok(text) => outcomes.push((number, Ok(text.trim().to_string()))),
+            Err(why) => outcomes.push((number, Err(why))),
         }
     }
 
     if !outcomes.iter().any(|(_, r)| r.is_ok()) {
-        let why = outcomes.iter().find_map(|(_, r)| r.as_ref().err().cloned());
-        return Err(match why {
-            Some(why) => format!("This PDF is a picture of a page, and {why}."),
-            None => {
-                "This PDF is a picture of a page, and no text could be made out in it.".to_string()
-            }
-        });
+        return Err(refusal_message(&outcomes));
     }
 
     let mut out = render_pages(&outcomes);
@@ -1453,6 +1503,47 @@ mod tests {
         assert!(
             out.contains("could not be read"),
             "page 2 is listed but not as a failure:\n{out}"
+        );
+    }
+
+    #[test]
+    fn a_refusal_names_every_page_and_its_own_reason() {
+        // What a person is told when nothing at all could be read.
+        //
+        // This used to be `find_map` over the outcomes: the *first* error,
+        // formatted without the page it came from. Two pages that failed for
+        // two different reasons produced one sentence naming neither page and
+        // one of the reasons — while the 1.8.5 release notes said every page is
+        // accounted for. Found by review after that release shipped, which is
+        // why the claim and the code are being brought back together here.
+        let out = refusal_message(&[
+            (1, Err("there is no picture on it".to_string())),
+            (2, Err("it is laid out in more than one column".to_string())),
+        ]);
+        assert!(
+            out.contains("page 1"),
+            "page 1 is not accounted for:\n{out}"
+        );
+        assert!(
+            out.contains("page 2"),
+            "page 2 is not accounted for:\n{out}"
+        );
+        assert!(out.contains("there is no picture on it"), "{out}");
+        assert!(
+            out.contains("it is laid out in more than one column"),
+            "the second page's reason was dropped for the first page's:\n{out}"
+        );
+    }
+
+    #[test]
+    fn a_one_page_refusal_does_not_number_the_only_page() {
+        // "page 1: ..." on a one-page document tells a reader nothing they do
+        // not have in front of them. The wording that shipped for years is kept
+        // for that case rather than regularised for the sake of symmetry.
+        let out = refusal_message(&[(1, Err("no text could be made out on it".to_string()))]);
+        assert_eq!(
+            out,
+            "This PDF is a picture of a page, and no text could be made out on it."
         );
     }
 

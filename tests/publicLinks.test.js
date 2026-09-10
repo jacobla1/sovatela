@@ -95,16 +95,29 @@ describe("the update check fetches a file the site actually publishes", () => {
 });
 
 // The download page told readers that checking the SHA-256 "does not depend on
-// trusting us". It does: SHA256SUMS.txt is unsigned and sits in the same
-// release as the installers, so whoever could swap one could swap the other. A
-// checksum here shows the file arrived intact; it does not establish who
-// published it. On macOS notarization does more, because it is checked against
-// Apple.
+// trusting us". It did: a checksum shows the file arrived intact, not who
+// published it, and at the time the list sat unsigned in the same release as
+// the installers — so whoever could swap one could swap the other.
+//
+// The list has been signed for several releases now, which is the fact the
+// previous version of this comment still denied. `SECURITY.md` went on saying
+// "is not signed" long after it stopped being true, and an external review found
+// it there. The page is right, and says why: integrity from the checksum,
+// provenance from the signature and the build attestation, and on macOS
+// notarization, which is checked against Apple rather than against us.
+//
+// The second assertion below used to be `/not signed/`. It passed by matching an
+// unrelated paragraph two sections away about Windows installers being unsigned,
+// so it had never checked the checksum wording at all. Rewording that other
+// paragraph is what exposed it.
 describe("the download page does not oversell a checksum", () => {
   const page = readFileSync(
     join(resolve(import.meta.dirname, ".."), "deploy/web/index.html"),
     "utf8",
   );
+  // Scoped to the paragraph under test, so a phrase found somewhere else on the
+  // page cannot stand in for the one that should be here.
+  const checksumPara = page.match(/<p class="signing">\s*Checking the SHA-256[\s\S]*?<\/p>/)?.[0];
 
   it("makes no claim that verification is independent of the publisher", () => {
     for (const phrase of [
@@ -117,8 +130,17 @@ describe("the download page does not oversell a checksum", () => {
   });
 
   it("says what a checksum actually shows", () => {
-    expect(page).toMatch(/arrived intact/);
-    expect(page).toMatch(/not signed/);
+    expect(checksumPara, "the checksum paragraph is gone or was reworded away").toBeTruthy();
+    // Integrity, stated.
+    expect(checksumPara).toMatch(/arrived intact/);
+    // And its limit, stated in the same breath rather than left to be inferred.
+    expect(
+      checksumPara,
+      "the page does not say a checksum shows integrity rather than provenance",
+    ).toMatch(/not who published it/);
+    // The thing that does establish provenance is named, since the page would
+    // otherwise leave the reader at a dead end.
+    expect(checksumPara).toMatch(/signed/);
   });
 
   it("still tells Windows users the build is unsigned", () => {

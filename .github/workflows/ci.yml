@@ -205,6 +205,58 @@ jobs:
             echo "No page was read here, so the whole document was refused — nothing to account for."
           fi
 
+          # A readable page followed by one the *recogniser* refuses. A different
+          # seam from the two-picture page above, and open until 1.8.6.
+          #
+          # That one fails while the extractor is deciding which picture on the
+          # page is the scan — before the recogniser is reached — and was
+          # collected as a page outcome like any other. A refusal from inside
+          # `engine.read`, which is where a two-column layout is rejected,
+          # propagated out of the whole function and took every page already read
+          # with it: twenty good pages discarded because the twenty-first was
+          # laid out in columns.
+          #
+          # Found by external review after 1.8.5 shipped, against notes that
+          # described the release as accounting for every page. No unit test
+          # could have seen it — they all drive the reporting decision directly,
+          # which is the half that was already right.
+          node qa/ocr/make-scan.mjs recog.pdf "SOVATELA OCR" "INVOICE 12345" --with-two-column-page
+          set +e
+          "$bin" --sovatela-extract-doc-helper pdf < recog.pdf > recog-out.txt 2>/dev/null
+          recog_code=$?
+          set -e
+          echo "recogniser-refusal helper exit: $recog_code"
+          sed 's/^/  /' recog-out.txt
+          if [ "$recog_code" -ne 0 ] && [ "$recog_code" -ne 33 ]; then
+            echo "::error::the helper did not exit cleanly on a recogniser refusal ($recog_code)"
+            exit 1
+          fi
+          # Only meaningful where there is a recogniser at all. On Linux the
+          # document is refused whole and there is nothing to have kept.
+          if grep -q "\[Page 1\]" recog-out.txt; then
+            # The digits, not the phrase — the same rule as the single-page
+            # assertion above and for the same reason. Windows reads "INUOICE"
+            # for "INVOICE" off a 5×7 bitmap alphabet, so grepping for the whole
+            # string tests the glyphs rather than the fix. It failed on exactly
+            # that: Windows had kept page 1 and named page 2, correctly, and the
+            # assertion called it a discarded page.
+            #
+            # 12345 is unambiguous at this size, both engines read it exactly,
+            # and page 2 is refused so it contributes no text — the digits can
+            # only be page 1's.
+            tr -d '\r' < recog-out.txt | tr -cd '0-9' | grep -q 12345 || {
+              echo "::error::page 1 was read and then discarded when page 2 was refused"
+              exit 1
+            }
+            grep -q "\[Page 2\] could not be read" recog-out.txt || {
+              echo "::error::the recogniser's refusal of page 2 was not reported"
+              exit 1
+            }
+            echo "A recogniser refusal kept the pages already read, and named the page it refused."
+          else
+            echo "No recogniser here, so the document was refused whole — nothing to keep."
+          fi
+
       # The same command the release gate runs, and for the reason it exists:
       # until 1.8.1 this ran *only* at release time, so a lint that fires on one
       # platform was first seen when a tag had already been pushed. A

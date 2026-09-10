@@ -1,6 +1,91 @@
+# Release notes — Sovatela 1.8.6
+
+Release date: 2026-09-10 · [All releases](https://github.com/jacobla1/sovatela/releases)
+
+**1.8.5 said more than it did.** It fixed one way a scanned page could vanish and
+described the fix as though it covered all of them. An external review, asked
+whether the release could be announced, said no and showed why. This release
+closes the gaps and corrects the sentences.
+
+Nothing here is a security fix. If you do not open scanned PDFs, the only
+difference you are likely to notice is that a quotation the assistant labels as
+Markdown now stays in the reply instead of moving to the side panel.
+
+## Fixed in 1.8.6
+
+- **A page the recogniser fails on no longer takes the rest of the document with
+  it.** Decoding failures were collected per page and reported; a failure
+  *inside* the text recogniser was not. It abandoned the whole extraction and
+  discarded every page already read.
+
+  The realistic case is not exotic: a page laid out in two columns is refused,
+  and one two-column page in an otherwise ordinary twenty-page report threw away
+  the nineteen that had been read. Those pages are kept now, and the page that
+  failed is named alongside them like any other.
+
+- **When no page can be read, every page is named with its own reason.** The
+  refusal used to report the first reason it found and drop the page numbers, so
+  a two-page scan that failed twice, differently, reported one of the two and
+  accounted for neither page.
+
+- **The attachment chip says which page is missing.** The numbered gap was
+  written into the text sent to the model and shown to nobody: you saw a
+  filename, a character count and a general OCR badge — identical for a scan read
+  whole and one missing a page. The chip now reads *"page 2 unreadable"*, before
+  you send, which is while you can still re-scan it or narrow the question.
+
+- **A quotation stays in the reply whatever the assistant labels it.** The
+  previous fix listed four labels meaning plain text and treated everything else
+  as code, so a passage marked `markdown`, `md` or `quote` still disappeared
+  behind a chip offering to "run" it. The rule is the other way round now: a
+  fenced block becomes an artifact only if it is something the panel can show or
+  a language it recognises as code, and anything else stays visible in the
+  message. An unfamiliar label now fails towards being readable.
+
+## Said more accurately
+
+- The 1.8.5 notes claimed **every page** is accounted for, that a document is
+  never refused because one page failed, and that the gap is one **you** can see.
+  All three were true of one part of the code and not of the paths above. They
+  are corrected in place below, and the 1.8.5 release page carries the same note.
+- The download page said Windows and Linux builds are **"not signed yet"**. They
+  are unsigned by choice and signing is not planned, which is what `SECURITY.md`
+  has said throughout. The test written to catch exactly that string did not,
+  because the sentence wrapped between "signed" and "yet"; it reads across line
+  breaks now.
+- The download page said *Check for updates* **"only helps if you press it"**.
+  There is also an optional check that runs when the app starts, off until you
+  switch it on.
+- The accessibility statement said it **"does not currently conform fully"** to
+  WCAG 2.1 AA. "Not fully" reads as "mostly", which is the impression that rule
+  exists to prevent — on a page that spends a paragraph explaining why. It says
+  it does not conform now, without the adverb.
+- **The frontend suite has 604 tests, not the 623 quoted for 1.8.5.** The larger
+  number is what the private repository runs: several suites generate one check
+  per document, and it holds documents deliberately withheld from the public
+  mirror. 604 is what a checker gets from the published tag, and it is the number
+  that should have been given.
+
+## Still open, and disclosed
+
+- **A poor scan can lose a *line* within a page** without marking it. What these
+  two releases fix is a whole page going missing. The warning attached to every
+  scan covers both, and it remains the whole mitigation.
+- **The conversation list flashes empty** while a refused edit rolls back.
+- The **Windows real-scan check** — character accuracy on a photographed page at
+  real resolution — still has not been run. CI reads a drawn page on every build;
+  a real document needs a Windows machine and has not had one.
+
+---
+
 # Release notes — Sovatela 1.8.5
 
 Release date: 2026-09-10 · [All releases](https://github.com/jacobla1/sovatela/releases)
+
+> **Corrected after publication.** Three claims below were broader than the code,
+> and a fourth — the test count — was taken from the private repository. See the
+> 1.8.6 notes above; the paragraphs here have been narrowed to what this release
+> actually does.
 
 **If you use scanned PDFs, this one matters.** In 1.8.4 a page that could not be
 read was dropped from the document without a word — no gap, no warning, nothing
@@ -15,19 +100,24 @@ said about itself.
 
 ## Fixed in 1.8.5
 
-- **Every page of a scan is accounted for.** A page that cannot be read now says
-  so, by number, with the reason, in the place its text would have gone. The old
+- **A page that fails to decode is named rather than dropped.** It now says so,
+  by number, with the reason, in the place its text would have gone. The old
   behaviour kept the reason only until some *other* page succeeded, and then
   discarded it — so a partly-readable scan produced a shorter document that read
   as though it were whole. That is the worst shape this kind of bug can take: the
   answer is confident, the source looks complete, and nothing points at the gap.
 
-  The document is not refused outright when one page fails. Throwing away
-  nineteen good pages because the twentieth is odd helps nobody, and a gap you
-  can see is a page you can go and look at yourself.
-
   Found by an external reviewer, and reproduced against the binary inside the
   published 1.8.4 installer before it was accepted as real.
+
+  **These notes originally said "every page is accounted for", that a document is
+  never refused because one page failed, and that the gap is one you can see.**
+  All three were broader than the code. A failure inside the recogniser still
+  abandoned the whole document, an all-failed scan reported one generic reason
+  with no page numbers, and the numbered gap was written into the text sent to
+  the model but never shown on the attachment chip. A second review found all
+  three after this release shipped; 1.8.6 closes them, and the claims above have
+  been narrowed to what 1.8.5 actually does.
 
 - **The warning attached to a scan says what actually goes wrong.** It used to
   say the text "may contain mistakes", which points at words you can see. The
@@ -45,10 +135,16 @@ said about itself.
   colon was being read as the separator in an XML namespace rather than as part
   of an ordinary English sentence.
 
-- **Text quoted from your own document stays in the reply.** A passage quoted
-  back from an attachment could be mistaken for code and lifted out of the
-  message into the artifact panel — leaving an answer that discussed a quotation
-  you could not see.
+- **Text quoted from your own document stays in the reply**, when the model
+  labels it as plain text or leaves the fence unlabelled. A passage quoted back
+  from an attachment could be mistaken for code and lifted out of the message
+  into the artifact panel — leaving an answer that discussed a quotation you
+  could not see.
+
+  **Narrowed after publication.** This said "stays in the reply" without
+  qualification, and the fix named four labels: `text`, `txt`, `plain` and
+  `plaintext`. A quotation the model marked ```markdown, ```md or ```quote still
+  went behind the chip. 1.8.6 turns the rule the other way round.
 
 - **A refusal gets to finish its sentence.** When a file was refused, the
   attachment chip cut the message off with an ellipsis, and the part it cut was

@@ -14,7 +14,19 @@ vi.mock("@tauri-apps/api/core", () => ({
       // A scan comes back carrying the preamble the extractor puts at the head
       // of every recognised document — which is the only thing distinguishing
       // recognised text from read text once it is one string.
-      if (String(args?.name || "").endsWith(".pdf")) {
+      const name = String(args?.name || "");
+      // A scan whose second page could not be read, in the exact shape
+      // `render_pages` writes it. Separate from the clean scan below because
+      // what the person is shown has to differ between the two, and until
+      // 1.8.6 it did not: both produced one OCR badge and nothing else.
+      if (name === "partial.pdf") {
+        return "[This document is a scan — a picture of a page with no text in it. " +
+          "The text below was read from the picture on this device.]\n\n" +
+          "[Page 1]\nFee: EUR 12,450\n\n" +
+          "[Page 2] could not be read: it has several pictures on a page and this " +
+          "app cannot tell which one is the scan.";
+      }
+      if (name.endsWith(".pdf")) {
         return "[This document is a scan — a picture of a page with no text in it. " +
           "The text below was read from the picture on this device, and may contain " +
           "mistakes.]\n\n[Page 1]\nFee: EUR 12,450";
@@ -136,6 +148,59 @@ describe("a document read from a picture says so", () => {
       document.querySelector(".att-ocr"),
       "an ordinary document was marked as recognised",
     ).toBeNull();
+  });
+
+  // The model was told which page was missing; the person was not. The chip
+  // carried a filename, a character count and a general OCR badge — identical
+  // for a scan read whole and one missing a page — and the extracted text is
+  // not rendered anywhere a reader can reach it. So 1.8.5's "a gap you can see
+  // is a page you can go and look at yourself" was true of the model's copy of
+  // the document and false of theirs. Found by external review after release.
+  it("names the page that could not be read, before sending", async () => {
+    render(Chat, { props: {} });
+    const chat = document.querySelector("main.chat");
+    const pdf = new File(["x"], "partial.pdf", { type: "application/pdf" });
+    await fireEvent.drop(chat, withFiles([pdf]));
+    await waitFor(() => expect(document.querySelector(".att-ocr-missing")).toBeTruthy());
+    const badge = document.querySelector(".att-ocr-missing");
+    // The number is the whole value of this badge. "Something is missing" sends
+    // a reader back to a scan with no idea where to look.
+    expect(badge.textContent).toMatch(/page 2/);
+    expect(
+      badge.getAttribute("aria-label"),
+      "the missing page is mouse-only — no accessible name carries it",
+    ).toMatch(/page 2/);
+  });
+
+  it("does not claim a page is missing from a scan that was read whole", async () => {
+    render(Chat, { props: {} });
+    const chat = document.querySelector("main.chat");
+    const pdf = new File(["x"], "contract.pdf", { type: "application/pdf" });
+    await fireEvent.drop(chat, withFiles([pdf]));
+    await waitFor(() => expect(document.querySelector(".att-ocr")).toBeTruthy());
+    expect(
+      document.querySelector(".att-ocr-missing"),
+      "a complete scan was marked as missing a page",
+    ).toBeNull();
+  });
+
+  it("reads the failure in the shape the extractor writes it", () => {
+    // Two copies of one format again, and the same lesson as OCR_MARK below:
+    // the frontend recognises a failed page by matching text that Rust writes.
+    // Reword `render_pages` and the badge quietly stops appearing, while every
+    // test that mocks the extractor goes on passing.
+    const chat = read("src/lib/Chat.svelte");
+    const pattern = chat.match(/matchAll\(\/(.+?)\/gm\)/)?.[1];
+    expect(pattern, "the frontend no longer looks for a failed page").toBeTruthy();
+    const rust = read("src-tauri/src/ocr.rs");
+    const written = rust.match(/format!\("\[Page \{number\}\] ([^"]+)"/)?.[1];
+    expect(written, "render_pages no longer writes a failed page").toBeTruthy();
+    // What Rust writes must satisfy what the frontend looks for.
+    const sample = `[Page 7] ${written.replace("{why}", "it is upside down")}`;
+    expect(
+      new RegExp(pattern, "gm").test(sample),
+      `the frontend pattern ${pattern} does not match what ocr.rs writes: ${sample}`,
+    ).toBe(true);
   });
 
   it("looks for the marker the extractor actually writes", () => {

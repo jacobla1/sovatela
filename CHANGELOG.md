@@ -1,5 +1,72 @@
 # Changelog
 
+## 1.8.6 — 2026-09-10
+
+*1.8.5 fixed one way a scanned page could vanish and described the fix as
+though it covered all of them. An external review asked to judge whether the
+release could be announced said no, and showed which paths were still open and
+which sentences did not survive checking. This closes the first and corrects
+the second.*
+
+*No security fix. 1.8.5 is not withdrawn.*
+
+### Fixed
+
+- **A page the recogniser fails on no longer takes the rest of the document
+  with it.** Failures in *decoding* a page were collected and reported; a
+  failure inside the text recogniser was not — it abandoned the whole
+  extraction and discarded every page already read. A page laid out in two
+  columns is such a failure, so one two-column page in an ordinary twenty-page
+  report threw away the nineteen that had been read. They are kept now, and the
+  page that failed is named alongside them.
+- **When nothing at all can be read, every page is named with its own reason.**
+  The refusal reported the first reason it found and dropped the page numbers,
+  so a two-page scan that failed twice for different reasons reported one of
+  them and accounted for neither page.
+- **The attachment chip says which page is missing.** The numbered gap went
+  into the text sent to the model and was shown to nobody: a filename, a
+  character count and a general OCR badge look the same for a scan read whole
+  and one missing a page. The chip reads *"page 2 unreadable"* now, before you
+  send — while you can still re-scan it or narrow the question.
+- **A quotation stays in the reply whatever the assistant labels it.** The
+  previous fix named four labels meaning plain text and treated everything else
+  as code, so a passage marked `markdown`, `md` or `quote` still went behind a
+  chip offering to "run" it. A fenced block now becomes an artifact only if the
+  panel can show it or it is a recognised programming language; anything else
+  stays in the message. An unfamiliar label fails towards being readable.
+
+### Corrected
+
+*Claims that did not survive checking. All found by the same review.*
+
+- The 1.8.5 notes said **every page** is accounted for, that a document is never
+  refused because one page failed, and that the gap is one **you** can see. All
+  three described intent rather than code.
+- The download page said Windows and Linux are **"not signed yet"**. They are
+  unsigned by choice; signing is not planned. The test written to forbid that
+  exact phrase missed it because the sentence wrapped between "signed" and
+  "yet" — it reads across line breaks now.
+- The download page said *Check for updates* **"only helps if you press it"**.
+  An optional check also runs at launch, off until switched on.
+- The accessibility statement said it **"does not currently conform fully"** to
+  WCAG 2.1 AA. That is the qualified formulation the same page argues against;
+  the adverb is gone.
+- The announcement draft claimed history lives "in a folder you choose" (a fresh
+  install uses the app's own), that the security **reviews** are public (the
+  findings and fixes are; the July reports are held back and offered on request),
+  that image attachments are extracted locally (their text is; images are sent to
+  Scaleway's vision model), and that the security page explains how to verify
+  *every* claim (it covers the privacy, network and release-integrity ones).
+- **604 frontend tests, not 623.** The larger figure is the private repository's:
+  several suites generate one check per document and it holds documents withheld
+  from the public mirror. 604 is what the published tag runs.
+
+### Known, and not fixed here
+
+- A poor scan can still lose a **line** within a page without marking it.
+- The conversation list still flashes empty while a refused edit rolls back.
+- The Windows real-scan check still has not been run on a real document.
+
 ## 1.8.5 — 2026-09-10
 
 *A patch release for one defect in 1.8.4 that people can hit, and three more

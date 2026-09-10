@@ -353,19 +353,67 @@ describe("the release builds where its provenance can be published", () => {
   });
 });
 
+// The conformance sentence has now been wrong twice, in the same direction.
+//
+// First "partially conformant with WCAG 2.1 level AA" — a formulation reserved
+// for content outside the author's control, not for the author's own known
+// gaps. Corrected to "does not currently conform fully", which a second review
+// caught as the same claim in quieter clothes: "not fully" is read as "mostly",
+// which is the impression the rule exists to prevent, on a page that spends a
+// paragraph explaining why.
+//
+// Twice is a pattern, and a pattern gets a test. This forbids the qualifiers
+// rather than prescribing a sentence, because the next wrong version will be
+// worded differently and the failure is always the hedge.
+describe("the accessibility statement does not hedge its conformance claim", () => {
+  // Withheld from the public mirror by design, like the version-stamp check
+  // above: a withheld document is not a missing one.
+  const path = join(repo, "docs/ACCESSIBILITY.md");
+
+  it("states it plainly, or is absent from this tree", () => {
+    if (!existsSync(path)) return; // the public mirror: withheld by design
+    const text = read("docs/ACCESSIBILITY.md").replace(/\s+/g, " ");
+    const status = text.match(/Conformance status: ([^*]+)/)?.[1] ?? "";
+    expect(status, "no conformance status to check").not.toBe("");
+    expect(status, "the conformance claim is hedged").not.toMatch(
+      /partial|fully|mostly|largely|substantially|currently/i,
+    );
+    expect(status).toMatch(/does not conform to WCAG/i);
+  });
+});
+
 // Three documents disagreed about Windows signing: SECURITY.md called it a
 // decision and permanent, the README listed it on the roadmap, and the website
 // said "not signed yet". A reader deciding whether to trust the installer got a
 // different answer depending on which page they opened.
 describe("Windows signing is described the same way everywhere", () => {
+  // **Whitespace is normalised before matching, and that is the whole point of
+  // this line.** This guard was written for the literal string "not signed yet"
+  // on the website, and it did not catch it: the sentence wrapped between
+  // "signed" and "yet", so the file held "not signed\n      yet" and a regex
+  // with a single space in it matched nothing. The claim it was written to
+  // forbid shipped on the live download page through 1.8.5 and was found by an
+  // external review, not by this test.
+  //
+  // A guard that reads prose out of a source file has to read it the way a
+  // person does. Hard-wrapping is not a semantic act, and any check that treats
+  // a newline as different from a space is one reflow away from silence.
+  const flatten = (s) => s.replace(/\s+/g, " ");
   const docs = {
-    "SECURITY.md": read("SECURITY.md"),
-    "README.md": read("README.md"),
-    "deploy/web/index.html": read("deploy/web/index.html"),
+    "SECURITY.md": flatten(read("SECURITY.md")),
+    "README.md": flatten(read("README.md")),
+    "deploy/web/index.html": flatten(read("deploy/web/index.html")),
   };
 
   it("is recorded as a decision, not as pending work", () => {
     expect(docs["SECURITY.md"]).toMatch(/Windows signing is not planned/i);
+  });
+
+  it("reads across a line break, because that is how it was defeated", () => {
+    // The guard's own failure mode, pinned. Without `flatten` this passes while
+    // the document says the forbidden thing.
+    const wrapped = flatten("Windows and Linux builds are not signed\n      yet — on Windows,");
+    expect(wrapped).toMatch(/not signed yet/i);
   });
 
   it("is not on the roadmap in any document", () => {

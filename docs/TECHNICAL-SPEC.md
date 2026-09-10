@@ -1,6 +1,6 @@
 # Technical and security specification
 
-Sovatela v1.8.5 · Companion to Product spec ·
+Sovatela v1.8.6 · Companion to Product spec ·
 UX spec · [Security policy](../SECURITY.md)
 
 Fuller engineering rationale is kept internally in `ENGINEERING_NOTES.md`, which

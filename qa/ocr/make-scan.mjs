@@ -41,9 +41,19 @@ const withRefusedPage = args.includes("--with-refused-page");
 // this design avoids — so the page is refused rather than returned in an order
 // that reads plausibly and is wrong.
 const twoColumns = args.includes("--two-columns");
+// A readable first page followed by a two-column second page. Distinct from
+// `--with-refused-page`, and the distinction is the whole reason it exists:
+// that one fails while the extractor is deciding which picture on the page is
+// the scan, before the recogniser is involved. This one decodes cleanly and is
+// refused *by the recogniser*, for its reading order — the path that until
+// 1.8.6 threw the first page away along with it.
+const withTwoColumnPage = args.includes("--with-two-column-page");
 const [out, ...rest] = args.filter((a) => !a.startsWith("--"));
 if (!out) {
-  console.error('usage: make-scan.mjs <out.pdf> ["LINE" ...] [--with-refused-page]');
+  console.error(
+    'usage: make-scan.mjs <out.pdf> ["LINE" ...] ' +
+      "[--two-columns] [--with-refused-page | --with-two-column-page]",
+  );
   process.exit(1);
 }
 const lines = rest.length ? rest : ["SOVATELA OCR", "INVOICE 12345"];
@@ -59,96 +69,113 @@ const TRACK = 2; // blank glyph-pixels between characters
 const MARGIN = 40;
 const LEADING = 5; // blank glyph-pixels between lines
 
-const cols = Math.max(...lines.map((l) => l.length));
-const width =
-  MARGIN * 2 +
-  (args.includes("--two-columns") ? cols + 6 + cols : cols) *
-    (GLYPH_W + TRACK) *
-    SCALE;
-const height =
-  MARGIN * 2 + (lines.length * GLYPH_H + (lines.length - 1) * LEADING) * SCALE;
+// One rendered page: its pixels, and the size they were drawn at.
+//
+// A function rather than a straight run of statements because a fixture with a
+// *readable* page followed by a page the recogniser refuses needs the same
+// drawing twice with different settings. That fixture is the only way to reach
+// one particular seam from outside the process: until 1.8.6 a failure inside
+// the recogniser — as opposed to one in decoding the page — abandoned the whole
+// document and discarded the pages already read. Every unit test in `ocr.rs`
+// drives the reporting decision directly and so cannot see it.
+function drawPage(lines, { twoColumns = false } = {}) {
+  const cols = Math.max(...lines.map((l) => l.length));
+  const GUTTER_COLS = 6;
+  const width =
+    MARGIN * 2 + (twoColumns ? cols + GUTTER_COLS + cols : cols) * (GLYPH_W + TRACK) * SCALE;
+  const height =
+    MARGIN * 2 + (lines.length * GLYPH_H + (lines.length - 1) * LEADING) * SCALE;
 
-// 8 bits per pixel, one component. White page, black ink — the way a scanner
-// of a printed page delivers it.
-const page = Buffer.alloc(width * height, 0xff);
-const ink = (x, y) => {
-  if (x >= 0 && x < width && y >= 0 && y < height) page[y * width + x] = 0x00;
-};
+  // 8 bits per pixel, one component. White page, black ink — the way a scanner
+  // of a printed page delivers it.
+  const page = Buffer.alloc(width * height, 0xff);
+  const ink = (x, y) => {
+    if (x >= 0 && x < width && y >= 0 && y < height) page[y * width + x] = 0x00;
+  };
 
-// The second column starts past the end of the first, with a gutter wide
-// enough to be one: the detector wants a gap of more than an eighth of the page
-// recurring on several lines, and a stride shorter than the text simply
-// overprints one column on the other — which is what the first attempt did, and
-// it read as one wide column exactly as it should have.
-const GUTTER_COLS = 6;
-const columnStride = twoColumns ? cols + GUTTER_COLS : 0;
-lines.forEach((line, row) => {
-  const top = MARGIN + row * (GLYPH_H + LEADING) * SCALE;
-  [...line].forEach((ch, col) => {
-    const left = MARGIN + col * (GLYPH_W + TRACK) * SCALE;
-    const bits = glyph(ch);
-    for (let gy = 0; gy < GLYPH_H; gy++) {
-      for (let gx = 0; gx < GLYPH_W; gx++) {
-        if (!bits[gy][gx]) continue;
-        for (let dy = 0; dy < SCALE; dy++) {
-          for (let dx = 0; dx < SCALE; dx++) {
-            ink(left + gx * SCALE + dx, top + gy * SCALE + dy);
-          }
-        }
-      }
-    }
-  });
-});
-
-if (twoColumns) {
-  // The same words again, a clear gutter to the right — enough lines that the
-  // gap recurs, which is what makes it a column rather than a wide space.
-  const offset = columnStride * (GLYPH_W + TRACK) * SCALE;
-  lines.forEach((line, row) => {
-    const top = MARGIN + row * (GLYPH_H + LEADING) * SCALE;
-    [...line].forEach((ch, col) => {
-      const left = MARGIN + offset + col * (GLYPH_W + TRACK) * SCALE;
-      const bits = glyph(ch);
-      for (let gy = 0; gy < GLYPH_H; gy++) {
-        for (let gx = 0; gx < GLYPH_W; gx++) {
-          if (!bits[gy][gx]) continue;
-          for (let dy = 0; dy < SCALE; dy++) {
-            for (let dx = 0; dx < SCALE; dx++) {
-              ink(left + gx * SCALE + dx, top + gy * SCALE + dy);
+  const stamp = (offset) => {
+    lines.forEach((line, row) => {
+      const top = MARGIN + row * (GLYPH_H + LEADING) * SCALE;
+      [...line].forEach((ch, col) => {
+        const left = MARGIN + offset + col * (GLYPH_W + TRACK) * SCALE;
+        const bits = glyph(ch);
+        for (let gy = 0; gy < GLYPH_H; gy++) {
+          for (let gx = 0; gx < GLYPH_W; gx++) {
+            if (!bits[gy][gx]) continue;
+            for (let dy = 0; dy < SCALE; dy++) {
+              for (let dx = 0; dx < SCALE; dx++) {
+                ink(left + gx * SCALE + dx, top + gy * SCALE + dy);
+              }
             }
           }
         }
-      }
+      });
     });
-  });
-}
+  };
 
-// One pass of a 3×3 average, which is the difference between letters made of
-// hard square blocks and letters with edges. Recognisers are trained on
-// photographed and rasterised print, where every stroke has a soft boundary;
-// giving them perfect squares is an unusual input for no reason. Cheap, and it
-// measurably improves what comes back.
-const soft = Buffer.from(page);
-for (let y = 1; y < height - 1; y++) {
-  for (let x = 1; x < width - 1; x++) {
-    let sum = 0;
-    for (let dy = -1; dy <= 1; dy++) {
-      for (let dx = -1; dx <= 1; dx++) sum += page[(y + dy) * width + (x + dx)];
-    }
-    soft[y * width + x] = Math.round(sum / 9);
+  stamp(0);
+  if (twoColumns) {
+    // The same words again, a clear gutter to the right — enough lines that the
+    // gap recurs, which is what makes it a column rather than a wide space.
+    //
+    // The second column starts past the end of the first: the detector wants a
+    // gap of more than an eighth of the page recurring on several lines, and a
+    // stride shorter than the text simply overprints one column on the other —
+    // which is what the first attempt did, and it read as one wide column
+    // exactly as it should have.
+    stamp((cols + GUTTER_COLS) * (GLYPH_W + TRACK) * SCALE);
   }
+
+  // One pass of a 3×3 average, which is the difference between letters made of
+  // hard square blocks and letters with edges. Recognisers are trained on
+  // photographed and rasterised print, where every stroke has a soft boundary;
+  // giving them perfect squares is an unusual input for no reason. Cheap, and
+  // it measurably improves what comes back.
+  const soft = Buffer.from(page);
+  for (let y = 1; y < height - 1; y++) {
+    for (let x = 1; x < width - 1; x++) {
+      let sum = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) sum += page[(y + dy) * width + (x + dx)];
+      }
+      soft[y * width + x] = Math.round(sum / 9);
+    }
+  }
+
+  return { width, height, stream: deflateSync(soft) };
 }
 
-const image = deflateSync(soft);
+const { width, height, stream: image } = drawPage(lines, { twoColumns });
+// The refused second page, when asked for: the same words in two columns, so it
+// decodes cleanly and is then refused for its reading order rather than for its
+// pictures. That distinction is the point — it fails *inside* the recogniser.
+//
+// The rows are padded out, and that is not cosmetic. The gutter detector wants
+// an aligned wide gap on at least three rows before it will call something a
+// column, so a two-line fixture is read straight across and comes back as one
+// wide line — which is the *correct* answer to what it was given, and a test
+// built on it would assert a refusal that never happens. The first version of
+// this fixture had two lines and did exactly that: the page it was supposed to
+// have refused was read, and the run looked like a pass until the output was
+// read by eye. Four rows clears the threshold with one to spare.
+const MIN_COLUMN_ROWS = 4;
+const columnLines = [];
+while (columnLines.length < MIN_COLUMN_ROWS) columnLines.push(...lines);
+const columnPage = withTwoColumnPage ? drawPage(columnLines, { twoColumns: true }) : null;
 
 // Assembled by hand: this is a fixture generator, and a PDF library would be a
 // dependency whose own behaviour then sits between the test and the answer.
 const objects = [];
 const add = (body) => objects.push(body); // returns the new length = object number
 
+if (withRefusedPage && withTwoColumnPage) {
+  console.error("--with-refused-page and --with-two-column-page are alternatives, not a pair");
+  process.exit(1);
+}
+
 add("<< /Type /Catalog /Pages 2 0 R >>");
 add(
-  withRefusedPage
+  withRefusedPage || withTwoColumnPage
     ? "<< /Type /Pages /Count 2 /Kids [3 0 R 6 0 R] >>"
     : "<< /Type /Pages /Count 1 /Kids [3 0 R] >>",
 );
@@ -167,6 +194,23 @@ add({
     `/Length ${image.length} >>`,
   stream: image,
 });
+
+if (withTwoColumnPage) {
+  // Object 6 is the page, 7 its picture. It reuses the first page's content
+  // stream (object 4), which draws `/Im0` over the whole MediaBox — so the
+  // resource dictionary here maps `/Im0` to this page's own image.
+  add(
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] " +
+      "/Resources << /XObject << /Im0 7 0 R >> >> /Contents 4 0 R >>",
+  );
+  add({
+    dict:
+      `<< /Type /XObject /Subtype /Image /Width ${columnPage.width} ` +
+      `/Height ${columnPage.height} /ColorSpace /DeviceGray /BitsPerComponent 8 ` +
+      `/Filter /FlateDecode /Length ${columnPage.stream.length} >>`,
+    stream: columnPage.stream,
+  });
+}
 
 if (withRefusedPage) {
   // Two pictures of comparable size, so the extractor cannot say which is the
@@ -224,5 +268,8 @@ writeFileSync(out, Buffer.concat(chunks));
 console.log(
   `${out}: ${width}x${height} scan of ${JSON.stringify(lines.join(" / "))}, ` +
     `image ${image.length} bytes compressed` +
-    (withRefusedPage ? ", plus a second page that must be refused" : ""),
+    (withRefusedPage ? ", plus a second page that must be refused for its pictures" : "") +
+    (withTwoColumnPage
+      ? ", plus a two-column second page that must be refused by the recogniser"
+      : ""),
 );
