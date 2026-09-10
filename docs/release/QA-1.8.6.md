@@ -156,8 +156,10 @@ checker can reproduce**, and that is 604.
 | Frontend tests | **631 pass** in this repository. The published tag will run fewer, for the reason in the section above; the figure quoted publicly is the tag's |
 | Rust tests | **528 pass** |
 | clippy `-D warnings`, `cargo fmt --check` | **Clean.** The `nom v1.2.4` future-incompatibility note is a transitive dependency's, not a lint |
-| CI on macOS, Windows, Linux | |
-| Release chain — `scripts/verify-release.sh v1.8.6` | |
+| CI on macOS, Windows, Linux | **Green at `2340de7`.** The first run was red, and the fix was not what failed — see below |
+| Release chain — `scripts/verify-release.sh v1.8.6` | **10 passed, 0 failed, 0 skipped.** Checksums, minisign, attestations, notarization, provenance naming `da038d5de6a8`, and the publisher re-run at `2340de7ff05f` reproducing the published tree |
+| Site | **Pass** — all nine live resources byte-identical to `deploy/web/dist`; `version.json` reads 1.8.6; the phrase `not signed yet` returns nothing on the live page |
+| `D-01` and `D-02` in the **published, signed** `.dmg` | **Pass** — see below |
 | `D-01` through the built helper, macOS | **Pass** — readable page kept, two-column page named, exit 0. The old line was restored and rebuilt to confirm the fixture fails against it |
 | `D-01` through the built helper, Windows | **Pass** — same shape: `[Page 1]` kept, `[Page 2]` named for its columns, exit 0. Confirmed by CI on the first run, though the run went red: the new assertion grepped for the literal `INVOICE 12345`, and Windows reads `INUOICE` off a 5×7 bitmap alphabet. The single-page check three blocks above says so in a comment and asserts the digits instead. The fix was right on Windows from the start; the test was not, and it was written past a lesson already written down in the same file |
 | `D-04` against the parser | **Pass** — `markdown`, `md`, `quote` and four unknown labels all stay in the message; `html`, `svg`, the three document kinds and eleven code languages still reach the panel |
@@ -178,6 +180,66 @@ Each was watched failing against the code it guards before being trusted.
 | `releaseHygiene.test.js` — reads across a line break | the wrapped-string weakness that let the guard miss its own string |
 | `releaseHygiene.test.js` — conformance claim is not hedged | the WCAG wording, wrong twice now |
 | `publicLinks.test.js` — checksum paragraph, scoped | itself: the old assertion passed by matching an unrelated paragraph two sections away, and had never checked the text it named |
+
+### Both seams, re-checked in the shipped binary
+
+The 1.8.4 blocker was found by a reviewer in a published installer, so a fix
+confirmed anywhere weaker is a smaller claim than the defect. Mounted from the
+v1.8.6 release, `CFBundleShortVersionString` 1.8.6:
+
+`D-01` — a readable page followed by a two-column page:
+
+```
+[Page 1]
+SOVATELA OCR
+INVOICE 12345
+
+[Page 2] could not be read: it is laid out in more than one column, which this
+app cannot read in the right order yet.
+```
+
+Exit 0. Page one kept, page two named. In 1.8.5 the same input returned exit 33
+and the column message alone.
+
+`D-02` — a blank page followed by an ambiguous one, so nothing is readable:
+
+```
+This PDF is a picture of its pages, and none of them could be read — page 1: no
+text could be made out on it; page 2: it has several pictures on a page and this
+app cannot tell which one is the scan.
+```
+
+Both pages named, each with its own reason. In 1.8.5 this returned one reason
+and no page numbers.
+
+**One thing that run also showed.** `pdf-extract` panicked — `panicked at
+pdf-extract-0.12.0/src/lib.rs:204:30: Im0` — while attempting ordinary text
+extraction, and the app carried on and produced the message above. That is the
+crash isolation working as designed: the helper is a child process, so a panic
+in it kills the child and not the app.
+
+The trigger is a flaw in the fixture rather than in the app. `--with-refused-page`
+gives page two a resource dictionary holding `/Im1` and `/Im2` while the content
+stream it shares with page one draws `/Im0`, and the library panics on the
+missing name. It is worth recording rather than quietly repairing: CI discards
+that stream, so a *real* panic on this path would look the same — which is to
+say, like nothing at all.
+
+## The first CI run was red, and the fix was not what failed
+
+Windows returned exactly the intended behaviour on the new fixture — `[Page 1]`
+kept, `[Page 2]` named for its columns, exit 0 — and the new assertion called it
+a discarded page. It grepped for the literal `INVOICE 12345`; Windows reads
+`INUOICE` off a 5×7 bitmap alphabet, where a `V` and a `U` differ by two rows.
+
+Three blocks above it in the same file, the single-page assertion explains this
+at length and checks the digits for that reason. The new check was written past
+a lesson already written down beside it. It asserts `12345` now — unambiguous at
+this size, read exactly by both engines, and impossible to source from the
+refused page.
+
+Recorded because the red run is itself evidence: it is where `D-01` was first
+confirmed fixed on Windows.
 
 ## Known open, and disclosed rather than closed
 
