@@ -767,12 +767,27 @@
     return [...(content || "").matchAll(/^\[Page (\d+)\] could not be read/gm)].map((m) => m[1]);
   }
 
-  // "page 2", "pages 2 and 5", "pages 2, 5 and 9" — and past that a count,
-  // because a chip listing eleven numbers is a chip nobody reads.
-  function unreadableLabel(pages) {
+  // Every page number, in a sentence. "page 2", "pages 2 and 5",
+  // "pages 2, 5, 9 and 14".
+  function unreadableFull(pages) {
     if (pages.length === 1) return `page ${pages[0]}`;
-    if (pages.length > 3) return `${pages.length} pages`;
     return `pages ${pages.slice(0, -1).join(", ")} and ${pages[pages.length - 1]}`;
+  }
+
+  // The same, shortened to fit a chip — but never to nothing.
+  //
+  // This returned `${pages.length} pages` past three, so a scan with four bad
+  // pages showed "4 pages unreadable" and no numbers at all, in the badge *and*
+  // in its accessible name. That is the badge losing the only thing it is for:
+  // a number is what turns "part of this may be missing" into a page you can
+  // open the original at. Four bad pages in a scan is not unusual, and review
+  // of 1.8.6 caught it.
+  //
+  // So the first three are always named and the remainder counted, and the full
+  // list goes to the title and the accessible name, where length costs nothing.
+  function unreadableLabel(pages) {
+    if (pages.length <= 4) return unreadableFull(pages);
+    return `pages ${pages.slice(0, 3).join(", ")} and ${pages.length - 3} others`;
   }
 
   // Says what can go wrong, not merely that something might. A recogniser
@@ -2134,8 +2149,8 @@
                          can open the original at. -->
                     {#if missing.length}<span
                         class="att-ocr att-ocr-missing"
-                        title={`${unreadableLabel(missing)} could not be read — the rest of the document was.`}
-                        aria-label={`${unreadableLabel(missing)} of this scan could not be read. The rest was. Check the original for what is missing.`}
+                        title={`${unreadableFull(missing)} could not be read. Check the original for what is missing.`}
+                        aria-label={`${unreadableFull(missing)} of this scan could not be read. Check the original for what is missing.`}
                         role="note">{unreadableLabel(missing)} unreadable</span
                       >{/if}
                   </span>
@@ -2318,8 +2333,8 @@
                 {#if missing.length}
                   <span
                     class="att-ocr att-ocr-missing"
-                    title={`${unreadableLabel(missing)} could not be read — the rest of the document was.`}
-                    aria-label={`${unreadableLabel(missing)} of this scan could not be read. The rest was. Check the original for what is missing.`}
+                    title={`${unreadableFull(missing)} could not be read. Check the original for what is missing.`}
+                    aria-label={`${unreadableFull(missing)} of this scan could not be read. Check the original for what is missing.`}
                     role="note">{unreadableLabel(missing)} unreadable</span
                   >
                 {/if}

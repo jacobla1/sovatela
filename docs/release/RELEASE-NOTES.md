@@ -1,4 +1,53 @@
+# Release notes — Sovatela 1.8.7
+
+Release date: 2026-09-10 · [All releases](https://github.com/jacobla1/sovatela/releases)
+
+This release finishes the page-reporting and code-fence fixes started after the
+interrupted review of 1.8.6.
+
+## Fixed
+
+- **A refused scan says when the page limit was reached.** OCR attempts at most
+  20 pages. Previously, if none could be read, a longer scan's refusal listed
+  those pages without saying that more existed. It now says, for example,
+  *"Only the first 20 of 21 pages were looked at"*. Consecutive identical
+  failures are grouped into numbered ranges; different reasons remain separate.
+- **Larger missing-page badges retain page numbers.** Four failures show all four
+  numbers. Longer lists show the first three and how many others failed, with
+  the complete list in the tooltip and accessible label. The same information
+  survives sending and reopening saved conversations.
+- **Code fences handle more language labels and whitespace consistently.**
+  Labels such as `c#`, `f#`, `julia` and `matlab` open the code panel. A tab
+  between the language and title works like a space, both during streaming and
+  after the fence closes.
+- **Streaming a quotation does not duplicate its introduction.** The added
+  streaming checks found that prose before a fence briefly appeared twice.
+  That is fixed. Prose labels including `markdown`, `md` and `quote`, and
+  unrecognised labels, stay in the reply. Recognised code and document formats
+  continue to use the artifact panel.
+
+## Verification and limits
+
+[QA-1.8.7.md](QA-1.8.7.md) records the source, native OCR and published-release
+checks. The 1.8.6 public CI count was **616 frontend tests**; **604** belongs to
+1.8.5. Current counts are recorded against their repository and run.
+
+OCR can still misread or omit words and lines within a page; check the original
+for names, dates and amounts. Windows and Linux installers remain unsigned and
+experimental. Windows accuracy on real photographed documents has not been
+measured. The accessibility limitations remain disclosed on the
+[accessibility page](https://sovatela.eu/accessibility).
+
+---
+
 # Release notes — Sovatela 1.8.6
+
+> **Clarification added in 1.8.7.** The page reasons below cover the pages OCR
+> attempts, up to 20. In 1.8.6 an all-failed refusal did not disclose that cap,
+> and badges replaced more than three failed page numbers with a count. The
+> quotation fix applies to prose and unrecognised fence labels; recognised code
+> and document formats still open the artifact panel. The public 1.8.6 frontend
+> count is 616; references to 604 below concern the previous 1.8.5 tag.
 
 Release date: 2026-09-10 · [All releases](https://github.com/jacobla1/sovatela/releases)
 
@@ -23,7 +72,7 @@ Markdown now stays in the reply instead of moving to the side panel.
   the nineteen that had been read. Those pages are kept now, and the page that
   failed is named alongside them like any other.
 
-- **When no page can be read, every page is named with its own reason.** The
+- **When no page can be read, attempted pages carry their reasons.** The
   refusal used to report the first reason it found and drop the page numbers, so
   a two-page scan that failed twice, differently, reported one of the two and
   accounted for neither page.
@@ -34,7 +83,7 @@ Markdown now stays in the reply instead of moving to the side panel.
   whole and one missing a page. The chip now reads *"page 2 unreadable"*, before
   you send, which is while you can still re-scan it or narrow the question.
 
-- **A quotation stays in the reply whatever the assistant labels it.** The
+- **Prose and unrecognised fence labels keep the quotation in the reply.** The
   previous fix listed four labels meaning plain text and treated everything else
   as code, so a passage marked `markdown`, `md` or `quote` still disappeared
   behind a chip offering to "run" it. The rule is the other way round now: a
@@ -60,10 +109,10 @@ Markdown now stays in the reply instead of moving to the side panel.
   WCAG 2.1 AA. "Not fully" reads as "mostly", which is the impression that rule
   exists to prevent — on a page that spends a paragraph explaining why. It says
   it does not conform now, without the adverb.
-- **The frontend suite has 604 tests, not the 623 quoted for 1.8.5.** The larger
+- **The public 1.8.5 frontend suite had 604 tests, not 623.** The larger
   number is what the private repository runs: several suites generate one check
   per document, and it holds documents deliberately withheld from the public
-  mirror. 604 is what a checker gets from the published tag, and it is the number
+  mirror. 604 is what a checker gets from the public v1.8.5 tag, and it is the number
   that should have been given.
 
 ## Still open, and disclosed

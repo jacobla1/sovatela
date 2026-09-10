@@ -61,24 +61,56 @@ const RENDERABLE = new Set(["html", "svg", "docx", "xlsx", "pptx"]);
 // Prose labels are deliberately absent — `markdown`, `md`, `quote`, `text`,
 // `log`, `output`, `csv`, `email`. A model quoting a document reaches for those,
 // and a person quoting a document needs to see it.
+//
+// **Missing an entry costs a code block its side panel, and that is the whole
+// cost.** It renders inline instead: visible, selectable, one Copy button
+// further away. That asymmetry is the design — a wrong guess about prose loses
+// someone's document behind a chip, a wrong guess about code is a mild
+// inconvenience — so the list is generous and grows without ceremony.
+//
+// Review of 1.8.6 found `c#` and `f#` missing, which models emit far more often
+// than `cs` and `fsharp`, along with a dozen others below. Fifteen labels went
+// inline that should not have.
 const CODE = new Set([
   "javascript", "js", "jsx", "mjs", "cjs",
   "typescript", "ts", "tsx",
   "python", "py", "rust", "rs", "go", "golang",
-  "java", "kotlin", "kt", "swift", "objc",
-  "c", "h", "cpp", "c++", "cc", "hpp", "cs", "csharp",
+  "java", "kotlin", "kt", "swift", "objc", "objective-c", "objectivec",
+  "c", "h", "cpp", "c++", "cc", "hpp", "cs", "csharp", "c#",
+  "fsharp", "f#", "vb", "vbnet", "vb.net", "basic", "pascal", "delphi",
   "php", "ruby", "rb", "perl", "lua", "r", "scala", "haskell", "hs",
-  "elixir", "erlang", "clojure", "dart", "zig", "nim", "ocaml", "fsharp",
-  "sh", "bash", "zsh", "shell", "fish", "powershell", "ps1", "bat",
-  "sql", "graphql", "regex",
-  "css", "scss", "sass", "less",
-  "vue", "svelte", "astro",
-  "json", "jsonc", "yaml", "yml", "toml", "ini", "xml",
-  "dockerfile", "makefile", "cmake", "nix", "terraform", "hcl",
+  "elixir", "erlang", "clojure", "dart", "zig", "nim", "ocaml",
+  "julia", "matlab", "octave", "fortran", "cobol", "ada", "groovy",
+  "solidity", "verilog", "vhdl", "asm", "assembly", "nasm", "wasm", "wat",
+  "lisp", "scheme", "racket", "elm", "purescript", "crystal", "tcl", "awk",
+  "sh", "bash", "zsh", "shell", "fish", "powershell", "ps1", "bat", "cmd",
+  "sql", "tsql", "plsql", "graphql", "regex", "proto", "protobuf", "prisma",
+  "css", "scss", "sass", "less", "stylus",
+  "vue", "svelte", "astro", "erb", "ejs", "jinja", "jinja2", "handlebars", "hbs",
+  "json", "jsonc", "json5", "yaml", "yml", "toml", "ini", "xml", "xsl", "xslt",
+  "latex", "tex", "bibtex", "mermaid", "dot", "graphviz", "puml", "plantuml",
+  "dockerfile", "makefile", "cmake", "nix", "terraform", "hcl", "gradle",
   "diff", "patch",
 ]);
 
 const isArtifactLang = (lang) => RENDERABLE.has(lang) || CODE.has(lang);
+
+// The info string after the backticks: a language, then an optional title.
+//
+// Split on any whitespace, not on a literal space. Written as `indexOf(" ")`,
+// a tab between the two made the language `"python\ttitle"`, which matches
+// nothing in either set above — so ```python<TAB>Fibonacci rendered inline
+// while ```python Fibonacci opened the panel. Two spellings of the same fence,
+// two behaviours. Found by review of 1.8.6.
+//
+// A fence with no language at all lands on "text", which is not an artifact.
+function splitInfo(raw) {
+  const info = (raw || "").trim();
+  const at = info.search(/\s/);
+  const lang = (at === -1 ? info : info.slice(0, at)).toLowerCase() || "text";
+  const title = at === -1 ? "" : info.slice(at + 1).trim();
+  return [lang, title];
+}
 
 // Split an assistant message into plain text and renderable artifacts
 // (```html / ```svg fenced blocks). Incomplete blocks stay as text until closed.
@@ -93,10 +125,7 @@ export function parseParts(text) {
   let m;
   while ((m = re.exec(text)) !== null) {
     // Info string can carry a title after the language, e.g. ```html Bar chart
-    const info = (m[1] || "").trim();
-    const sp = info.indexOf(" ");
-    const lang = (sp === -1 ? info : info.slice(0, sp)).toLowerCase() || "text";
-    const title = sp === -1 ? "" : info.slice(sp + 1).trim();
+    const [lang, title] = splitInfo(m[1]);
     // Left in the surrounding text run: `last` is not advanced, so the fence
     // and its contents reach the markdown renderer intact.
     if (!isArtifactLang(lang)) continue;
@@ -112,18 +141,17 @@ export function parseParts(text) {
     // dumping the raw code, which then vanishes once the fence closes.
     const open = /```([^\n]*)\r?\n([\s\S]*)$/.exec(rest);
     if (open) {
-      if (open.index > 0)
-        parts.push({ type: "text", content: rest.slice(0, open.index) });
-      const info = (open[1] || "").trim();
-      const sp = info.indexOf(" ");
-      const lang = (sp === -1 ? info : info.slice(0, sp)).toLowerCase() || "text";
-      const title = sp === -1 ? "" : info.slice(sp + 1).trim();
+      const [lang, title] = splitInfo(open[1]);
       if (!isArtifactLang(lang)) {
         // Still arriving, and not code: show it as it comes rather than as a
         // "Building…" placeholder for something that will never be built.
         parts.push({ type: "text", content: rest });
         return parts;
       }
+      // Prose above is returned as one intact run. Split the prefix only for
+      // an artifact, otherwise the introduction appears twice while streaming.
+      if (open.index > 0)
+        parts.push({ type: "text", content: rest.slice(0, open.index) });
       parts.push({ type: "artifact", lang, code: open[2], title, pending: true });
     } else {
       parts.push({ type: "text", content: rest });

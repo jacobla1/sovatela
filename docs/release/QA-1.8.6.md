@@ -2,6 +2,15 @@
 
 Written 2026-09-10 · Jacob Bergmann Larsen
 
+> **Addendum, 1.8.7:** This record's references to 604 frontend tests mean the
+> public **v1.8.5** tag. The public **v1.8.6** release job ran **616** frontend
+> tests, as its [test log](https://github.com/jacobla1/sovatela/actions/runs/34493965961/job/102927600950)
+> records. The original private count of 631 is retained as the reported run,
+> not presented as a reproducible public count. Further review found that an
+> all-failed refusal omitted the 20-page cap, and that more than three failures
+> lost their numbers in both the badge and accessible label. Those boundaries
+> are addressed and tested in [QA-1.8.7.md](QA-1.8.7.md).
+
 > **This release exists because a review said no.** 1.8.5 was submitted for an
 > external judgement on whether it could be announced. The answer was a thumbs
 > down, with two code defects and eleven claims that did not survive checking.

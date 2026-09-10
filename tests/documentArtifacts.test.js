@@ -228,6 +228,19 @@ describe("quoted text is shown, not filed as something to run", () => {
     }
   });
 
+  it("keeps prose visible throughout streaming and when its fence closes", () => {
+    for (const lang of ["markdown", "md", "quote", "quotation", "text", "transcript", "zzz"]) {
+      const message = `It says:\n\n\`\`\`${lang}\nPayment is due Friday.\n\`\`\``;
+      // Includes an incomplete label, opening line, body and closing fence.
+      for (let end = 1; end <= message.length; end++) {
+        const chunk = message.slice(0, end);
+        const parts = parseParts(chunk);
+        expect(parts.some((p) => p.type === "artifact"), `${lang} at character ${end}`).toBe(false);
+        expect(parts.map((p) => p.content || "").join("")).toBe(chunk);
+      }
+    }
+  });
+
   // The property that matters more than any particular label, and the reason
   // this is an allowlist now rather than a longer denylist.
   //
@@ -242,6 +255,41 @@ describe("quoted text is shown, not filed as something to run", () => {
         parts.some((p) => p.type === "artifact"),
         `an unknown label ${lang} became an artifact — the default is the wrong way round`,
       ).toBe(false);
+    }
+  });
+
+  // Review of 1.8.6 checked what the allowlist actually covers and found
+  // fifteen labels going inline that should not have. `c#` and `f#` are the
+  // ones that matter: models emit them far more often than `cs` and `fsharp`,
+  // which were the only spellings present.
+  it("covers the labels models actually write", () => {
+    for (const lang of [
+      "c#", "f#", "objective-c", "vbnet", "asm", "matlab", "julia",
+      "fortran", "cobol", "solidity", "latex", "tex", "mermaid", "proto", "prisma",
+    ]) {
+      for (const closed of [false, true]) {
+        const parts = parseParts("```" + lang + "\ncode" + (closed ? "\n```" : ""));
+        const art = parts.find((p) => p.type === "artifact");
+        expect(art, `${lang} lost its side panel (closed=${closed})`).toBeTruthy();
+        expect(art.lang).toBe(lang);
+        expect(Boolean(art.pending)).toBe(!closed);
+      }
+    }
+  });
+
+  // Two spellings of one fence behaved differently: ```python Fibonacci opened
+  // the panel, ```python<TAB>Fibonacci rendered inline, because the info string
+  // was split on a literal space and the language came out as "python\ttitle".
+  it("splits the info string on any whitespace, not only a space", () => {
+    for (const gap of [" ", "\t", "  ", " \t "]) {
+      for (const closed of [false, true]) {
+        const parts = parseParts("```python" + gap + "Fibonacci\nprint(1)" + (closed ? "\n```" : ""));
+        const art = parts.find((p) => p.type === "artifact");
+        expect(art, `info string ${JSON.stringify(gap)}, closed=${closed}`).toBeTruthy();
+        expect(art.lang).toBe("python");
+        expect(art.title).toBe("Fibonacci");
+        expect(Boolean(art.pending)).toBe(!closed);
+      }
     }
   });
 

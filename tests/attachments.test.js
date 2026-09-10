@@ -6,15 +6,41 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/svelte";
 // and none of these handlers ever runs. That coupling is invisible from either
 // file, so it is asserted here.
 
+let extractedScan = "";
+const savedConversations = new Map();
+
+function scanWithFailures(pages) {
+  return "[This document is a scan — a picture of a page with no text in it. " +
+    "The text below was read from the picture on this device.]\n\n" +
+    "[Page 1]\nFee: EUR 12,450\n\n" + pages.map((page) =>
+      `[Page ${page}] could not be read: it is laid out in more than one column.`,
+    ).join("\n\n");
+}
+
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd, args) => {
-    if (cmd === "save_conversation") return true;
+    if (cmd === "save_conversation") {
+      // JSON is the boundary used by the saved-history format. Keep a detached
+      // copy so this test cannot pass by retaining the component's live state.
+      const copy = JSON.parse(JSON.stringify(args.conversation));
+      savedConversations.set(copy.id, copy);
+      return true;
+    }
+    if (cmd === "list_conversations") return [...savedConversations.values()];
+    if (cmd === "load_conversation")
+      return JSON.parse(JSON.stringify(savedConversations.get(args.id)));
+    if (cmd === "send_chat") {
+      args.onEvent.onmessage({ type: "Accepted" });
+      args.onEvent.onmessage({ type: "Token", data: "Check the missing pages in the original." });
+      return null;
+    }
     if (cmd === "check_connection") return "ok";
     if (cmd === "extract_document") {
       // A scan comes back carrying the preamble the extractor puts at the head
       // of every recognised document — which is the only thing distinguishing
       // recognised text from read text once it is one string.
       const name = String(args?.name || "");
+      if (name === "many-failures.pdf") return extractedScan;
       // A scan whose second page could not be read, in the exact shape
       // `render_pages` writes it. Separate from the clean scan below because
       // what the person is shown has to differ between the two, and until
@@ -39,7 +65,8 @@ vi.mock("@tauri-apps/api/core", () => ({
     return null;
   }),
   Channel: class {
-    set onmessage(_f) {}
+    set onmessage(fn) { this.callback = fn; }
+    get onmessage() { return this.callback; }
   },
 }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
@@ -59,7 +86,11 @@ const withFiles = (files = []) => ({
 
 const veil = () => document.querySelector(".drop-veil");
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  extractedScan = "";
+  savedConversations.clear();
+});
 
 describe("dropping a file onto the window", () => {
   it("is possible at all — the webview has to be left to handle the drop", () => {
@@ -182,6 +213,61 @@ describe("a document read from a picture says so", () => {
       document.querySelector(".att-ocr-missing"),
       "a complete scan was marked as missing a page",
     ).toBeNull();
+  });
+
+  it.each([
+    {
+      name: "four failed pages",
+      pages: [2, 5, 9, 14],
+      visible: "pages 2, 5, 9 and 14 unreadable",
+      full: "pages 2, 5, 9 and 14",
+    },
+    {
+      name: "five failed pages",
+      pages: [2, 5, 9, 14, 20],
+      visible: "pages 2, 5, 9 and 2 others unreadable",
+      full: "pages 2, 5, 9, 14 and 20",
+    },
+    {
+      name: "nineteen failed pages",
+      pages: Array.from({ length: 19 }, (_, i) => i + 2),
+      visible: "pages 2, 3, 4 and 16 others unreadable",
+      full: "pages 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19 and 20",
+    },
+  ])("names $name before sending, after sending, and after reopening history", async ({ pages, visible, full }) => {
+    extractedScan = scanWithFailures(pages);
+    const view = render(Chat, { props: {} });
+    await fireEvent.drop(document.querySelector("main.chat"), withFiles([
+      new File(["x"], "many-failures.pdf", { type: "application/pdf" }),
+    ]));
+
+    const checkBadge = (badge) => {
+      expect(badge).toBeTruthy();
+      expect(badge.textContent).toBe(visible);
+      expect(badge.getAttribute("title")).toBe(`${full} could not be read. Check the original for what is missing.`);
+      expect(badge.getAttribute("aria-label")).toBe(
+        `${full} of this scan could not be read. Check the original for what is missing.`,
+      );
+    };
+    await waitFor(() => checkBadge(document.querySelector(".att-ocr-missing")));
+
+    const box = screen.getByLabelText("Message GLM-5.2");
+    await fireEvent.input(box, { target: { value: "Review this scan" } });
+    await fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => checkBadge(document.querySelector(".thread .att-ocr-missing")));
+    await waitFor(() => {
+      const saved = [...savedConversations.values()][0];
+      expect(saved?.messages.some((m) => m.role === "assistant" && m.text)).toBe(true);
+      expect(saved.messages[0].attachments[0].content).toBe(extractedScan);
+    });
+
+    // A fresh component must reconstruct the badge from the saved attachment,
+    // rather than reuse the staged attachment or the previous DOM.
+    view.unmount();
+    render(Chat, { props: {} });
+    await fireEvent.click(screen.getByLabelText("Toggle chat history sidebar"));
+    await fireEvent.click(await screen.findByTitle("Review this scan"));
+    await waitFor(() => checkBadge(document.querySelector(".thread .att-ocr-missing")));
   });
 
   it("reads the failure in the shape the extractor writes it", () => {

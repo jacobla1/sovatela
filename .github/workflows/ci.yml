@@ -257,6 +257,15 @@ jobs:
             echo "No recogniser here, so the document was refused whole — nothing to keep."
           fi
 
+      # Linux has no OCR engine; its whole-document refusal is checked above.
+      - name: OCR refusals account for the page limit and different failures
+        if: matrix.platform != 'ubuntu-22.04'
+        shell: bash
+        run: |
+          bin=src-tauri/target/debug/scale
+          [ -x "$bin" ] || bin=src-tauri/target/debug/scale.exe
+          node qa/ocr/check-page-accounting.mjs "$bin"
+
       # The same command the release gate runs, and for the reason it exists:
       # until 1.8.1 this ran *only* at release time, so a lint that fires on one
       # platform was first seen when a tag had already been pushed. A

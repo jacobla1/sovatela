@@ -137,6 +137,7 @@ const PUBLIC = [
   "docs/release/QA-1.8.4.md",
   "docs/release/QA-1.8.5.md",
   "docs/release/QA-1.8.6.md",
+  "docs/release/QA-1.8.7.md",
   "docs/release/REVIEW-1.8.5.md",
 ];
 

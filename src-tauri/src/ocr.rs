@@ -1158,7 +1158,14 @@ fn render_pages(outcomes: &[(u32, Result<String, String>)]) -> String {
 /// there is no text to hand over; what changes is that the refusal says what
 /// happened to each page instead of picking one page's reason and dropping the
 /// rest on the floor.
-fn refusal_message(outcomes: &[(u32, Result<String, String>)]) -> String {
+/// `total` is how many pages the document has, which is not always how many
+/// were looked at: [`MAX_OCR_PAGES`] bounds the work. The success path has
+/// always said so; this one did not, so a 21-page scan where nothing could be
+/// read listed pages 1 to 20 and never mentioned that a page 21 existed. The
+/// cap was disclosed when some page succeeded and dropped in silence when none
+/// did — the same shape as the defect this function was written to fix, one
+/// level further out. Found by review of 1.8.6.
+fn refusal_message(outcomes: &[(u32, Result<String, String>)], total: usize) -> String {
     // Only reachable with an `Ok` in the list if a caller misuses this, and a
     // page that succeeded has no reason to give. Saying so beats `unwrap`.
     let reason = |r: &Result<String, String>| {
@@ -1167,19 +1174,55 @@ fn refusal_message(outcomes: &[(u32, Result<String, String>)]) -> String {
             .cloned()
             .unwrap_or_else(|| "it could not be read".to_string())
     };
+
+    // Pages that failed the same way, consecutively, are said once.
+    //
+    // Not cosmetic. A 21-page scan of blank leaves produced twenty copies of
+    // "no text could be made out on it", which is a wall a reader skips — and
+    // skipping it is how the one page that failed *differently* gets missed.
+    // Naming every page and making the naming unreadable would satisfy the
+    // letter of the fix and lose its point.
+    let mut runs: Vec<(u32, u32, String)> = Vec::new();
+    for (number, r) in outcomes {
+        let why = reason(r);
+        match runs.last_mut() {
+            Some((_, last, prev)) if *prev == why && *last + 1 == *number => *last = *number,
+            _ => runs.push((*number, *number, why)),
+        }
+    }
+    let each = runs
+        .iter()
+        .map(|(first, last, why)| match last - first {
+            0 => format!("page {first}: {why}"),
+            1 => format!("pages {first} and {last}: {why}"),
+            _ => format!("pages {first}–{last}: {why}"),
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    // Said whether or not anything was read, which is the correction.
+    let capped = if total > outcomes.len() {
+        format!(
+            " Only the first {} of {total} pages were looked at — this document is a scan, and \
+             reading one is slow.",
+            outcomes.len()
+        )
+    } else {
+        String::new()
+    };
+
     match outcomes {
         [] => "This PDF has no pages in it.".to_string(),
         // One page, so naming its number would be noise: "page 1" adds nothing
         // a reader of a one-page document does not already know.
-        [(_, only)] => format!("This PDF is a picture of a page, and {}.", reason(only)),
-        many => {
-            let each = many
-                .iter()
-                .map(|(number, r)| format!("page {number}: {}", reason(r)))
-                .collect::<Vec<_>>()
-                .join("; ");
-            format!("This PDF is a picture of its pages, and none of them could be read — {each}.")
-        }
+        [(_, only)] => format!(
+            "This PDF is a picture of a page, and {}.{capped}",
+            reason(only)
+        ),
+        _ => format!(
+            "This PDF is a picture of its pages, and none of the ones read could be \
+             made out — {each}.{capped}"
+        ),
     }
 }
 
@@ -1263,7 +1306,7 @@ pub fn scanned_pdf_text(bytes: &[u8]) -> Result<String, String> {
     }
 
     if !outcomes.iter().any(|(_, r)| r.is_ok()) {
-        return Err(refusal_message(&outcomes));
+        return Err(refusal_message(&outcomes, total));
     }
 
     let mut out = render_pages(&outcomes);
@@ -1516,10 +1559,13 @@ mod tests {
         // one of the reasons — while the 1.8.5 release notes said every page is
         // accounted for. Found by review after that release shipped, which is
         // why the claim and the code are being brought back together here.
-        let out = refusal_message(&[
-            (1, Err("there is no picture on it".to_string())),
-            (2, Err("it is laid out in more than one column".to_string())),
-        ]);
+        let out = refusal_message(
+            &[
+                (1, Err("there is no picture on it".to_string())),
+                (2, Err("it is laid out in more than one column".to_string())),
+            ],
+            2,
+        );
         assert!(
             out.contains("page 1"),
             "page 1 is not accounted for:\n{out}"
@@ -1536,11 +1582,75 @@ mod tests {
     }
 
     #[test]
+    fn a_refusal_says_when_it_stopped_at_the_page_limit() {
+        // The success path has always disclosed the cap. This one did not, so a
+        // 21-page scan of unreadable leaves listed pages 1 to 20 and never said
+        // a page 21 existed — the cap reported when some page succeeded and
+        // dropped in silence when none did. Found by review of 1.8.6, and it is
+        // the same shape as the defect this function exists to fix.
+        let outcomes: Vec<(u32, Result<String, String>)> = (1..=20)
+            .map(|n| (n, Err("no text could be made out on it".to_string())))
+            .collect();
+        let out = refusal_message(&outcomes, 21);
+        assert!(
+            out.contains("21"),
+            "a 21-page document was reported as though it had 20 pages:\n{out}"
+        );
+        assert!(out.contains("Only the first 20"), "{out}");
+    }
+
+    #[test]
+    fn a_refusal_that_read_every_page_does_not_mention_a_limit() {
+        // The other half, so the sentence above cannot be bolted on
+        // unconditionally: a two-page document has not hit any cap.
+        let out = refusal_message(
+            &[
+                (1, Err("there is no picture on it".to_string())),
+                (2, Err("there is no picture on it".to_string())),
+            ],
+            2,
+        );
+        assert!(
+            !out.contains("Only the first"),
+            "a complete document claimed to have stopped early:\n{out}"
+        );
+    }
+
+    #[test]
+    fn pages_that_failed_the_same_way_are_said_once() {
+        // Twenty copies of one sentence is a wall a reader skips, and skipping
+        // it is exactly how the page that failed *differently* gets missed.
+        // Naming every page and making the naming unreadable would satisfy the
+        // letter of the fix and lose its point.
+        let mut outcomes: Vec<(u32, Result<String, String>)> = (1..=5)
+            .map(|n| (n, Err("no text could be made out on it".to_string())))
+            .collect();
+        outcomes.push((6, Err("it is laid out in more than one column".to_string())));
+        let out = refusal_message(&outcomes, 6);
+        assert!(
+            out.contains("pages 1\u{2013}5"),
+            "the run was not collapsed:\n{out}"
+        );
+        assert!(
+            out.contains("page 6: it is laid out in more than one column"),
+            "the page that failed differently was folded into the run:\n{out}"
+        );
+        assert_eq!(
+            out.matches("no text could be made out").count(),
+            1,
+            "the repeated reason was repeated:\n{out}"
+        );
+    }
+
+    #[test]
     fn a_one_page_refusal_does_not_number_the_only_page() {
         // "page 1: ..." on a one-page document tells a reader nothing they do
         // not have in front of them. The wording that shipped for years is kept
         // for that case rather than regularised for the sake of symmetry.
-        let out = refusal_message(&[(1, Err("no text could be made out on it".to_string()))]);
+        let out = refusal_message(
+            &[(1, Err("no text could be made out on it".to_string()))],
+            1,
+        );
         assert_eq!(
             out,
             "This PDF is a picture of a page, and no text could be made out on it."

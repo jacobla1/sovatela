@@ -1,6 +1,39 @@
 # Changelog
 
+## 1.8.7 — 2026-09-10
+
+### Fixed
+
+- An OCR refusal now discloses when only the first 20 pages of a longer scan
+  were attempted. Consecutive pages with the same failure are grouped into a
+  numbered range; different reasons remain separate.
+- Scans with four failed pages keep all four numbers in the attachment badge.
+  Longer lists show the first three numbers and a remaining count, with every
+  failed page number in the tooltip and accessible label. This applies before
+  sending, in the conversation and after reopening saved history.
+- Code fences recognise additional language labels, including `c#` and `f#`,
+  and accept a tab between the language and title. Closed and streaming forms
+  behave consistently.
+- Streaming a prose fence no longer duplicates the text before it. Prose labels
+  such as `markdown`, `md` and `quote`, and unknown labels, remain in the reply.
+
+### Verification and wording
+
+- Added production-helper checks for 21 unreadable pages, exactly 20 unreadable
+  pages and two differently failed pages. Native OCR checks run on macOS and
+  Windows; Linux continues to disclose that it has no OCR engine.
+- Clarified the 1.8.6 page-accounting and fence claims below. Its public CI ran
+  616 frontend tests; 604 was the public 1.8.5 count. The 1.8.7 counts and release
+  evidence are recorded in `docs/release/QA-1.8.7.md`.
+
 ## 1.8.6 — 2026-09-10
+
+> **Clarification added in 1.8.7.** The page reasons below cover the pages OCR
+> attempts, up to 20. In 1.8.6 an all-failed refusal did not disclose that cap,
+> and badges replaced more than three failed page numbers with a count. The
+> quotation fix applies to prose and unrecognised fence labels; recognised code
+> and document formats still open the artifact panel. The public 1.8.6 frontend
+> count is 616; references to 604 below concern the previous 1.8.5 tag.
 
 *1.8.5 fixed one way a scanned page could vanish and described the fix as
 though it covered all of them. An external review asked to judge whether the
@@ -19,7 +52,7 @@ the second.*
   columns is such a failure, so one two-column page in an ordinary twenty-page
   report threw away the nineteen that had been read. They are kept now, and the
   page that failed is named alongside them.
-- **When nothing at all can be read, every page is named with its own reason.**
+- **When nothing at all can be read, attempted pages carry their reasons.**
   The refusal reported the first reason it found and dropped the page numbers,
   so a two-page scan that failed twice for different reasons reported one of
   them and accounted for neither page.
@@ -28,7 +61,7 @@ the second.*
   character count and a general OCR badge look the same for a scan read whole
   and one missing a page. The chip reads *"page 2 unreadable"* now, before you
   send — while you can still re-scan it or narrow the question.
-- **A quotation stays in the reply whatever the assistant labels it.** The
+- **Prose and unrecognised fence labels keep the quotation in the reply.** The
   previous fix named four labels meaning plain text and treated everything else
   as code, so a passage marked `markdown`, `md` or `quote` still went behind a
   chip offering to "run" it. A fenced block now becomes an artifact only if the
@@ -59,7 +92,7 @@ the second.*
   *every* claim (it covers the privacy, network and release-integrity ones).
 - **604 frontend tests, not 623.** The larger figure is the private repository's:
   several suites generate one check per document and it holds documents withheld
-  from the public mirror. 604 is what the published tag runs.
+  from the public mirror. 604 is what the public v1.8.5 tag runs.
 
 ### Known, and not fixed here
 
