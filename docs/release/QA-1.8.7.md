@@ -71,10 +71,38 @@ completed record is maintained on the public repository's main branch; the tag
 records the source used to build the installers.
 
 - Checksums, minisign signature, all six installer attestations, macOS signing,
-  notarization and stapling, and source provenance: pending.
-- Native OCR fixtures against the downloaded macOS app: pending.
+  notarization and stapling, and source provenance: **10 passed, 0 failed, 0
+  skipped** (`scripts/verify-release.sh v1.8.7`, 2026-09-11). Attestations bind
+  every installer to `d2279478a7fa`, the commit `v1.8.7` points at, and the
+  publisher re-run at `621d69a6a80b` reproduces the published tree exactly.
+- Native OCR fixtures against the downloaded macOS app: **pass**, against the
+  `.dmg` from the release, `CFBundleShortVersionString` 1.8.7.
+
+  | Fixture | Exit | Result |
+  | --- | --- | --- |
+  | Ordinary one-page scan | 0 | read |
+  | Readable page + two-column page | 0 | page 1 kept, page 2 named for its columns |
+  | Readable page + ambiguous-pictures page | 0 | page 1 kept, page 2 named |
+  | 21 unreadable pages | 33 | `pages 1–20: no text could be made out on it. Only the first 20 of 21 pages were looked at` |
+
+  The last one is this release's own fix, confirmed in the shipped binary: the
+  run collapsed to a single sentence, and the page cap disclosed where 1.8.6
+  reported twenty identical sentences and never mentioned a page 21.
+
+  **The first attempt tested the wrong binary.** The 1.8.7 image mounted at
+  `/Volumes/Sovatela 1` because a stale 1.8.6 volume held the default path, and
+  the app there reported 1.8.6. Checking the bundle's version before trusting
+  the run is what caught it; a passing result from the previous release would
+  have looked identical.
 - All generated site files compared byte for byte with the live deployment:
-  pending.
+  **pass** — nine resources, all identical. `version.json` reads 1.8.7, the six
+  installer checksums on the page are byte-identical to the minisign-signed
+  list, the download links return 200, and the `.dmg` fetched from the live link
+  hashes to `e6a4eda3f897e227`, which is what the page publishes.
+
+**The release was published as part of this.** It was left as a draft because
+these three checks were outstanding, which is the rule this project sets —
+build, verify, then publish. They are the rows above.
 
 ## Known limits
 
