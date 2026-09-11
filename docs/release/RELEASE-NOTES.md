@@ -1,3 +1,37 @@
+# Release notes — Sovatela 1.8.8
+
+Release date: 2026-09-11 · [All releases](https://github.com/jacobla1/sovatela/releases)
+
+A PDF with a digital cover could silently lose every scanned page in 1.8.7.
+This release detects and warns about partial extraction before it is sent.
+
+## Changed
+
+- **Mixed PDFs show “PDF partly read”.** Readable digital text is kept. Pages
+  without readable digital text are numbered in the warning and body. The
+  warning appears before sending, in sent messages and after reopening history;
+  the model receives it too. Text and images on the same page also warn, as do
+  nested PDF forms and inline images. Logos, rules, charts and annotations can
+  trigger this conservative check even when the text layer is complete.
+- **This is detection, not full mixed-PDF OCR.** Images and scanned content in
+  mixed documents are not read. Pure scans retain the existing local OCR path
+  on macOS and Windows. Linux has no OCR engine. OCR can still misread or omit
+  words and lines within a page, and real-photo Windows accuracy is unmeasured.
+- **Search boundaries are explicit.** Chat and image understanding run on
+  Scaleway in Paris. With any search provider enabled, fetched public websites
+  can be anywhere and receive URLs containing conversation-derived terms.
+  Private-IP checks prevent SSRF; they do not enforce geographic limits.
+- **Windows signing is a decision.** FAQ and troubleshooting now agree that
+  Windows is unsigned by choice and signing is not planned. The wording guard
+  scans all tracked Markdown and HTML documentation, with precise exceptions
+  for historical quotations of corrected claims.
+
+[QA-1.8.8.md](QA-1.8.8.md) records verification and pending release checks.
+Windows and Linux installers remain unsigned and experimental. Existing
+[accessibility limitations](https://sovatela.eu/accessibility) remain disclosed.
+
+---
+
 # Release notes — Sovatela 1.8.7
 
 Release date: 2026-09-10 · [All releases](https://github.com/jacobla1/sovatela/releases)

@@ -329,7 +329,7 @@ else means it is not, and it should not be opened.
 
 ### Windows SmartScreen warns about the installer
 
-Expected — Windows code signing isn't configured yet. Verify the checksum
+Expected — the Windows build is unsigned by choice; signing is not planned. Verify the checksum
 before running it.
 
 ---

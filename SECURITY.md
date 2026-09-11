@@ -112,6 +112,16 @@ schemes removes the escalation, not the exfiltration; the protections that keep
 the renderer from being compromised in the first place are the CSP, DOMPurify
 and the isolated artifact frame above.
 
+### Search provider location does not constrain page fetching
+
+Chat and image understanding run on Scaleway in Paris. Optional search, image
+generation and terminal tools have different data paths. With **any** search
+provider enabled, including Qwant Staan and local SearXNG, `fetch_page` can
+contact public websites anywhere in the world. Each destination receives the
+requested URL, which can contain conversation-derived terms. Redirects are
+checked against private IP space for SSRF protection, not against a geographic
+allowlist. Choosing an EU search provider does not make page fetching EU-only.
+
 ### Web content is untrusted input
 
 With web search on, the model chooses which page to read, so text on a page or
@@ -150,6 +160,18 @@ What this does **not** cover, stated plainly:
   capability separation above is what actually holds.
 
 Turning web search off removes this entire class.
+
+### Document extraction can be incomplete
+
+In 1.8.7 and earlier, a PDF with a digital cover page could silently omit later
+scanned pages. **1.8.8 detects and warns; it does not add full mixed-PDF OCR.**
+Digital text is kept, pages without readable digital text are numbered, and a
+**PDF partly read** badge appears before sending and in saved conversations.
+The model receives the same warning. Graphics on a page with digital text also
+trigger it, including images, PDF forms and inline images. The check is
+conservative: logos, annotations and other graphics can trigger it too.
+Pure scans still use the existing local OCR path on macOS and Windows; Linux
+has no OCR engine. OCR can misread or omit words and lines within a page.
 
 ### Generated code
 

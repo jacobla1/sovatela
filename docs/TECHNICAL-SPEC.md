@@ -1,6 +1,6 @@
 # Technical and security specification
 
-Sovatela v1.8.7 · Companion to Product spec ·
+Sovatela v1.8.8 · Companion to Product spec ·
 UX spec · [Security policy](../SECURITY.md)
 
 Fuller engineering rationale is kept internally in `ENGINEERING_NOTES.md`, which
@@ -254,6 +254,17 @@ rather than a path — separators and dot segments are stripped — and image by
 are checked against their actual signature rather than the media type the data
 URL claims.
 
+### Mixed PDFs
+
+Digital extraction visits every page, preserving readable text and numbering
+pages with no readable digital text. Images, Form XObjects, inline images,
+vector graphics, annotations and failures inspecting page content trigger a
+conservative partial-extraction warning. The warning precedes the body so it
+survives truncation; it is shown on the staged and saved attachment and sent to
+the model. These files do not run OCR. A logo can therefore warn even when all
+text happens to be digital. Only when no page yields digital text does the
+whole-document OCR fallback run.
+
 ### Reading a scanned PDF
 
 A PDF with no text layer is read by optical character recognition, entirely on
@@ -269,7 +280,7 @@ runaway isolation, not a privilege sandbox. Only one extraction runs at a time,
 because several children each entitled to a gigabyte is a way to exhaust a
 machine without any one of them exceeding its limit. The PDF path
 gets a higher allocation ceiling and a longer deadline than the others, because
-two models are loaded and a page is held as decoded pixels.
+a page is held as decoded pixels for the system recogniser.
 
 The scan is **extracted** from the PDF as an embedded image rather than the page
 being rendered. A JPEG stream is handed to the decoder as it is; every other

@@ -3738,7 +3738,7 @@ dependencies = [
 
 [[package]]
 name = "scale"
-version = "1.8.7"
+version = "1.8.8"
 dependencies = [
  "base64 0.22.1",
  "flate2",

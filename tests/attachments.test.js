@@ -40,7 +40,7 @@ vi.mock("@tauri-apps/api/core", () => ({
       // of every recognised document — which is the only thing distinguishing
       // recognised text from read text once it is one string.
       const name = String(args?.name || "");
-      if (name === "many-failures.pdf") return extractedScan;
+      if (name === "many-failures.pdf" || name === "mixed.pdf") return extractedScan;
       // A scan whose second page could not be read, in the exact shape
       // `render_pages` writes it. Separate from the clean scan below because
       // what the person is shown has to differ between the two, and until
@@ -268,6 +268,51 @@ describe("a document read from a picture says so", () => {
     await fireEvent.click(screen.getByLabelText("Toggle chat history sidebar"));
     await fireEvent.click(await screen.findByTitle("Review this scan"));
     await waitFor(() => checkBadge(document.querySelector(".thread .att-ocr-missing")));
+  });
+
+  it.each([
+    " Pages without readable digital text: 2, 4.",
+    "", // a scan beside digital text on the same page
+  ])("keeps mixed-PDF warnings through sending and reopening (%s)", async (pages) => {
+    const warning = "PDF partly read: only digital text was extracted. Images and scanned content were not read. " +
+      "PDF forms and other graphics may also be omitted." + pages + " Do not treat this as the complete document.";
+    extractedScan = `[${warning}]\n\n[Page 1]\nDIGITAL COVER PAGE`;
+    const view = render(Chat, { props: {} });
+    await fireEvent.drop(document.querySelector("main.chat"), withFiles([
+      new File(["x"], "mixed.pdf", { type: "application/pdf" }),
+    ]));
+    const check = () => {
+      const badges = document.querySelectorAll(".att-pdf-partial");
+      expect(badges.length).toBe(1);
+      expect(badges[0].textContent).toBe("PDF partly read");
+      expect(badges[0].getAttribute("title")).toBe(warning);
+      expect(badges[0].getAttribute("aria-label")).toBe(warning);
+      expect(screen.queryByText("OCR", { exact: true })).toBeNull();
+    };
+    await waitFor(check);
+    const box = screen.getByLabelText("Message GLM-5.2");
+    await fireEvent.input(box, { target: { value: "Review this mixed PDF" } });
+    await fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => {
+      check();
+      const saved = [...savedConversations.values()][0];
+      expect(saved?.messages.some((m) => m.role === "assistant" && m.text)).toBe(true);
+      expect(saved.messages[0].attachments[0].content).toBe(extractedScan);
+    });
+    view.unmount();
+    render(Chat, { props: {} });
+    await fireEvent.click(screen.getByLabelText("Toggle chat history sidebar"));
+    await fireEvent.click(await screen.findByTitle("Review this mixed PDF"));
+    await waitFor(check);
+  });
+
+  it("recognises the partial-PDF prefix emitted by Rust", () => {
+    const chat = read("src/lib/Chat.svelte");
+    const mark = chat.match(/const PDF_PARTIAL_MARK = "([^"]+)"/)?.[1];
+    const rust = read("src-tauri/src/pdf_text.rs");
+    const preamble = rust.match(/PARTIAL_PREAMBLE: &str = "([^"]+)"/)?.[1];
+    expect(mark).toBeTruthy();
+    expect(preamble?.startsWith(mark)).toBe(true);
   });
 
   it("reads the failure in the shape the extractor writes it", () => {

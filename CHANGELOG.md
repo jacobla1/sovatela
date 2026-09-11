@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.8.8 — 2026-09-11
+
+- Detect partial digital PDF extraction page by page. Preserve digital text,
+  number pages with no readable digital text, and show a persistent warning
+  when images, forms, graphics or annotations may be omitted. Mixed PDFs do
+  not gain OCR support; pure scans retain the existing OCR fallback.
+- State that page fetching can contact public websites worldwide with any
+  search provider, independently of the provider's own location.
+- Correct Windows-signing wording in FAQ and troubleshooting and extend the
+  guard to all tracked Markdown and HTML documentation.
+- Update launch wording for model provenance, provider data paths, usage costs
+  and the mixed-PDF warning.
+
 ## 1.8.7 — 2026-09-10
 
 ### Fixed

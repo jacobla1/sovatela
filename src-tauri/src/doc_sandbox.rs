@@ -353,10 +353,9 @@ pub fn run_helper_if_requested() -> bool {
     // they are, and this adds a ceiling those bounds cannot be argued out of.
     let result = std::panic::catch_unwind(|| crate::document_text(kind.stand_in_name(), &input));
 
-    // A PDF with no text layer is a picture of a page. Reading it is only
-    // attempted once the ordinary extraction has come back empty, so a PDF
-    // that *has* text never pays for the models being loaded — which is the
-    // overwhelmingly common case and several seconds of work.
+    // Digital extraction accounts for every page and warns about non-text
+    // content, including scans beside digital text. Only when no digital page
+    // can be read do we try the whole-document OCR path.
     let mut result = result;
     if kind == Kind::Pdf && matches!(result, Ok(Err(_))) {
         let attempt = std::panic::catch_unwind(|| crate::ocr::scanned_pdf_text(&input));

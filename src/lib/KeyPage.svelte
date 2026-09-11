@@ -1022,6 +1022,10 @@
     <strong>local SearXNG</strong> are strongest; <strong>Linkup</strong> is the
     most convenient). The options below are listed by <strong>ease of setup</strong>,
     easiest first.
+    <strong>With any search provider enabled, the assistant can also fetch public
+    websites anywhere in the world.</strong> Those websites receive the requested
+    URL, which can contain terms from your conversation. The search provider's
+    location does not limit where pages are fetched.
   </p>
 
   <div class="provider-toggle">
@@ -1170,7 +1174,8 @@
       server or Docker, 1,000 free requests/month then €1 per 1,000. Qwant is a
       French company and Staan is built as a European-sovereign search index, so
       of the hosted options this is the <strong>strongest on sovereignty</strong>
-      (no US company in the path).
+      for the search-provider connection. Reading result pages can contact
+      public websites anywhere, including US-hosted sites.
       <strong>Heads-up:</strong> sign-up currently goes through a
       <strong>business review</strong> — Qwant approves companies and may not
       accept personal accounts yet. If you can't get access, use one of the other
@@ -2200,7 +2205,9 @@
     Labs</strong> uses a German model from a <strong>German-American</strong>
     company (a US entity, not EU-sovereign). Each option's note in
     <em>Web search</em> and <em>Image generation</em> spells this out and links
-    the provider's own documentation.
+    the provider's own documentation. With any search provider enabled, page
+    fetching can contact public websites anywhere; their URLs can contain
+    terms from your conversation.
   </p>
   <p class="hint">
     Want to see exactly what's stored? <em>Chat history → Show folder</em> opens

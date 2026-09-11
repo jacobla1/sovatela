@@ -93,6 +93,9 @@ jobs:
       # language pack must be a refusal rather than a crash, and that is the
       # half of the question CI can settle. Whether it can actually *read* a
       # scan still needs a machine with a language pack on it.
+      - name: Mixed PDFs cannot silently omit scanned content
+        run: node qa/ocr/check-mixed.mjs src-tauri/target/debug/scale${{ runner.os == 'Windows' && '.exe' || '' }}
+
       - name: The extraction helper reads a scanned PDF
         shell: bash
         run: |

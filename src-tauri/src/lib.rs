@@ -9,6 +9,7 @@ pub mod doc_sandbox;
 pub mod glm;
 pub mod ocr;
 pub mod ooxml;
+pub mod pdf_text;
 
 #[global_allocator]
 static ALLOCATOR: doc_sandbox::CappedAllocator = doc_sandbox::CappedAllocator;
@@ -4100,10 +4101,8 @@ fn pdf_to_text(bytes: &[u8]) -> Result<String, String> {
     // child. `catch_unwind` still earns its place for a malformed PDF that
     // panics — an allocation failure aborts instead, which is exactly what the
     // surrounding process is expendable for.
-    let owned = bytes.to_vec();
-    std::panic::catch_unwind(move || pdf_extract::extract_text_from_mem(&owned))
+    std::panic::catch_unwind(|| pdf_text::extract(bytes))
         .map_err(|_| "could not parse this PDF".to_string())?
-        .map_err(|e| format!("could not parse this PDF: {e}"))
 }
 
 /// Put the body first and the surrounding material after it, labelled.

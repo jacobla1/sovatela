@@ -398,30 +398,55 @@ describe("Windows signing is described the same way everywhere", () => {
   // A guard that reads prose out of a source file has to read it the way a
   // person does. Hard-wrapping is not a semantic act, and any check that treats
   // a newline as different from a space is one reflow away from silence.
-  const flatten = (s) => s.replace(/\s+/g, " ");
-  const docs = {
-    "SECURITY.md": flatten(read("SECURITY.md")),
-    "README.md": flatten(read("README.md")),
-    "deploy/web/index.html": flatten(read("deploy/web/index.html")),
+  const flatten = (s) => s.replace(/<[^>]*>/g, " ").replace(/[*`]/g, "").replace(/\s+/g, " ");
+  const paths = trackedFiles(repo) ?? new Set(readdirSync(repo, { recursive: true })
+    .filter((p) => !/(^|[/\\])(?:node_modules|target|dist|\.git)([/\\]|$)/.test(p)));
+  const docs = Object.fromEntries([...paths]
+    .filter((p) => /\.(?:md|markdown|html?)$/i.test(p))
+    .map((p) => [p, flatten(read(p))]));
+  const forbidden = /not signed yet|signing,? so SmartScreen stops warning|signing is planned|signing (?:isn't|isn’t|is not) configured yet/gi;
+
+  // Exact historical quotations of corrected claims, not excluded files.
+  // A new claim elsewhere in one of these records must still fail the guard.
+  const historical = {
+    "CHANGELOG.md": ['The download page said Windows and Linux are "not signed yet".'],
+    "docs/release/RELEASE-NOTES.md": ['The download page said Windows and Linux builds are "not signed yet".'],
+    "docs/release/REVIEW-1.8.5.md": [
+      'The guard against "not signed yet" could not fire',
+      '"verify every claim", "not signed yet", the update check',
+    ],
+    "docs/release/QA-1.8.6.md": [
+      'The test forbidding "not signed yet" in any document did not catch',
+      '| Windows/Linux "not signed yet" | unsigned by choice; signing is not planned |',
+      'the phrase not signed yet returns nothing on the live page',
+    ],
   };
 
   it("is recorded as a decision, not as pending work", () => {
     expect(docs["SECURITY.md"]).toMatch(/Windows signing is not planned/i);
   });
 
-  it("reads across a line break, because that is how it was defeated", () => {
-    // The guard's own failure mode, pinned. Without `flatten` this passes while
-    // the document says the forbidden thing.
-    const wrapped = flatten("Windows and Linux builds are not signed\n      yet — on Windows,");
-    expect(wrapped).toMatch(/not signed yet/i);
+  it("includes FAQ and troubleshooting in the tracked-document sweep", () => {
+    expect(docs["docs/FAQ.md"]).toBeTruthy();
+    expect(docs["docs/TROUBLESHOOTING.md"]).toBeTruthy();
   });
 
-  it("is not on the roadmap in any document", () => {
+  it("recognises wrapped and formatted promises of future signing", () => {
+    for (const example of [
+      "Windows builds are not signed\n yet",
+      "Windows code signing isn't configured\n yet",
+      "Windows signing is not <strong>configured</strong> yet",
+    ]) expect(flatten(example)).toMatch(forbidden);
+  });
+
+  it("is not on the roadmap in any tracked document", () => {
     for (const [name, text] of Object.entries(docs)) {
-      // "not signed yet" and "signing planned" both promise a later change.
-      expect(text, `${name} implies Windows signing is coming`).not.toMatch(
-        /not signed yet|signing,? so SmartScreen stops warning|signing is planned/i,
-      );
+      let current = text;
+      for (const quote of historical[name] ?? []) {
+        expect(current, `historical exception has gone stale: ${name}: ${quote}`).toContain(quote);
+        current = current.replace(quote, "");
+      }
+      expect(current, `${name} implies Windows signing is coming`).not.toMatch(forbidden);
     }
   });
 });

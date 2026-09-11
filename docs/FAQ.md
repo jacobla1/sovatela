@@ -138,7 +138,7 @@ macOS 10.15+, Windows 10 1803+ (64-bit), and Linux distributions with WebKitGTK
 4.1 (Ubuntu 22.04+, Debian 12+, Fedora 36+). See [Install](INSTALL.md).
 
 **Why does Windows warn me about the installer?**
-Windows code signing isn't configured yet, so SmartScreen flags the download.
+The Windows build is unsigned by choice; signing is not planned. SmartScreen flags the download.
 Verify the checksum before running it. The macOS build *is* signed and
 notarized.
 

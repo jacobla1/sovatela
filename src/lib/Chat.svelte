@@ -734,6 +734,14 @@
   // recognised document carries. A test asserts the two still agree: this is a
   // copied string, and copied strings drift apart silently.
   const OCR_MARK = "[This document is a scan";
+  const PDF_PARTIAL_MARK = "[PDF partly read:";
+
+  function partialPdfWarning(content) {
+    if (!(content || "").startsWith(PDF_PARTIAL_MARK)) return "";
+    // The extractor puts the full warning, including missing page numbers,
+    // ahead of the body. It persists as attachment content in saved history.
+    return content.split("\n\n", 1)[0].replace(/^\[|\]$/g, "");
+  }
 
   // Whether a document's text was recognised from a picture rather than read
   // out of the file.
@@ -2137,6 +2145,12 @@
                     <!-- Kept in the history too: an answer about a scanned
                          contract is worth re-reading months later knowing the
                          figures were recognised rather than read. -->
+                    {#if partialPdfWarning(a.content)}
+                      <span class="att-ocr att-ocr-missing att-pdf-partial"
+                        title={partialPdfWarning(a.content)}
+                        aria-label={partialPdfWarning(a.content)}
+                        role="note">PDF partly read</span>
+                    {/if}
                     {#if wasRecognised(a.content)}<span
                         class="att-ocr"
                         title={OCR_WARNING}
@@ -2312,6 +2326,12 @@
                    until the reply is wrong, and this is the only place the
                    difference is visible before sending. -->
               <span class="att-size">{extractedSize(a.content)}</span>
+              {#if partialPdfWarning(a.content)}
+                <span class="att-ocr att-ocr-missing att-pdf-partial"
+                  title={partialPdfWarning(a.content)}
+                  aria-label={partialPdfWarning(a.content)}
+                  role="note">PDF partly read</span>
+              {/if}
               {#if wasRecognised(a.content)}
                 <!-- Before sending, which is when it can still be checked.
                      The warning is the badge's accessible name rather than a
