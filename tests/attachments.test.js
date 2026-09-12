@@ -320,7 +320,7 @@ describe("a document read from a picture says so", () => {
   // The explanation, on demand, without a pointing device. The reviewer of
   // 1.8.8 put it plainly: the useful detail was in `title` and `aria-label` on
   // a non-focusable span, so a sighted keyboard user had no way to reach it.
-  it("opens the full mixed-PDF explanation from the keyboard", async () => {
+  it("toggles the full mixed-PDF explanation with a native button", async () => {
     const warning = "PDF partly read: only digital text was extracted. Images and scanned content were not read. " +
       "PDF forms and other graphics may also be omitted. Pages without readable digital text: 2. " +
       "Do not treat this as the complete document.";

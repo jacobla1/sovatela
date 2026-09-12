@@ -1,3 +1,48 @@
+# Release notes — Sovatela 1.8.9
+
+Release date: 2026-09-13 · [All releases](https://github.com/jacobla1/sovatela/releases)
+
+Two independent reviews of 1.8.8 built PDFs that hid a scan from the warning
+1.8.8 introduced. This release closes the routes they found and reports a page
+as unread when what came out of it cannot be read.
+
+## Changed
+
+- **Scanned content reached indirectly is detected.** A page can paint a
+  picture without any of it appearing in the page's own operators: through a
+  Type 3 glyph program, a font selected in the graphics state rather than with
+  `Tf`, a glyph shown inside another glyph, a tiling pattern used to fill
+  text, or a soft-mask group. Each of those now produces the **PDF partly
+  read** warning. Inspection is bounded and cycle-aware, and anything that
+  cannot be inspected warns rather than passing silently.
+- **A page counts as read only if something on it means something.** Extraction
+  can return characters that no reader can use — control characters, U+FFFD
+  where decoding gave up, Private Use codepoints, and format characters such as
+  zero-width spaces, soft hyphens, word joiners and variation selectors. Pages
+  yielding only those are now numbered as unread instead of counted as text.
+  Text that carries meaning, in any script, is unaffected.
+- **The warning can be read without a mouse.** The badge is a button that opens
+  the full explanation, its label names the pages it knows about, and the
+  attachment chip wraps so the explanation is not clipped.
+- **This is still detection, not mixed-PDF OCR.** Images and scanned content in
+  mixed documents are not read. The check is conservative and warns for logos,
+  rules, charts and annotations. No measurement of how often it warns
+  unnecessarily has been made.
+- **The network-verification instruction was wrong and is corrected.** Capturing
+  the app's traffic shows more than the providers you configured — a launch key
+  check, optional update and price files, an image delivery address, and any
+  public page the model reads with search on. The endpoint table lists them.
+- **`docs/ACCESSIBILITY.md` is published**, so the public repository can build
+  its own website and the byte-identical site comparison can be reproduced by
+  anyone.
+
+[QA-1.8.9.md](QA-1.8.9.md) records verification. Windows and Linux installers
+remain unsigned and experimental, with no clean-machine lifecycle test and no
+measured Windows OCR accuracy. Existing
+[accessibility limitations](https://sovatela.eu/accessibility) remain disclosed.
+
+---
+
 # Release notes — Sovatela 1.8.8
 
 Release date: 2026-09-11 · [All releases](https://github.com/jacobla1/sovatela/releases)

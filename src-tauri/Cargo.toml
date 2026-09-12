@@ -1,6 +1,6 @@
 [package]
 name = "scale"
-version = "1.8.8"
+version = "1.8.9"
 description = "BYO-key desktop chat client for GLM-5.2 on Scaleway"
 authors = ["Jacob Bergmann Larsen"]
 license = "MIT"
@@ -32,6 +32,8 @@ keyring = { version = "3", features = [
 ] }
 # Document text extraction (PDF / .docx / .odt uploads)
 pdf-extract = "0.12"
+# Unicode properties for page readability; already used transitively.
+regex = "1"
 # Deflate only, which is the one method OOXML and ODT actually use — the
 # formats require it, and Word, Excel, PowerPoint and LibreOffice all write it.
 #

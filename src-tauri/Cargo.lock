@@ -3738,7 +3738,7 @@ dependencies = [
 
 [[package]]
 name = "scale"
-version = "1.8.8"
+version = "1.8.9"
 dependencies = [
  "base64 0.22.1",
  "flate2",
@@ -3755,6 +3755,7 @@ dependencies = [
  "objc2-vision",
  "pdf-extract",
  "quick-xml",
+ "regex",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

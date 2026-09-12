@@ -2168,8 +2168,8 @@
                   <img class="thumb" src={a.dataUrl} alt={a.name} />
                 {:else if a.kind === "text"}
                   {@const missing = unreadablePages(a.content)}
-                  <span class="att-chip">
-                    📄 {a.name}
+                  <span class="att-chip" class:att-partial={!!partialPdfWarning(a.content)}>
+                    📄 <span class="att-name" title={a.name}>{a.name}</span>
                     <!-- Kept in the history too: an answer about a scanned
                          contract is worth re-reading months later knowing the
                          figures were recognised rather than read. -->
@@ -2348,7 +2348,7 @@
     {#if pending.length}
       <div class="pending">
         {#each pending as a, i}
-          <span class="att-chip {a.kind === 'error' ? 'att-error' : ''}">
+          <span class="att-chip {a.kind === 'error' ? 'att-error' : ''}" class:att-partial={a.kind === "text" && !!partialPdfWarning(a.content)}>
             {#if a.kind === "image"}
               <!-- The picture itself. A filename is not a preview: a screenshot
                    and the wrong screenshot have the same shape of name, and the

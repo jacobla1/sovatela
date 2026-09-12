@@ -2363,10 +2363,30 @@ button.mini.primary:disabled {
   cursor: pointer;
 }
 
-/* The full sentence, once asked for. A block inside the chip's row, so it
-   wraps under the badges rather than stretching them. */
+/* Partial-PDF warnings need room both collapsed and expanded. The detail's
+   100% flex basis only starts a new row when the parent actually wraps. */
+.att-chip.att-partial {
+  flex-wrap: wrap;
+  min-width: 0;
+  max-width: min(100%, 26rem);
+  white-space: normal;
+}
+
+.att-partial .att-pdf-partial {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
+/* Keep the explanation after the filename, badges and remove control. */
 .att-partial-detail {
-  flex: 1 0 100%;
+  flex: 1 1 100%;
+  min-width: 0;
+  order: 1;
+  overflow-wrap: anywhere;
   font-size: var(--fs-xs);
   color: var(--warn);
   white-space: normal;

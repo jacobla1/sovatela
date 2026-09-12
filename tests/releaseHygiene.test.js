@@ -410,23 +410,28 @@ describe("Windows signing is described the same way everywhere", () => {
   // to a reader stop separating words, and every kind of Unicode space — not
   // just ASCII — collapses. A word split by a zero-width space or a soft hyphen
   // reads as one word on the page and must match as one word here.
-  const named = {
-    nbsp: " ", amp: "&", lt: "<", gt: ">", quot: '"', apos: "'",
-    ndash: "–", mdash: "—", hellip: "…", shy: "­",
-    thinsp: " ", ensp: " ", emsp: " ",
-    zwj: "‍", zwnj: "‌", nbhy: "‑",
-  };
-  const flatten = (s) =>
-    s
-      .replace(/<[^>]*>/g, " ")
-      .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
-      .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
-      .replace(/&([a-z]+);/gi, (m, n) => named[n.toLowerCase()] ?? m)
+  const flatten = (s) => {
+    // Use the HTML parser's complete entity table and inline text boundaries.
+    // Regex tag removal turned sig<b>n</b>ed into three words; a partial entity
+    // table missed NonBreakingSpace and Tab. Templates are inert (no scripts
+    // or resource loading), and escaped markup remains literal readable text.
+    const template = document.createElement("template");
+    template.innerHTML = s;
+    const blocks = new Set(["ADDRESS", "ARTICLE", "ASIDE", "BLOCKQUOTE", "BR", "DD", "DIV",
+      "DL", "DT", "FIELDSET", "FIGCAPTION", "FIGURE", "FOOTER", "FORM", "H1", "H2",
+      "H3", "H4", "H5", "H6", "HEADER", "HR", "LI", "MAIN", "NAV", "OL", "P", "PRE",
+      "SECTION", "TABLE", "TD", "TH", "TR", "UL"]);
+    const text = (node) => {
+      if (node.nodeType === 3) return node.textContent;
+      if (["SCRIPT", "STYLE", "TEMPLATE"].includes(node.nodeName)) return "";
+      const body = [...node.childNodes].map(text).join("");
+      return blocks.has(node.nodeName) ? ` ${body} ` : body;
+    };
+    return text(template.content)
       .replace(/[*`]/g, "")
-      // Invisible to a reader, so invisible to the match.
-      .replace(/[­​‌‍⁠﻿]/g, "")
-      // Every Unicode space, not only the ASCII ones.
-      .replace(/[\s   -   　]+/g, " ");
+      .replace(/\p{Default_Ignorable_Code_Point}/gu, "")
+      .replace(/\p{White_Space}+/gu, " ");
+  };
   const paths = trackedFiles(repo) ?? new Set(readdirSync(repo, { recursive: true })
     .filter((p) => !/(^|[/\\])(?:node_modules|target|dist|\.git)([/\\]|$)/.test(p)));
   const docs = Object.fromEntries([...paths]
@@ -475,12 +480,18 @@ describe("Windows signing is described the same way everywhere", () => {
   it("reads entities and invisible characters the way a page does", () => {
     for (const example of [
       "Windows builds are not signed&nbsp;yet",
+      "Windows builds are not signed&NonBreakingSpace;yet",
+      "Windows builds are not signed&Tab;yet",
+      "Windows builds are not <b>sig</b>ned yet",
+      "Windows builds are not sig<!-- comment -->ned yet",
+      "<p>Windows builds are not signed</p><p>yet</p>",
       "Windows builds are not signed&#160;yet",
       "Windows builds are not signed&#xA0;yet",
       "Windows builds are not signed yet",
       "Windows builds are not sig­ned yet",
       "Windows builds are not signed yet",
       "Windows builds are not signed　yet",
+      "Windows builds are not signed\u0085yet",
       "Windows signing is not <b>configured</b>&nbsp;yet",
     ]) expect(flatten(example)).toMatch(forbidden);
   });
@@ -495,6 +506,9 @@ describe("Windows signing is described the same way everywhere", () => {
       "Windows builds are not signed​yet",
       "Windows builds are signed and notarized.",
       "not signed &amp; not planned",
+      "not &lt;b&gt;signed&lt;/b&gt; yet",
+      "not signed&#0;yet",
+      "not signed&#x110000;yet",
       "signing is not planned, and that is a decision",
     ]) expect(flatten(example)).not.toMatch(/not signed yet/);
   });

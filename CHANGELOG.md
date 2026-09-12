@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.8.9 — 2026-09-13
+
+- Detect scanned content reached indirectly: Type 3 glyph programs, fonts
+  selected through the graphics state rather than `Tf`, glyphs nested inside
+  other glyphs, tiling patterns used to fill text, and soft-mask groups.
+  A page whose only picture arrives by one of those routes now warns.
+- Treat a page as unread when extraction yields nothing a reader can use.
+  Control characters, U+FFFD, Private Use codepoints and format characters
+  such as zero-width spaces, soft hyphens, word joiners and variation
+  selectors no longer count as digital text. Meaningful text is preserved.
+- The mixed-PDF badge is a button that opens its explanation and names the
+  pages it knows about; the chip wraps so the explanation is readable.
+- The release wording guard reads documents through an HTML parser and
+  Unicode properties instead of a hand-written entity list.
+- Correct the network-verification instruction: capturing traffic shows more
+  than the providers you configured, and the endpoint table says what.
+- Publish `docs/ACCESSIBILITY.md`, so the public tree can build its own site.
+
 ## 1.8.8 — 2026-09-11
 
 - Detect partial digital PDF extraction page by page. Preserve digital text,
