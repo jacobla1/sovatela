@@ -36,9 +36,17 @@ const repo = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
 // Kept out of the public repository. Paths are repo-relative. An entry ending
 // in "/" withholds the whole directory — a gate has to hold for files that do
 // not exist yet, or it is only as good as whoever last remembered to edit it.
+// `docs/ACCESSIBILITY.md` was withheld here until 1.8.9, alone in this list in
+// having no reason to be: every other entry is something genuinely unpublished,
+// while the accessibility statement's own rendered output is a public page at
+// sovatela.eu/accessibility. Withholding the source of a published page hid
+// nothing and cost something — `deploy/web/build.mjs` needs the file, so the
+// published tree could not build its own site, and an external review of 1.8.8
+// reported that it therefore could not reproduce the byte-identical site check
+// this project asks people to make. A verifiability claim is worth what a
+// stranger can check.
 const WITHHELD = [
   "deploy/searxng/",
-  "docs/ACCESSIBILITY.md",
   "docs/LEGAL-CHECKLIST.md",
   "docs/PRODUCT-GAPS.md",
   "docs/PRODUCT-SPEC.md",
@@ -122,6 +130,10 @@ const PUBLIC = [
   "docs/PRIVACY.md",
   "docs/TERMS.md",
   "docs/TECHNICAL-SPEC.md",
+  // Published from 1.8.9. It is the source of a page that has been public at
+  // sovatela.eu/accessibility all along, and `deploy/web/build.mjs` needs it:
+  // withholding it meant the published tree could not build its own site.
+  "docs/ACCESSIBILITY.md",
   // Release records. QA records are published on purpose — they are the
   // evidence for what each release was checked against.
   "docs/release/RELEASE-NOTES.md",

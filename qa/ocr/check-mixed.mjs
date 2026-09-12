@@ -14,6 +14,11 @@ for (const [mode, missing, digital] of [
   ['blank', '2', [1]], ['bad-middle', '2', [1,3]],
   ['many-pages', Array.from({length:21}, (_,i)=>i+2).join(', '), [1]],
   ['text-only', '', [1,2]], ['scan-only', '', []],
+  // The page shows a Type 3 character, so it is not a page *without* text —
+  // the defect was never the accounting, it was that no graphics were seen at
+  // all and the document therefore claimed to be complete. The warning is the
+  // assertion.
+  ['type3', '', [1]], ['same-page-type3', '', [1]],
 ]) {
   const result = spawnSync(executable, ['--sovatela-extract-doc-helper','pdf'], {
     input: mixedPdf(mode), encoding:'utf8', timeout:60_000,

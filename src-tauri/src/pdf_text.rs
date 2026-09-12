@@ -6,34 +6,180 @@
 
 pub const PARTIAL_PREAMBLE: &str = "[PDF partly read: only digital text was extracted. Images and scanned content were not read. PDF forms and other graphics may also be omitted.";
 
-/// Detect painting outside the text layer. `Do` includes both images and Form
-/// XObjects, so nested forms and inherited resources need no special traversal.
-/// Inline images and vector-painted text are conservative warnings too. This
-/// intentionally warns about logos, rules and charts; it cannot judge whether
-/// a graphic contains information needed to answer the user's question.
+/// Whether a decoded content stream paints anything. `Do` includes both images
+/// and Form XObjects, so nested forms and inherited resources need no special
+/// traversal: a stream that draws through a form still issues `Do` itself.
+/// Inline images and vector painting count too.
+fn paints(content: &lopdf::content::Content) -> bool {
+    content.operations.iter().any(|op| {
+        matches!(
+            op.operator.as_str(),
+            "Do" | "BI"
+                | "ID"
+                | "EI"
+                | "sh"
+                | "S"
+                | "s"
+                | "f"
+                | "F"
+                | "f*"
+                | "B"
+                | "B*"
+                | "b"
+                | "b*"
+        )
+    })
+}
+
+/// Every font dictionary a page can reach, following `Parent` for inherited
+/// resources, and accepting each entry written either inline or as a reference.
+///
+/// lopdf's own `get_page_fonts` is not enough here. It follows an inherited
+/// `/Resources` only when that entry is an indirect reference, and a `Pages`
+/// node may carry it as a direct dictionary — which this repository's own
+/// fixtures do. Using it missed the Type 3 font entirely and reported the page
+/// as text only, which is the very defect below; the first attempt at that fix
+/// had this bug and the fixture caught it.
+///
+/// Resources from every level are collected rather than only the nearest. The
+/// nearest wins when *rendering*; here a superset can only mean more warnings,
+/// and this module is deliberately the cautious kind of wrong.
+///
+/// `Err` means the structure could not be walked, and the caller must warn.
+fn page_fonts(
+    doc: &lopdf::Document,
+    id: lopdf::ObjectId,
+) -> Result<Vec<(Vec<u8>, &lopdf::Dictionary)>, ()> {
+    /// A dictionary written either inline or as a reference to one.
+    fn as_dict<'a>(
+        doc: &'a lopdf::Document,
+        obj: &'a lopdf::Object,
+    ) -> Option<&'a lopdf::Dictionary> {
+        match obj {
+            lopdf::Object::Reference(rid) => doc.get_object(*rid).and_then(|o| o.as_dict()).ok(),
+            other => other.as_dict().ok(),
+        }
+    }
+    let mut fonts = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut node = id;
+    loop {
+        if !seen.insert(node) {
+            return Err(()); // a Parent cycle; refuse to certify the page
+        }
+        let Ok(dict) = doc.get_dictionary(node) else {
+            return Err(());
+        };
+        if let Ok(resources) = dict.get(b"Resources") {
+            let Some(resources) = as_dict(doc, resources) else {
+                return Err(());
+            };
+            if let Ok(entry) = resources.get(b"Font") {
+                let Some(table) = as_dict(doc, entry) else {
+                    return Err(());
+                };
+                for (name, value) in table.iter() {
+                    let Some(font) = as_dict(doc, value) else {
+                        return Err(());
+                    };
+                    fonts.push((name.clone(), font));
+                }
+            }
+        }
+        match dict.get(b"Parent").and_then(|o| o.as_reference()) {
+            Ok(parent) => node = parent,
+            Err(_) => break,
+        }
+    }
+    Ok(fonts)
+}
+
+/// Whether any Type 3 font on the page paints.
+///
+/// A Type 3 font defines each glyph as its own content stream, so *showing
+/// text* in one executes arbitrary drawing — images included. The page's
+/// operators record only `Tj`, which is why scanning them alone was not
+/// enough: an external review of 1.8.8 put a complete scanned page inside a
+/// glyph program and the document reported itself as fully read, with no
+/// warning and no page number.
+///
+/// Every failure to look returns `true`. A font that cannot be resolved, a
+/// glyph stream that will not decompress or decode — none of those are
+/// evidence that the page is text only, and the whole point of this module is
+/// that silence must not be the default answer.
+///
+/// In practice almost any Type 3 font a page *uses* trips this, because drawing
+/// a letterform is painting. That is the honest result rather than a
+/// limitation: the extractor cannot vouch for what a glyph program put on the
+/// page.
+///
+/// Only fonts the page actually selects with `Tf` are inspected. Resources are
+/// commonly inherited from the `Pages` node, so a document with one Type 3
+/// font declares it on every page and uses it on one; warning about all of them
+/// would be a false positive on every other page, and the warning is worth
+/// least when it is everywhere.
+fn type3_paints(doc: &lopdf::Document, id: lopdf::ObjectId, used: &[Vec<u8>]) -> bool {
+    let Ok(fonts) = page_fonts(doc, id) else {
+        return true;
+    };
+    for (name, font) in fonts {
+        if !used.contains(&name) {
+            continue;
+        }
+        let is_type3 = font
+            .get(b"Subtype")
+            .and_then(|o| o.as_name())
+            .map(|n| n == b"Type3")
+            .unwrap_or(false);
+        if !is_type3 {
+            continue;
+        }
+        let Ok(procs) = doc.get_dict_in_dict(font, b"CharProcs") else {
+            return true;
+        };
+        for (_, glyph) in procs.iter() {
+            let stream = match glyph {
+                lopdf::Object::Reference(rid) => doc.get_object(*rid).and_then(|o| o.as_stream()),
+                other => other.as_stream(),
+            };
+            let painted = stream
+                .and_then(|s| s.decompressed_content())
+                .and_then(|bytes| lopdf::content::Content::decode(&bytes))
+                .map(|content| paints(&content));
+            match painted {
+                Ok(false) => {}
+                // Painted, or could not be read well enough to say otherwise.
+                _ => return true,
+            }
+        }
+    }
+    false
+}
+
+/// Detect painting outside the text layer. This intentionally warns about
+/// logos, rules and charts; it cannot judge whether a graphic contains
+/// information needed to answer the user's question.
 fn has_graphics(doc: &lopdf::Document, id: lopdf::ObjectId) -> bool {
     let content = doc
         .get_page_content(id)
         .and_then(|bytes| lopdf::content::Content::decode(&bytes));
     match content {
-        Ok(content) => content.operations.iter().any(|op| {
-            matches!(
-                op.operator.as_str(),
-                "Do" | "BI"
-                    | "ID"
-                    | "EI"
-                    | "sh"
-                    | "S"
-                    | "s"
-                    | "f"
-                    | "F"
-                    | "f*"
-                    | "B"
-                    | "B*"
-                    | "b"
-                    | "b*"
-            )
-        }),
+        Ok(content) => {
+            if paints(&content) {
+                return true;
+            }
+            // The fonts this page selects. A font chosen inside a form instead
+            // needs no such care: the form is reached by `Do`, caught above.
+            let used: Vec<Vec<u8>> = content
+                .operations
+                .iter()
+                .filter(|op| op.operator == "Tf")
+                .filter_map(|op| op.operands.first())
+                .filter_map(|o| o.as_name().ok())
+                .map(|n| n.to_vec())
+                .collect();
+            type3_paints(doc, id, &used)
+        }
         // An inspection failure must not certify the page as text-only.
         Err(_) => true,
     }

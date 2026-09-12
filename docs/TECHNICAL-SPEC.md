@@ -736,7 +736,7 @@ decision and must be reviewed as one, not taken as a routine dependency bump.
 **Screen readers on Windows and Linux are untested.** NVDA, JAWS and Orca have
 never been run against this application; testing has been macOS VoiceOver only,
 and the application is published for all three platforms. The
-[accessibility statement](https://sovatela.eu/accessibility) says so and does not claim
+[accessibility statement](ACCESSIBILITY.md) says so and does not claim
 otherwise.
 
 *Not fixed, and a decision is outstanding rather than made.* NVDA and Orca are

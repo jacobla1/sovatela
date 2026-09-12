@@ -398,7 +398,35 @@ describe("Windows signing is described the same way everywhere", () => {
   // A guard that reads prose out of a source file has to read it the way a
   // person does. Hard-wrapping is not a semantic act, and any check that treats
   // a newline as different from a space is one reflow away from silence.
-  const flatten = (s) => s.replace(/<[^>]*>/g, " ").replace(/[*`]/g, "").replace(/\s+/g, " ");
+  //
+  // **The same lesson, a second time.** 1.8.8 widened this to survive a line
+  // break and an HTML tag, and an external review of 1.8.8 then walked through
+  // it with `not signed&nbsp;yet`: an entity is not whitespace until something
+  // decodes it, and nothing here did. Twice now this guard has been taught the
+  // instance it was shown. So the rule is stated once, as the class: read the
+  // document the way a browser and a person would, then compare.
+  //
+  // That means entities become their characters, characters that are invisible
+  // to a reader stop separating words, and every kind of Unicode space — not
+  // just ASCII — collapses. A word split by a zero-width space or a soft hyphen
+  // reads as one word on the page and must match as one word here.
+  const named = {
+    nbsp: " ", amp: "&", lt: "<", gt: ">", quot: '"', apos: "'",
+    ndash: "–", mdash: "—", hellip: "…", shy: "­",
+    thinsp: " ", ensp: " ", emsp: " ",
+    zwj: "‍", zwnj: "‌", nbhy: "‑",
+  };
+  const flatten = (s) =>
+    s
+      .replace(/<[^>]*>/g, " ")
+      .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+      .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
+      .replace(/&([a-z]+);/gi, (m, n) => named[n.toLowerCase()] ?? m)
+      .replace(/[*`]/g, "")
+      // Invisible to a reader, so invisible to the match.
+      .replace(/[­​‌‍⁠﻿]/g, "")
+      // Every Unicode space, not only the ASCII ones.
+      .replace(/[\s   -   　]+/g, " ");
   const paths = trackedFiles(repo) ?? new Set(readdirSync(repo, { recursive: true })
     .filter((p) => !/(^|[/\\])(?:node_modules|target|dist|\.git)([/\\]|$)/.test(p)));
   const docs = Object.fromEntries([...paths]
@@ -437,6 +465,38 @@ describe("Windows signing is described the same way everywhere", () => {
       "Windows code signing isn't configured\n yet",
       "Windows signing is not <strong>configured</strong> yet",
     ]) expect(flatten(example)).toMatch(forbidden);
+  });
+
+  // Each of these reads as the forbidden sentence on a rendered page and slipped
+  // past the guard as source. The first is the one an external review used
+  // against 1.8.8; the rest are the same trick spelled differently, and they are
+  // here because naming only the one that was demonstrated is how this guard
+  // came to need widening twice.
+  it("reads entities and invisible characters the way a page does", () => {
+    for (const example of [
+      "Windows builds are not signed&nbsp;yet",
+      "Windows builds are not signed&#160;yet",
+      "Windows builds are not signed&#xA0;yet",
+      "Windows builds are not signed yet",
+      "Windows builds are not sig­ned yet",
+      "Windows builds are not signed yet",
+      "Windows builds are not signed　yet",
+      "Windows signing is not <b>configured</b>&nbsp;yet",
+    ]) expect(flatten(example)).toMatch(forbidden);
+  });
+
+  // The other half. A guard that rewrites the document until everything matches
+  // is no guard, so the decoding must not invent the phrase where it is absent.
+  // A zero-width space is not a space. It renders as nothing, so "signed​yet"
+  // reads as one word on the page and is not the forbidden claim; joining the
+  // words is the right answer, not a miss.
+  it("does not manufacture a match out of unrelated text", () => {
+    for (const example of [
+      "Windows builds are not signed​yet",
+      "Windows builds are signed and notarized.",
+      "not signed &amp; not planned",
+      "signing is not planned, and that is a decision",
+    ]) expect(flatten(example)).not.toMatch(/not signed yet/);
   });
 
   it("is not on the roadmap in any tracked document", () => {

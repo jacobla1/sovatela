@@ -813,7 +813,7 @@ the chat list read as unstructured text instead of announcing "3 of 12". The
 cause was found and the layout changed in 1.6.1, and a test now holds the markup
 and the flex rule together — but **no screen-reader pass has been run since the
 change**, so treat it as unverified rather than fixed. NVDA, JAWS and Orca have
-never been tested. The [accessibility statement](https://sovatela.eu/accessibility) keeps the
+never been tested. The [accessibility statement](../ACCESSIBILITY.md) keeps the
 gap open.
 
 Known limitations and accepted risks: `docs/TECHNICAL-SPEC.md` § 7.
@@ -1533,7 +1533,7 @@ the engineering view is in [Technical specification §
   open. Settings, the Guide and the history sidebar are full-screen or inline
   rather than modal, and still move focus only as the browser would.
 - Smaller labelling gaps remain outside the chat view.
-- Full detail: [Accessibility statement](https://sovatela.eu/accessibility).
+- Full detail: [Accessibility statement](../ACCESSIBILITY.md).
 
 **Packaging**
 

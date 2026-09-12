@@ -342,7 +342,7 @@ Full index: [`docs/README.md`](docs/README.md).
   [FAQ](docs/FAQ.md) · [Troubleshooting](docs/TROUBLESHOOTING.md) ·
   [Uninstall & data deletion](docs/UNINSTALL.md) · [Support](docs/SUPPORT.md)
 - **Policies** — [Security](SECURITY.md) ·
-  [Accessibility](https://sovatela.eu/accessibility) · [Privacy](docs/PRIVACY.md) ·
+  [Accessibility](docs/ACCESSIBILITY.md) · [Privacy](docs/PRIVACY.md) ·
   [Terms](docs/TERMS.md) *(published 2026-09-01; written by the publisher, not
   reviewed by a lawyer — the sections that needed one were removed rather than
   published unreviewed, and TERMS.md records what was dropped and why)*
@@ -378,7 +378,7 @@ Full index: [`docs/README.md`](docs/README.md).
 Accessibility is deliberately not a roadmap item. Text scaling to 200%,
 keyboard shortcuts, focus management and landmark roles have shipped;
 screen-reader verification on each platform remains open and is **not
-scheduled** — the [accessibility statement](https://sovatela.eu/accessibility) says so and
+scheduled** — the [accessibility statement](docs/ACCESSIBILITY.md) says so and
 records what is unknown, rather than promising a date. This section used to
 list that testing as if a pass were coming, which the statement itself had
 already stopped implying.

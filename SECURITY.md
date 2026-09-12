@@ -465,7 +465,7 @@ than filed away:
   on saying one had not been. A page whose subject is candour cannot be the last
   place still making a withdrawn claim about who was exposed
 - **Accessibility defects**, stated rather than glossed —
-  [Accessibility statement](https://sovatela.eu/accessibility)
+  [Accessibility statement](docs/ACCESSIBILITY.md)
 - **Security and robustness reviews** (July 2026) and the mitigation plan that
   followed are held internally. They record findings against pre-release
   versions, including some not yet remediated; we'd rather share them on request

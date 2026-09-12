@@ -270,10 +270,16 @@ describe("a document read from a picture says so", () => {
     await waitFor(() => checkBadge(document.querySelector(".thread .att-ocr-missing")));
   });
 
+  // The badge names the pages when the warning names any, and says only "PDF
+  // partly read" when the reason is graphics. Those are different claims — a
+  // numbered page definitely was not read, graphics only might be hiding
+  // something — and until 1.8.9 the badge said the same thing for both, with
+  // the numbers reachable by hovering a mouse and no other way.
   it.each([
-    " Pages without readable digital text: 2, 4.",
-    "", // a scan beside digital text on the same page
-  ])("keeps mixed-PDF warnings through sending and reopening (%s)", async (pages) => {
+    [" Pages without readable digital text: 2, 4.", "PDF partly read — pages 2, 4"],
+    [" Pages without readable digital text: 3.", "PDF partly read — page 3"],
+    ["", "PDF partly read"], // a scan beside digital text on the same page
+  ])("keeps mixed-PDF warnings through sending and reopening (%s)", async (pages, label) => {
     const warning = "PDF partly read: only digital text was extracted. Images and scanned content were not read. " +
       "PDF forms and other graphics may also be omitted." + pages + " Do not treat this as the complete document.";
     extractedScan = `[${warning}]\n\n[Page 1]\nDIGITAL COVER PAGE`;
@@ -284,9 +290,14 @@ describe("a document read from a picture says so", () => {
     const check = () => {
       const badges = document.querySelectorAll(".att-pdf-partial");
       expect(badges.length).toBe(1);
-      expect(badges[0].textContent).toBe("PDF partly read");
+      expect(badges[0].textContent).toBe(label);
       expect(badges[0].getAttribute("title")).toBe(warning);
       expect(badges[0].getAttribute("aria-label")).toBe(warning);
+      // Reachable without a mouse: a focusable control that says whether it is
+      // open, rather than a `span` carrying a tooltip.
+      expect(badges[0].tagName).toBe("BUTTON");
+      expect(badges[0].getAttribute("aria-expanded")).toBe("false");
+      expect(document.querySelector(".att-partial-detail")).toBeNull();
       expect(screen.queryByText("OCR", { exact: true })).toBeNull();
     };
     await waitFor(check);
@@ -304,6 +315,38 @@ describe("a document read from a picture says so", () => {
     await fireEvent.click(screen.getByLabelText("Toggle chat history sidebar"));
     await fireEvent.click(await screen.findByTitle("Review this mixed PDF"));
     await waitFor(check);
+  });
+
+  // The explanation, on demand, without a pointing device. The reviewer of
+  // 1.8.8 put it plainly: the useful detail was in `title` and `aria-label` on
+  // a non-focusable span, so a sighted keyboard user had no way to reach it.
+  it("opens the full mixed-PDF explanation from the keyboard", async () => {
+    const warning = "PDF partly read: only digital text was extracted. Images and scanned content were not read. " +
+      "PDF forms and other graphics may also be omitted. Pages without readable digital text: 2. " +
+      "Do not treat this as the complete document.";
+    extractedScan = `[${warning}]\n\n[Page 1]\nDIGITAL COVER PAGE`;
+    render(Chat, { props: {} });
+    await fireEvent.drop(document.querySelector("main.chat"), withFiles([
+      new File(["x"], "mixed.pdf", { type: "application/pdf" }),
+    ]));
+    const badge = await waitFor(() => {
+      const b = document.querySelector(".att-pdf-partial");
+      expect(b).toBeTruthy();
+      return b;
+    });
+    // A button is in the tab order and takes Enter and Space for free, which is
+    // the whole reason this stopped being a span.
+    expect(badge.tagName).toBe("BUTTON");
+    await fireEvent.click(badge);
+    await waitFor(() => {
+      expect(badge.getAttribute("aria-expanded")).toBe("true");
+      expect(document.querySelector(".att-partial-detail").textContent).toBe(warning);
+    });
+    await fireEvent.click(badge);
+    await waitFor(() => {
+      expect(badge.getAttribute("aria-expanded")).toBe("false");
+      expect(document.querySelector(".att-partial-detail")).toBeNull();
+    });
   });
 
   it("recognises the partial-PDF prefix emitted by Rust", () => {

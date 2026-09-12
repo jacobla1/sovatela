@@ -2347,6 +2347,32 @@ button.mini.primary:disabled {
   letter-spacing: 0;
 }
 
+/* The partial-PDF badge is a button, not a mark: its explanation used to live
+   only in a `title`, so the page numbers reached a mouse and nobody else. An
+   external review of 1.8.8 found it — the same defect the OCR badge beside it
+   had in 1.8.5, fixed there and left here.
+
+   Inheriting rather than restyling: it has to sit in a row of badges and look
+   like one, and `button` brings its own font, colour and padding. No new
+   colour token, for the reason `.att-ocr-missing` gives above. */
+.att-pdf-partial {
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  background: none;
+  cursor: pointer;
+}
+
+/* The full sentence, once asked for. A block inside the chip's row, so it
+   wraps under the badges rather than stretching them. */
+.att-partial-detail {
+  flex: 1 0 100%;
+  font-size: var(--fs-xs);
+  color: var(--warn);
+  white-space: normal;
+  margin-top: 0.25em;
+}
+
 /* A chip with a picture in it is a row, not a line of text. */
 .att-chip {
   max-width: 260px;

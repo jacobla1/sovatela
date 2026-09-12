@@ -12,5 +12,12 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     include: ["tests/**/*.test.js"],
+    // The launcher test runs `verify-launcher.sh` in a subprocess and takes
+    // about six seconds, against a default of five. It passed alone and failed
+    // in a full run, which reads as flakiness and is not: it was permanently
+    // over budget and only ever passed on an unloaded machine. A suite that
+    // fails at random teaches people to re-run it rather than read it, so the
+    // budget is set where the slowest honest test actually sits.
+    testTimeout: 30_000,
   },
 });

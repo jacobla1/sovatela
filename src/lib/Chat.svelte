@@ -743,6 +743,34 @@
     return content.split("\n\n", 1)[0].replace(/^\[|\]$/g, "");
   }
 
+  // The pages the warning names, if it names any.
+  //
+  // A mixed PDF warns for two different reasons and they are not equally
+  // certain: a numbered page yielded no text and definitely was not read,
+  // while graphics elsewhere *may* be carrying content. An external review of
+  // 1.8.8 asked that a reader be able to tell those apart, since one calls for
+  // checking a specific page and the other for judgement.
+  function partialPdfPages(content) {
+    const named = partialPdfWarning(content).match(
+      /Pages without readable digital text: ([\d, ]+)\./,
+    );
+    return named ? named[1].split(",").map((p) => p.trim()).filter(Boolean) : [];
+  }
+
+  // What the badge says before anyone opens it. Until 1.8.9 it said only "PDF
+  // partly read" and the page numbers lived in a `title`, which reaches a
+  // mouse and nobody else — the same defect the OCR badge beside it had in
+  // 1.8.5, closed there and left open here.
+  function partialPdfLabel(content) {
+    const pages = partialPdfPages(content);
+    if (!pages.length) return "PDF partly read";
+    return `PDF partly read — ${pages.length > 1 ? "pages" : "page"} ${pages.join(", ")}`;
+  }
+
+  // Which warning is expanded. One at a time: this is a disclosure on a chip,
+  // not a panel, and leaving several open would push the composer around.
+  let openPartial = $state("");
+
   // Whether a document's text was recognised from a picture rather than read
   // out of the file.
   //
@@ -2135,7 +2163,7 @@
           {/if}
           {#if m.attachments && m.attachments.length}
             <div class="msg-atts">
-              {#each m.attachments as a}
+              {#each m.attachments as a, ai}
                 {#if a.kind === "image"}
                   <img class="thumb" src={a.dataUrl} alt={a.name} />
                 {:else if a.kind === "text"}
@@ -2146,10 +2174,18 @@
                          contract is worth re-reading months later knowing the
                          figures were recognised rather than read. -->
                     {#if partialPdfWarning(a.content)}
-                      <span class="att-ocr att-ocr-missing att-pdf-partial"
+                      {@const key = `msg-${mi}-${ai}`}
+                      <button
+                        type="button"
+                        class="att-ocr att-ocr-missing att-pdf-partial"
                         title={partialPdfWarning(a.content)}
                         aria-label={partialPdfWarning(a.content)}
-                        role="note">PDF partly read</span>
+                        aria-expanded={openPartial === key}
+                        onclick={() => (openPartial = openPartial === key ? "" : key)}
+                      >{partialPdfLabel(a.content)}</button>
+                      {#if openPartial === key}
+                        <span class="att-partial-detail">{partialPdfWarning(a.content)}</span>
+                      {/if}
                     {/if}
                     {#if wasRecognised(a.content)}<span
                         class="att-ocr"
@@ -2327,10 +2363,18 @@
                    difference is visible before sending. -->
               <span class="att-size">{extractedSize(a.content)}</span>
               {#if partialPdfWarning(a.content)}
-                <span class="att-ocr att-ocr-missing att-pdf-partial"
+                {@const key = `pending-${i}`}
+                <button
+                  type="button"
+                  class="att-ocr att-ocr-missing att-pdf-partial"
                   title={partialPdfWarning(a.content)}
                   aria-label={partialPdfWarning(a.content)}
-                  role="note">PDF partly read</span>
+                  aria-expanded={openPartial === key}
+                  onclick={() => (openPartial = openPartial === key ? "" : key)}
+                >{partialPdfLabel(a.content)}</button>
+                {#if openPartial === key}
+                  <span class="att-partial-detail">{partialPdfWarning(a.content)}</span>
+                {/if}
               {/if}
               {#if wasRecognised(a.content)}
                 <!-- Before sending, which is when it can still be checked.

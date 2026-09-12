@@ -42,6 +42,12 @@ export function mixedPdf(mode = 'cover-scan') {
     'text-only': ['text', 'text'],
     'scan-only': ['scan'],
     'many-pages': ['text', ...Array(21).fill('scan')],
+    // A scan painted inside a Type 3 glyph program. The page's own operators
+    // are `Tj` and nothing else, so scanning them finds no graphics: through
+    // 1.8.8 this document reported itself as completely read. Found by an
+    // external review, which built exactly this and asked why it was silent.
+    'type3': ['text', 'type3'],
+    'same-page-type3': ['texttype3'],
   };
   const kinds = layouts[mode];
   if (!kinds) throw new Error(`unknown fixture ${mode}`);
@@ -57,14 +63,22 @@ export function mixedPdf(mode = 'cover-scan') {
   const draw = 'q 612 0 0 640 0 0 cm /Im0 Do Q\n';
   const inner = add(stream(Buffer.from(draw), `/Type /XObject /Subtype /Form /BBox [0 0 612 792] /Resources << /XObject << /Im0 ${img} 0 R >> >>`));
   const outer = add(stream(Buffer.from('/Inner Do\n'), `/Type /XObject /Subtype /Form /BBox [0 0 612 792] /Resources << /XObject << /Inner ${inner} 0 R >> >>`));
-  const resources = `<< /Font << /F1 ${font} 0 R >> /XObject << /Im0 ${img} 0 R /Outer ${outer} 0 R >> >>`;
+  // A Type 3 glyph is a content stream, so showing one character of this font
+  // paints the whole scan. `FontMatrix` is the identity so glyph space is text
+  // space and the `cm` below lands the image on the page at a sensible size.
+  const charproc = add(stream(Buffer.from(`612 0 d0\n${draw}`)));
+  const t3 = add(`<< /Type /Font /Subtype /Type3 /FontBBox [0 0 612 792] /FontMatrix [1 0 0 1 0 0] /CharProcs << /scanglyph ${charproc} 0 R >> /Encoding << /Type /Encoding /Differences [65 /scanglyph] >> /FirstChar 65 /LastChar 65 /Widths [612] /Resources << /XObject << /Im0 ${img} 0 R >> >> >>`);
+  const resources = `<< /Font << /F1 ${font} 0 R /T3 ${t3} 0 R >> /XObject << /Im0 ${img} 0 R /Outer ${outer} 0 R >> >>`;
   const kids = [];
   for (const [i, kind] of kinds.entries()) {
-    const digital = ['text', 'both', 'textform', 'textinline'].includes(kind);
+    const digital = ['text', 'both', 'textform', 'textinline', 'texttype3'].includes(kind);
     let bytes = Buffer.from(digital ? `BT /F1 24 Tf 72 700 Td (DIGITAL PAGE ${i+1}) Tj ET\n` : '');
     if (['scan','both'].includes(kind)) bytes = Buffer.concat([bytes, Buffer.from(draw)]);
     if (['form','textform'].includes(kind)) bytes = Buffer.concat([bytes, Buffer.from('/Outer Do\n')]);
     if (['inline','textinline'].includes(kind)) bytes = Buffer.concat([bytes, Buffer.from('q 50 0 0 50 0 0 cm BI /W 1 /H 1 /CS /G /BPC 8 ID \xff EI Q\n', 'latin1')]);
+    // Showing one character of the Type 3 font runs its glyph program, which
+    // draws the scan. Nothing in this page's operators says so.
+    if (['type3','texttype3'].includes(kind)) bytes = Buffer.concat([bytes, Buffer.from('BT /T3 1 Tf 0 100 Td (A) Tj ET\n')]);
     if (kind === 'bad') bytes = Buffer.from('BT /MissingFont 24 Tf (UNREADABLE) Tj ET\n');
     const contents = add(stream(bytes));
     // Resources deliberately inherited from the Pages node.
