@@ -1068,8 +1068,10 @@
         But its infrastructure runs on <strong>Microsoft Azure</strong> — a US
         company — so under the US <strong>CLOUD Act</strong> that data is not fully
         beyond US legal reach even when kept in EU regions. Fine for most everyday
-        use; if you specifically need no US jurisdiction, prefer Qwant Staan or a
-        local SearXNG above.
+        use; if you specifically need no US jurisdiction for the
+        <em>search connection</em>, prefer Qwant Staan or a local SearXNG above.
+        No search provider limits where the pages themselves are read from: a
+        result the model opens can be US-hosted whichever provider found it.
         <button class="link" onclick={() => open("https://docs.linkup.so/pages/security-and-privacy/faq")}>
           Read Linkup's security &amp; privacy notes →
         </button>

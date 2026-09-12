@@ -141,8 +141,9 @@ neither macOS nor Windows passes its own text-size setting through to one, so
 this is the control.
 
 **Nothing is sent to the developer.** There is no Sovatela account and no
-Sovatela server. Your messages go to the providers you configured and nowhere
-else.
+Sovatela server. Your messages go to the providers you configured. If you turn
+web search on, the model can also open public pages it finds, anywhere in the
+world, and the address it asks for can contain words from your conversation.
 
 ---
 

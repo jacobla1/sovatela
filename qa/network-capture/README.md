@@ -3,12 +3,21 @@
 `SECURITY.md` ends by saying the strongest check on this project needs no
 source at all:
 
-> **capture the app's network traffic** and confirm it reaches only the
-> providers you configured. That is the one claim on this page that matters
-> most, and it is verifiable from outside.
+> **capture the app's network traffic** and confirm it matches the table above
+> — which is more than the providers you configured […] What should *not*
+> appear is anything else: no telemetry, no analytics, no account, no
+> identifier — and, with the launch check off, nothing at all while the app
+> sits idle.
 
 This is that check. It was written after 1.5.1, when it became clear the claim
 had never actually been run — only reasoned about.
+
+The quotation above was itself wrong until 1.8.9: it said the capture should
+show *only the providers you configured*, which an external review of 1.8.8
+pointed out is false — the launch key check, the update and price files, the
+image delivery address and, with search on, any public page the model reads are
+all expected traffic. A harness whose stated pass condition is wrong will
+either fail on correct behaviour or teach the person running it to ignore it.
 
 ## Running it
 

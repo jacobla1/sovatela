@@ -39,6 +39,39 @@ fn has_graphics(doc: &lopdf::Document, id: lopdf::ObjectId) -> bool {
     }
 }
 
+/// Whether extraction produced anything a person could actually read.
+///
+/// `text.trim().is_empty()` was this test until 1.8.9, and it answered "read"
+/// for output no reader can use. The external `type3_font_nomapping.pdf`
+/// fixture extracts as two NUL bytes: not empty, and `trim` removes only
+/// whitespace, so a page that renders as visible glyphs was recorded as
+/// successfully read and never counted among the pages without text. An
+/// external review of 1.8.8 found it.
+///
+/// The defect is not NUL. A font with no usable `ToUnicode` map yields whatever
+/// the fallback encoding produces — control characters, U+FFFD where the
+/// decoder gave up, or Private Use codepoints that carry a glyph shape and no
+/// meaning outside the file that defined them. Naming NUL would close the
+/// fixture and leave the class open, which is the shape of defect this file
+/// already exists to fix once. So the question asked is whether any character
+/// stands for something.
+fn is_readable(text: &str) -> bool {
+    text.chars().any(is_meaningful)
+}
+
+/// A character that carries meaning to a reader. Whitespace is excluded because
+/// a page of spaces is not text; the rest are the ways extraction reports that
+/// it could not map a glyph to a character.
+fn is_meaningful(c: char) -> bool {
+    !c.is_whitespace()
+        && !c.is_control()
+        && c != char::REPLACEMENT_CHARACTER
+        && !matches!(
+            c as u32,
+            0xE000..=0xF8FF | 0xF_0000..=0xF_FFFD | 0x10_0000..=0x10_FFFD
+        )
+}
+
 pub fn extract(bytes: &[u8]) -> Result<String, String> {
     let mut doc =
         lopdf::Document::load_mem(bytes).map_err(|e| format!("could not parse this PDF: {e}"))?;
@@ -61,7 +94,7 @@ pub fn extract(bytes: &[u8]) -> Result<String, String> {
             let mut output = pdf_extract::PlainTextOutput::new(&mut text);
             pdf_extract::output_doc_page(&doc, &mut output, number)
                 .map_err(|_| "its digital text could not be extracted".to_string())?;
-            if text.trim().is_empty() {
+            if !is_readable(&text) {
                 Err("no digital text was found; scanned content was not read (the page may be blank)".to_string())
             } else {
                 Ok(text.trim().to_string())
@@ -150,6 +183,54 @@ mod tests {
                 .unwrap()
                 .starts_with(PARTIAL_PREAMBLE)
         );
+    }
+
+    /// The fixture that found this: `type3_font_nomapping.pdf` extracts as NUL
+    /// bytes. Kept as its own case so the specific regression is named.
+    #[test]
+    fn a_page_of_nul_bytes_is_not_readable_text() {
+        assert!(!is_readable("\u{0}\u{0}"));
+    }
+
+    /// The class the fixture is one member of. Each of these is a way the
+    /// extractor says "I could not map this glyph", and each was reported as a
+    /// successfully read page before 1.8.9.
+    #[test]
+    fn output_that_no_reader_can_use_is_not_readable_text() {
+        for unusable in [
+            "\u{0}",                  // NUL
+            "\u{1}\u{7}\u{1b}",       // other C0 controls
+            "\u{fffd}\u{fffd}",       // the decoder gave up
+            "\u{e000}\u{f8ff}",       // Private Use Area
+            "\u{f0000}",              // supplementary private use, plane 15
+            "\u{100000}",             // supplementary private use, plane 16
+            "   \t\n  ",              // whitespace only
+            "",                       // nothing at all
+            " \u{0}\u{fffd}\u{e000}", // and any mixture of them
+        ] {
+            assert!(
+                !is_readable(unusable),
+                "{unusable:?} should not count as readable text"
+            );
+        }
+    }
+
+    /// The other half: the predicate must not start discarding real pages.
+    /// A single usable character is enough, whatever surrounds it.
+    #[test]
+    fn one_real_character_is_enough_to_count_as_read() {
+        for usable in [
+            "A",
+            "12345",
+            "\u{0}A\u{0}",             // real text among the junk
+            "é",                       // non-ASCII
+            "日本語",                  // non-Latin
+            "\u{200b}A",               // zero-width space is whitespace, A is not
+            "€",                       // symbol
+            "\u{fffd}INVOICE\u{fffd}", // partly undecodable, still readable
+        ] {
+            assert!(is_readable(usable), "{usable:?} should count as readable");
+        }
     }
 
     #[test]
