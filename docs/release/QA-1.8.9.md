@@ -78,9 +78,57 @@ Neither reviewer inspected the private tree or reproduced the publisher step.
 
 ## Release verification
 
-Pending at the time of writing: three-platform CI, release artifact
-verification, checks against the shipped binary, and live-site comparison.
-Nothing above is a claim about a published 1.8.9 installer.
+Run after the tag, against what was published.
+
+- **CI** run `34723107875` at `3d39275`: success on windows-latest,
+  ubuntu-22.04 and macos-latest. An earlier run at `e205c9a` **failed on all
+  three** — this document quoted the guard mutations, and two of those
+  spellings are entity forms the guard now decodes, so the record asserted the
+  claim it forbids. That is the guard working, and it is recorded here rather
+  than quietly fixed.
+- **Release** run `34723770172` at `v1.8.9`: all seven jobs succeeded,
+  including `verify-macos-signature` and `verify-release-assets`. The macOS
+  build waited at the `release` environment gate until approved by hand.
+- `scripts/verify-release.sh v1.8.9`: **10 passed, 0 failed, 0 skipped** —
+  checksums over 7 files, the minisign signature, 6 build attestations, macOS
+  signed/notarized/stapled, the provenance record naming `v1.8.9` and public
+  commit `7fdb103740e7`, and the publisher re-run at `3d39275aa589`
+  reproducing the published tree exactly.
+
+Against the **shipped binary** from the published
+`Sovatela_1.8.9_universal.dmg`. One volume was mounted and
+`CFBundleShortVersionString` read **1.8.9** before anything ran. Exit codes
+were read from the helper directly, not through a pipe.
+
+- **The second reviewer's four indirect-paint counterexamples all warn**:
+  `type3-via-extgstate`, `type3-nested-text`, `scan-via-text-pattern`,
+  `scan-via-softmask`. Every one was silent in 1.8.8's successor commit.
+- **The four invisible-Unicode counterexamples are all accounted for**:
+  `unicode-zero-width`, `unicode-soft-hyphen`, `unicode-word-joiner`,
+  `unicode-variation-selector`.
+- **15 project mixed/control shapes and 3 page-accounting cases passed**,
+  exit 0.
+- The first reviewer's 36 fixtures: **32 byte-identical to their baseline, 4
+  changed**, and the 4 are the Type 3 cases. The AWS invoice, the IRS W-9 and
+  the plain-text control behave as before — the first two warn and keep their
+  text, the third does not warn.
+
+Published at 2026-09-13T04:26:30Z, after those checks and not before.
+
+- Site built from the published artifacts: **8 release asset links verified to
+  resolve**; release feed 12 entries, newest 1.8.9.
+- All **nine** live pages and files are byte-identical to the built ones —
+  `/`, `/privacy/`, `/security/`, `/terms/`, `/accessibility/`,
+  `/security-note-claude-glm/`, `version.json`, `SHA256SUMS.txt`,
+  `releases.atom`.
+- Live `version.json` reads **1.8.9**; all six installer links return **200**;
+  the `.dmg` fetched from the live link hashes to
+  `16a757875ea3ecbdc5c3f16e08dd3c1e2e21d3014e4da2e79428eb8f6013cbcb`, which is
+  what the site publishes for it.
+
+Not run in this round: anything on Windows or Linux beyond what CI and the
+release workflow do themselves. The OCR and counterexample checks were run on
+macOS only.
 
 ## Still owed before announcing
 
