@@ -383,10 +383,19 @@ jobs:
       #
       # At this point the record still says its release verification is
       # pending, because those checks run against the installers this workflow
-      # is producing. It is re-uploaded with `--clobber` once they are recorded,
-      # so the asset ends up carrying the completed evidence. Attaching the
-      # pending version first is deliberate: a release with no QA asset at all
-      # is indistinguishable from one whose evidence was never written.
+      # is producing. Attaching the pending version anyway is deliberate: a
+      # release with no QA asset at all is indistinguishable from one whose
+      # evidence was never written.
+      #
+      # **Replacing it has to happen while the release is still a draft.** A
+      # published release's assets are immutable — `gh release upload
+      # --clobber` answers `HTTP 422: Cannot delete asset from an immutable
+      # release` — so the replacement belongs between the verification and
+      # `gh release edit --draft=false`, not after it. 1.9.0 shipped with the
+      # pending copy attached because that was attempted in the wrong order,
+      # and a reader of that asset alone would think no verification was done.
+      #
+      # The order is: build, verify, replace this record, publish.
       - name: Attach the QA record for this version
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

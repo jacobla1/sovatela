@@ -25,8 +25,10 @@ two share one implementation so they cannot drift apart.
   security history is public.
 - **This record is attached to the release as an asset**, asked for by the
   reviewer of 1.8.9: evidence on a moving branch is evidence the branch can
-  move away from. It is attached at tag time with its verification section
-  pending and re-uploaded once the checks below are recorded.
+  move away from. **For 1.9.0 the attached copy is the one written at tag time,
+  and its release-verification section still reads "pending".** The completed
+  version is this file, in the repository and the public mirror. See the note
+  at the end of the verification section for why, and what changes next time.
 - **The remediation register names a current commit again**, and its `F19` row
   no longer claims that no public release has run the provenance path. Six
   have, and two external reviewers verified the attestations bind to the tag.
@@ -98,9 +100,75 @@ system frameworks. The obstacle is work and new attack surface, not licensing.
 
 ## Release verification
 
-Pending at the time of writing: three-platform CI, release artifact
-verification, checks against the shipped binary, and live-site comparison.
-Nothing above is a claim about a published 1.9.0 installer.
+Run after the tag, against what was published.
+
+- **CI** run `34744392790` at `3ff6be2`: success on windows-latest,
+  ubuntu-22.04 and macos-latest. Re-run at that commit rather than relied on
+  from an earlier green run four commits behind.
+- **Release** run `34744969296` at `v1.9.0`: all seven jobs succeeded,
+  including `verify-macos-signature` and `verify-release-assets`. The macOS
+  build waited at the `release` environment gate until approved by hand. The
+  QA-record attachment step ran for the first time and succeeded; the release
+  carries **11 assets**.
+- `scripts/verify-release.sh v1.9.0`: **10 passed, 0 failed, 0 skipped** —
+  checksums over 7 files, the minisign signature, 6 build attestations, macOS
+  signed/notarized/stapled, the provenance record naming `v1.9.0` and public
+  commit `f9528eb3ae94`, and the publisher re-run at `3ff6be2514dc`
+  reproducing the published tree exactly.
+
+Against the **shipped binary** from the published
+`Sovatela_1.9.0_universal.dmg`. One volume was mounted and
+`CFBundleShortVersionString` read **1.9.0** before anything ran; the previous
+release's image was deleted first so a stale mount could not answer.
+
+- **The change this release exists for works in the installer.**
+  `c03-29-cover-first` returns `[Page 2, read from a picture]` followed by the
+  scanned page's text, under the recogniser's caveat. That page produced no
+  text at all in 1.8.9.
+- **15 project mixed/control shapes and 3 page-accounting cases passed.**
+- **The second reviewer's eight counterexamples are all still accounted for**
+  — four indirect-paint routes and four invisible-Unicode pages.
+- The first reviewer's 36 fixtures: **20 unchanged, 16 changed**, matching the
+  local result exactly. The AWS invoice and the IRS W-9 still extract and warn;
+  the plain-text control still does not warn.
+
+Published at 2026-09-13T07:42:12Z, after those checks and not before.
+
+- Site built from the published artifacts: **8 release asset links verified to
+  resolve**; release feed 13 entries, newest 1.9.0.
+- All **nine** live pages and files are byte-identical to the built ones.
+- Live `version.json` reads **1.9.0**; all six installer links return **200**;
+  the `.dmg` fetched from the live link hashes to
+  `be5ed24a3edba63b9bb4a05b94ba4ba8b113e6a772b4f1cbe0af828230034455`, which is
+  what the site publishes for it.
+
+**Two gaps in the new asset, recorded rather than glossed.**
+
+*The attached copy is stale, and that is a mistake in how this release was
+run.* The plan was to attach the record at tag time and replace it once the
+checks were recorded. Replacing it failed:
+
+```
+HTTP 422: Cannot delete asset from an immutable release
+```
+
+A published release's assets are frozen. The replacement had to happen while
+the release was still a **draft** — that is, after the verification above and
+before `--draft=false`. It was attempted after publishing instead. So the
+asset on `v1.9.0` carries the pending text, while the completed record is this
+file in the repository and the mirror. A reader who downloads only the asset
+would conclude the verification had not been done, which is worse than the
+problem the asset was added to solve. **The order changes for the next
+release: verify, replace the record, then publish.**
+
+*It is also not covered by the signed `SHA256SUMS.txt`*, which lists the six
+installers and `PROVENANCE.txt`. `TERMS-1.9.0.md` has the same property. The
+record is bound to the release by location and not by signature, which is
+weaker than the reason it was attached. Adding both archives to the signed
+list would close that.
+
+Not run in this round: anything on Windows or Linux beyond what CI and the
+release workflow do themselves. Every check above was run on macOS.
 
 ## Still owed before announcing
 
