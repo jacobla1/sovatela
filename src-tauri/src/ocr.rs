@@ -1227,9 +1227,121 @@ fn refusal_message(outcomes: &[(u32, Result<String, String>)], total: usize) -> 
 }
 
 /// Read the text in a scanned PDF.
-pub fn scanned_pdf_text(bytes: &[u8]) -> Result<String, String> {
-    let doc = lopdf::Document::load_mem(bytes)
+/// Copy inherited `/Resources` down onto the pages that lack their own.
+///
+/// lopdf's `get_page_images` reads `/Resources` from the page dictionary and
+/// nowhere else. The PDF specification makes it an *inheritable* attribute, so
+/// a producer may put one dictionary on the `Pages` node and none on any page —
+/// and plenty do, including this repository's own fixtures, which is why the
+/// scan-only fixture had to write resources onto the page to be readable at
+/// all. To `get_page_images`, such a page looks like a page with no images.
+///
+/// Reimplementing image discovery to fix that would mean rebuilding `PdfImage`
+/// — filters, colour space, the decode parameters — and getting one of them
+/// wrong silently. Copying the inherited entry down is the smaller change and
+/// leaves every consumer unmodified. It mutates only this in-memory copy, which
+/// is loaded per call and never written back.
+fn inherit_resources(doc: &mut lopdf::Document) {
+    let mut copy_down: Vec<(lopdf::ObjectId, lopdf::Object)> = Vec::new();
+    for (_, id) in doc.get_pages() {
+        match doc.get_dictionary(id) {
+            Ok(page) if page.has(b"Resources") => continue,
+            Err(_) => continue,
+            Ok(_) => {}
+        }
+        let mut node = id;
+        let mut seen = std::collections::HashSet::new();
+        let inherited = loop {
+            if !seen.insert(node) {
+                break None; // a Parent cycle
+            }
+            let Ok(dict) = doc.get_dictionary(node) else {
+                break None;
+            };
+            if let Ok(resources) = dict.get(b"Resources") {
+                break Some(resources.clone());
+            }
+            match dict.get(b"Parent").and_then(|o| o.as_reference()) {
+                Ok(parent) => node = parent,
+                Err(_) => break None,
+            }
+        };
+        if let Some(resources) = inherited {
+            copy_down.push((id, resources));
+        }
+    }
+    for (id, resources) in copy_down {
+        if let Ok(page) = doc.get_object_mut(id).and_then(|o| o.as_dict_mut()) {
+            page.set("Resources", resources);
+        }
+    }
+}
+
+/// Read one page's picture, or say why it could not be read.
+///
+/// Extracted from the loop below so the mixed-PDF path can reach exactly the
+/// same behaviour for a subset of pages. Every failure here is a value, never
+/// a `?` out of a caller's loop: that distinction is the 1.8.5 defect, where a
+/// recogniser failure propagated and took every page already read with it.
+fn read_one(doc: &lopdf::Document, engine: &Engine, id: lopdf::ObjectId) -> Result<String, String> {
+    let images = doc
+        .get_page_images(id)
+        .map_err(|e| format!("its contents could not be listed ({e})"))?;
+    // A page with no image at all is not a failure — a scanned document can
+    // have a blank leaf — but it is still accounted for.
+    let Some(image) = page_image(&images)? else {
+        return Err("there is no picture on it".to_string());
+    };
+    let page = decode(doc, image)?;
+    match engine.read(&page) {
+        Ok(text) if text.trim().is_empty() => Err("no text could be made out on it".to_string()),
+        Ok(text) => Ok(text.trim().to_string()),
+        Err(why) => Err(why),
+    }
+}
+
+/// Each page that was attempted, and what came of it.
+type PageOutcomes = Vec<(u32, Result<String, String>)>;
+
+/// Read named pages of a PDF, for a document whose other pages hold digital
+/// text.
+///
+/// The whole-document path below exists for a PDF that is a picture from end
+/// to end. This one serves the mixed case: a typed cover sheet in front of
+/// scanned pages used to mean the scans were reported as unread and left at
+/// that, because OCR only ran when digital extraction failed for *everything*.
+///
+/// Returns `Err` only when nothing could be attempted at all — an unopenable
+/// document, or no recogniser on this platform, which is every Linux build.
+/// A caller that gets `Err` should carry on with the digital text it already
+/// has rather than lose the document.
+pub fn read_named_pages(bytes: &[u8], wanted: &[u32]) -> Result<PageOutcomes, String> {
+    let mut doc = lopdf::Document::load_mem(bytes)
         .map_err(|e| format!("this PDF could not be opened ({e})"))?;
+    // Inherited resources, normalised before anything looks for images.
+    inherit_resources(&mut doc);
+    let engine = Engine::system()?;
+    let mut outcomes = Vec::new();
+    for (number, id) in doc.get_pages() {
+        if !wanted.contains(&number) {
+            continue;
+        }
+        // The same budget as a whole scan, for the same reason: OCR is seconds
+        // of CPU per page, and a mixed document can hold as many scanned pages
+        // as a scanned one.
+        if outcomes.len() >= MAX_OCR_PAGES {
+            break;
+        }
+        outcomes.push((number, read_one(&doc, &engine, id)));
+    }
+    Ok(outcomes)
+}
+
+pub fn scanned_pdf_text(bytes: &[u8]) -> Result<String, String> {
+    let mut doc = lopdf::Document::load_mem(bytes)
+        .map_err(|e| format!("this PDF could not be opened ({e})"))?;
+    // Inherited resources, normalised before anything looks for images.
+    inherit_resources(&mut doc);
     // A recogniser that will not start says why. It used to collapse into the
     // same "this platform has no recogniser" as Linux, so a Windows machine
     // missing a language pack and one whose Runtime failed to start were told
@@ -1252,57 +1364,21 @@ pub fn scanned_pdf_text(bytes: &[u8]) -> Result<String, String> {
     // read" path, and passed against the defect it was written to catch.
     let mut outcomes: Vec<(u32, Result<String, String>)> = Vec::new();
 
+    // Every failure records an outcome and carries on. The recogniser's own
+    // error used to be `engine.read(&page)?`, which propagated out of the whole
+    // function and took every page already read with it — including, because
+    // `reading_order` is called from inside `read`, the ordinary case of one
+    // two-column page in an otherwise readable report. Twenty good pages were
+    // discarded because the twenty-first was laid out differently.
+    //
+    // That is the same shape as the defect this file was rewritten to fix: a
+    // failure recorded in one place and dropped in another. The release notes
+    // for 1.8.5 said the document is not refused outright when one page fails,
+    // which described `render_pages` and not the line above it. An external
+    // review found it after that release shipped. `read_one` returns a value
+    // for every outcome so that the shape cannot come back.
     for (number, id) in pages.into_iter().take(MAX_OCR_PAGES) {
-        let images = match doc.get_page_images(id) {
-            Ok(i) => i,
-            Err(e) => {
-                outcomes.push((
-                    number,
-                    Err(format!("its contents could not be listed ({e})")),
-                ));
-                continue;
-            }
-        };
-        let image = match page_image(&images) {
-            Ok(Some(i)) => i,
-            // A page with no image at all is not a failure — a scanned
-            // document can have a blank leaf — but it is still accounted for.
-            Ok(None) => {
-                outcomes.push((number, Err("there is no picture on it".to_string())));
-                continue;
-            }
-            Err(why) => {
-                outcomes.push((number, Err(why)));
-                continue;
-            }
-        };
-        let page = match decode(&doc, image) {
-            Ok(p) => p,
-            Err(why) => {
-                outcomes.push((number, Err(why)));
-                continue;
-            }
-        };
-        // Every other failure in this loop records an outcome and carries on.
-        // This one used to be `engine.read(&page)?`, which propagated out of the
-        // whole function and took every page already read with it — including,
-        // because `reading_order` is called from inside `read`, the ordinary
-        // case of one two-column page in an otherwise readable report. Twenty
-        // good pages were discarded because the twenty-first was laid out
-        // differently.
-        //
-        // That is the same shape as the defect this file was rewritten to fix:
-        // a failure recorded in one place and dropped in another. The release
-        // notes for 1.8.5 said the document is not refused outright when one
-        // page fails, which described `render_pages` and not the line above it.
-        // An external review found it after that release shipped.
-        match engine.read(&page) {
-            Ok(text) if text.trim().is_empty() => {
-                outcomes.push((number, Err("no text could be made out on it".to_string())));
-            }
-            Ok(text) => outcomes.push((number, Ok(text.trim().to_string()))),
-            Err(why) => outcomes.push((number, Err(why))),
-        }
+        outcomes.push((number, read_one(&doc, &engine, id)));
     }
 
     if !outcomes.iter().any(|(_, r)| r.is_ok()) {

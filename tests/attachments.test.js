@@ -279,6 +279,16 @@ describe("a document read from a picture says so", () => {
     [" Pages without readable digital text: 2, 4.", "PDF partly read — pages 2, 4"],
     [" Pages without readable digital text: 3.", "PDF partly read — page 3"],
     ["", "PDF partly read"], // a scan beside digital text on the same page
+    // A page that *was* read, from its picture. Nothing is missing, so the
+    // list above is empty — but a figure recognised from a scan is exactly
+    // what a reader should check against the original, and the badge is where
+    // they would look. Saying only "PDF partly read" would hide it.
+    [" Pages read from a picture: 2.", "PDF partly read — page 2 from a picture"],
+    [" Pages read from a picture: 2, 3.", "PDF partly read — pages 2, 3 from a picture"],
+    // Both, and the missing page wins the label: it is the more urgent of the
+    // two, and the full warning behind the badge carries both lists.
+    [" Pages read from a picture: 2. Pages without readable digital text: 5.",
+     "PDF partly read — page 5"],
   ])("keeps mixed-PDF warnings through sending and reopening (%s)", async (pages, label) => {
     const warning = "PDF partly read: only digital text was extracted. Images and scanned content were not read. " +
       "PDF forms and other graphics may also be omitted." + pages + " Do not treat this as the complete document.";

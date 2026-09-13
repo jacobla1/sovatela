@@ -6,6 +6,14 @@
 
 pub const PARTIAL_PREAMBLE: &str = "[PDF partly read: only digital text was extracted. Images and scanned content were not read. PDF forms and other graphics may also be omitted.";
 
+/// The same warning, for a document where pages without digital text were read
+/// from the pictures on them instead.
+///
+/// It has to say something different, because the sentence above becomes false
+/// the moment OCR runs: scanned content *was* read, and the reader needs the
+/// recogniser's caveat rather than an assurance that nothing was attempted.
+pub const PARTIAL_PREAMBLE_OCR: &str = "[PDF partly read: digital text was extracted, and pages that had none were read from the pictures on them by this device. Recognised text can contain mistakes, and words, figures or whole lines can be missing from it without anything marking where. Other images and graphics were not read.";
+
 /// Whether a decoded content stream paints anything. `Do` includes both images
 /// and Form XObjects, so nested forms and inherited resources need no special
 /// traversal: a stream that draws through a form still issues `Do` itself.
@@ -209,10 +217,58 @@ pub fn extract(bytes: &[u8]) -> Result<String, String> {
         .unwrap_or_else(|_| Err("its digital text could not be extracted".to_string()));
         pages.push((number, text));
     }
-    render(&pages, graphics)
+
+    // A mixed document: some pages carry digital text and some carry none.
+    //
+    // Until now those pages were named as unread and left there, because OCR
+    // ran only when digital extraction failed for the *whole* document. One
+    // typed cover sheet in front of a scanned contract was therefore enough to
+    // stop the scan ever being read — the defect that produced the warning
+    // this module exists for, one layer down: the warning said what had been
+    // missed instead of going and getting it.
+    //
+    // Only pages with no digital text are attempted. A page that already gave
+    // text is not re-read from its own picture: the digital text is the better
+    // copy, and merging the two would mean deciding where on the page each one
+    // belongs, which needs a renderer this deliberately does not have.
+    let unread: Vec<u32> = pages
+        .iter()
+        .filter(|(_, text)| text.is_err())
+        .map(|(number, _)| *number)
+        .collect();
+    let mut recognised: Vec<u32> = Vec::new();
+    if !unread.is_empty() && pages.iter().any(|(_, text)| text.is_ok()) {
+        // An `Err` here is no recogniser at all — every Linux build, or a
+        // Windows one missing its language pack. The digital text still stands,
+        // so the document is returned as before rather than lost.
+        if let Ok(read) = crate::ocr::read_named_pages(bytes, &unread) {
+            for (number, outcome) in read {
+                let Some(slot) = pages.iter_mut().find(|(n, _)| *n == number) else {
+                    continue;
+                };
+                match outcome {
+                    Ok(text) => {
+                        slot.1 = Ok(text);
+                        recognised.push(number);
+                    }
+                    // The recogniser's reason replaces the extractor's, the
+                    // same way it does for a whole scanned document: "it uses
+                    // fax compression" says what to do next, where "no digital
+                    // text was found" only says something is wrong.
+                    Err(why) => slot.1 = Err(why),
+                }
+            }
+        }
+    }
+
+    render(&pages, graphics, &recognised)
 }
 
-fn render(pages: &[(u32, Result<String, String>)], graphics: bool) -> Result<String, String> {
+fn render(
+    pages: &[(u32, Result<String, String>)],
+    graphics: bool,
+    recognised: &[u32],
+) -> Result<String, String> {
     if !pages.iter().any(|(_, text)| text.is_ok()) {
         // Only a document with no readable digital pages enters the existing
         // OCR path. A mixed document returns its digital text plus a warning.
@@ -223,10 +279,30 @@ fn render(pages: &[(u32, Result<String, String>)], graphics: bool) -> Result<Str
         .filter(|(_, text)| text.is_err())
         .map(|(number, _)| number.to_string())
         .collect();
-    let partial = graphics || !missing.is_empty();
+    // A recognised page is still a reason to warn even when nothing is missing
+    // and no graphics were seen: the text on it was guessed at from a picture,
+    // which is exactly the thing a reader has to know before trusting a figure.
+    let partial = graphics || !missing.is_empty() || !recognised.is_empty();
     let mut out = String::new();
     if partial {
-        out.push_str(PARTIAL_PREAMBLE);
+        out.push_str(if recognised.is_empty() {
+            PARTIAL_PREAMBLE
+        } else {
+            PARTIAL_PREAMBLE_OCR
+        });
+        if !recognised.is_empty() {
+            // Named, so a reader can tell which pages are the recogniser's
+            // work and check those against the original first.
+            out.push_str(" Pages read from a picture: ");
+            out.push_str(
+                &recognised
+                    .iter()
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+            out.push('.');
+        }
         if !missing.is_empty() {
             // Before the body so the warning survives document truncation and
             // can be shown in the attachment's tooltip and accessible name.
@@ -243,7 +319,11 @@ fn render(pages: &[(u32, Result<String, String>)], graphics: bool) -> Result<Str
         match text {
             Ok(text) => {
                 if partial {
-                    out.push_str(&format!("[Page {number}]\n"));
+                    if recognised.contains(number) {
+                        out.push_str(&format!("[Page {number}, read from a picture]\n"));
+                    } else {
+                        out.push_str(&format!("[Page {number}]\n"));
+                    }
                 }
                 out.push_str(text);
             }
@@ -383,6 +463,7 @@ mod tests {
                 (4, Ok("END".into())),
             ],
             true,
+            &[],
         )
         .unwrap();
         assert!(out.starts_with(PARTIAL_PREAMBLE));
@@ -393,18 +474,20 @@ mod tests {
 
     #[test]
     fn a_digital_heading_does_not_hide_graphics_on_the_same_page() {
-        let out = render(&[(1, Ok("HEADING".into()))], true).unwrap();
+        let out = render(&[(1, Ok("HEADING".into()))], true, &[]).unwrap();
         assert!(out.starts_with(PARTIAL_PREAMBLE));
         assert!(!out.contains("Pages without"));
     }
 
     #[test]
     fn missing_pages_warn_even_when_no_graphics_were_detected() {
-        assert!(
-            render(&[(1, Ok("TEXT".into())), (2, Err("blank".into()))], false)
-                .unwrap()
-                .starts_with(PARTIAL_PREAMBLE)
-        );
+        assert!(render(
+            &[(1, Ok("TEXT".into())), (2, Err("blank".into()))],
+            false,
+            &[]
+        )
+        .unwrap()
+        .starts_with(PARTIAL_PREAMBLE));
     }
 
     /// The fixture that found this: `type3_font_nomapping.pdf` extracts as NUL
@@ -462,13 +545,76 @@ mod tests {
         }
     }
 
+    /// A page read from its picture says so, in the warning and beside the
+    /// text. The reader has to be able to tell which figures were recognised.
+    #[test]
+    fn a_page_read_from_its_picture_is_named_as_such() {
+        let out = render(
+            &[(1, Ok("COVER".into())), (2, Ok("INVOICE 12345".into()))],
+            false,
+            &[2],
+        )
+        .unwrap();
+        assert!(out.starts_with(PARTIAL_PREAMBLE_OCR), "{out}");
+        assert!(out.contains("Pages read from a picture: 2."), "{out}");
+        assert!(
+            !out.contains("Pages without readable digital text"),
+            "{out}"
+        );
+        assert!(out.contains("[Page 1]\nCOVER"), "{out}");
+        assert!(
+            out.contains("[Page 2, read from a picture]\nINVOICE 12345"),
+            "{out}"
+        );
+    }
+
+    /// Recognising one page does not excuse silence about another that is
+    /// still unread. Both lists appear, and they mean different things.
+    #[test]
+    fn a_recognised_page_and_an_unread_one_are_both_accounted_for() {
+        let out = render(
+            &[
+                (1, Ok("COVER".into())),
+                (2, Ok("READ FROM PICTURE".into())),
+                (3, Err("it uses fax compression".into())),
+            ],
+            true,
+            &[2],
+        )
+        .unwrap();
+        assert!(out.starts_with(PARTIAL_PREAMBLE_OCR), "{out}");
+        assert!(out.contains("Pages read from a picture: 2."), "{out}");
+        assert!(
+            out.contains("Pages without readable digital text: 3."),
+            "{out}"
+        );
+        assert!(
+            out.contains("[Page 3] could not be read: it uses fax compression."),
+            "{out}"
+        );
+    }
+
+    /// With nothing recognised the older warning stands, because it is true
+    /// again: nothing was read from a picture.
+    #[test]
+    fn the_original_warning_is_used_when_no_page_was_recognised() {
+        let out = render(
+            &[(1, Ok("COVER".into())), (2, Err("scan".into()))],
+            false,
+            &[],
+        )
+        .unwrap();
+        assert!(out.starts_with(PARTIAL_PREAMBLE), "{out}");
+        assert!(!out.contains("read from a picture"), "{out}");
+    }
+
     #[test]
     fn text_only_documents_do_not_warn_and_scans_still_fall_through_to_ocr() {
         assert_eq!(
-            render(&[(1, Ok("A".into())), (2, Ok("B".into()))], false).unwrap(),
+            render(&[(1, Ok("A".into())), (2, Ok("B".into()))], false, &[]).unwrap(),
             "A\n\nB"
         );
-        assert!(render(&[(1, Err("scan".into()))], true).is_err());
-        assert!(render(&[], false).is_err());
+        assert!(render(&[(1, Err("scan".into()))], true, &[]).is_err());
+        assert!(render(&[], false, &[]).is_err());
     }
 }

@@ -477,6 +477,18 @@ Every statement above is a claim about code, and none of it should be taken on
 trust. Sovatela is MIT-licensed and the source is published at
 <https://github.com/jacobla1/sovatela>, so you can check rather than believe.
 
+**External reviews are conducted against the published tag and the shipped
+installers.** The private tree is out of scope unless it is opened deliberately,
+for a named purpose, and recorded — which happened once, during the third round
+of the 1.8.8 reviews, and the reviewer disclosed it rather than leaving it
+implicit. The access has since been withdrawn. The reason is not secrecy: a
+review that can read the private tree cannot also demonstrate what a stranger is
+able to check, and that demonstration is most of what a review of this project
+is for. The one check that genuinely needs the private tree — re-running the
+publisher and diffing the result — is therefore publisher testimony, and
+`scripts/verify-release.sh` reports it as skipped rather than passed when it
+cannot be made.
+
 A few maintainer-facing documents are kept out of that repository — an internal
 compliance checklist, publisher working notes, unpublished marketing copy, and
 a UX specification. None of them are code, and nothing in this page depends on

@@ -761,10 +761,28 @@
   // partly read" and the page numbers lived in a `title`, which reaches a
   // mouse and nobody else — the same defect the OCR badge beside it had in
   // 1.8.5, closed there and left open here.
+  // Pages whose text was recognised from a picture rather than read out of the
+  // file. Distinct from the list above and differently urgent: an unread page
+  // is missing, a recognised one is present and may be wrong.
+  function recognisedPdfPages(content) {
+    const named = partialPdfWarning(content).match(
+      /Pages read from a picture: ([\d, ]+)\./,
+    );
+    return named ? named[1].split(",").map((p) => p.trim()).filter(Boolean) : [];
+  }
   function partialPdfLabel(content) {
     const pages = partialPdfPages(content);
-    if (!pages.length) return "PDF partly read";
-    return `PDF partly read — ${pages.length > 1 ? "pages" : "page"} ${pages.join(", ")}`;
+    if (pages.length) {
+      return `PDF partly read — ${pages.length > 1 ? "pages" : "page"} ${pages.join(", ")}`;
+    }
+    // Nothing missing, but something was recognised: say which, because a
+    // figure read off a picture is the thing worth checking against the
+    // original and the badge is where someone would look for it.
+    const read = recognisedPdfPages(content);
+    if (read.length) {
+      return `PDF partly read — ${read.length > 1 ? "pages" : "page"} ${read.join(", ")} from a picture`;
+    }
+    return "PDF partly read";
   }
 
   // Which warning is expanded. One at a time: this is a disclosure on a chip,

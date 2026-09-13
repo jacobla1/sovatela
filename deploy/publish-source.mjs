@@ -152,7 +152,9 @@ const PUBLIC = [
   "docs/release/QA-1.8.7.md",
   "docs/release/QA-1.8.8.md",
   "docs/release/QA-1.8.9.md",
+  "docs/release/QA-1.9.0.md",
   "docs/release/REVIEW-1.8.5.md",
+  "docs/release/REVIEW-1.8.8.md",
 ];
 
 const isPublic = (p) =>
@@ -252,14 +254,32 @@ const linkPattern = new RegExp(
   "g",
 );
 
-// A withheld document is not necessarily an unpublished one. The accessibility
-// statement is rendered to the public site from this source, so a link to it
-// should point at the page a reader can actually open — unwrapping it to plain
-// text would hide something that exists. Only genuinely unpublished documents
-// lose their anchor.
-const PUBLISHED_ELSEWHERE = {
-  "ACCESSIBILITY.md": "https://sovatela.eu/accessibility",
-};
+// A withheld document is not necessarily an unpublished one: one may be
+// rendered to the public site from a source that stays behind, and a link to it
+// should point at the page a reader can actually open rather than being
+// unwrapped to plain text, which would hide something that exists. Only
+// genuinely unpublished documents lose their anchor.
+//
+// Empty since 1.9.0. Its only entry was the accessibility statement, which is
+// now published as source, so the rule could no longer fire — `linkPattern` is
+// built from the withheld names, and a published file is not one of them. The
+// mechanism stays because the case it exists for can recur; what does not stay
+// is an entry that cannot match, which is the same defect this script refuses
+// for `PUBLIC` a few lines above.
+const PUBLISHED_ELSEWHERE = {};
+
+const staleRepoints = Object.keys(PUBLISHED_ELSEWHERE).filter(
+  (name) => !withheldNames.includes(name),
+);
+if (staleRepoints.length) {
+  console.error(
+    "Refusing to publish: these PUBLISHED_ELSEWHERE entries name documents that\n" +
+      "are not withheld, so they can never match a link and are silently dead.\n",
+  );
+  for (const name of staleRepoints) console.error(`  ${name}`);
+  console.error("\nRemove each, or withhold the document it names.");
+  process.exit(1);
+}
 
 let rewritten = 0;
 let repointed = 0;

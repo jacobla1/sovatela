@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.9.0 — 2026-09-13
+
+- Read the scanned pages of a mixed PDF. A typed cover sheet in front of a
+  scan no longer stops the scan being read: pages with no digital text are
+  now read from their own pictures, named as such in the warning, in the body
+  and on the attachment badge. Recognised text carries the recogniser's
+  caveat, because it can be wrong in ways the file's own text cannot.
+- Copy inherited `/Resources` onto pages that lack their own before looking
+  for images, so a page whose resources live on the `Pages` node is no longer
+  invisible to image discovery.
+- This is not complete mixed-PDF extraction. Content painted through a
+  pattern, a soft mask or a glyph program is not an extractable image and is
+  still not read, and fax-compressed scans still cannot be decoded — both now
+  say which, instead of reporting a possibly blank page.
+
 ## 1.8.9 — 2026-09-13
 
 - Detect scanned content reached indirectly: Type 3 glyph programs, fonts

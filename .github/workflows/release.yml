@@ -374,6 +374,38 @@ jobs:
           gh release upload "$TAG" "$out" --repo "$GITHUB_REPOSITORY" --clobber
           echo "Archived $out onto $TAG."
 
+      # The QA record, bound to the release rather than left on a moving branch.
+      #
+      # Asked for by an external reviewer of 1.8.9: evidence about a release
+      # that lives only on `main` is evidence the branch can move away from,
+      # and a reader holding the installers has no fixed copy of what was
+      # checked. Attaching it makes the record part of the thing it describes.
+      #
+      # At this point the record still says its release verification is
+      # pending, because those checks run against the installers this workflow
+      # is producing. It is re-uploaded with `--clobber` once they are recorded,
+      # so the asset ends up carrying the completed evidence. Attaching the
+      # pending version first is deliberate: a release with no QA asset at all
+      # is indistinguishable from one whose evidence was never written.
+      - name: Attach the QA record for this version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          record="docs/release/QA-${version}.md"
+          if [ ! -f "$record" ]; then
+            echo "$record does not exist — every release states what it was checked against."
+            exit 1
+          fi
+          if [ "$(wc -c < "$record")" -lt 1000 ]; then
+            echo "$record is $(wc -c < "$record") bytes — that is not a QA record."
+            exit 1
+          fi
+          gh release upload "$TAG" "$record" --repo "$GITHUB_REPOSITORY" --clobber
+          echo "Attached $record onto $TAG."
+
       # tauri-action always uploads the macOS updater bundle. There is no
       # updater — Settings → About has a manual version check, not a channel
       # that consumes this — so it is a 12 MB file on the download page that

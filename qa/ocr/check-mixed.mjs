@@ -43,10 +43,26 @@ for (const [mode, missing, digital] of [
     if (mode === 'text-only') assert.doesNotMatch(text, /PDF partly read|could not be read/);
     else {
       assert.match(text, /^\[PDF partly read:/, `${mode}: missing warning: ${text}`);
-      assert.match(text, /Images and scanned content were not read/);
+      assert.match(text, /were not read/, `${mode}: no statement of what was omitted: ${text}`);
       if (missing) {
-        assert.ok(text.split('\n\n')[0].includes(`Pages without readable digital text: ${missing}.`), `${mode}: missing page accounting: ${text}`);
-        for (const page of missing.split(', ')) assert.ok(text.includes(`[Page ${page}] could not be read`));
+        // A page without digital text has two honest outcomes, and which one
+        // occurs depends on whether this platform has a recogniser: it is read
+        // from its picture and said to be, or it is named as unread. Asserting
+        // only the second would have failed every machine that can read it,
+        // and asserting only the first would fail Linux, which has no engine.
+        //
+        // What must hold everywhere is that the page is *accounted for*. That
+        // is the property every one of these fixtures exists to defend.
+        const head = text.split('\n\n')[0];
+        for (const page of missing.split(', ')) {
+          const unread = head.includes(`Pages without readable digital text:`)
+            && new RegExp(`Pages without readable digital text: [^.]*\\b${page}\\b`).test(head)
+            && text.includes(`[Page ${page}] could not be read`);
+          const recognised = new RegExp(`Pages read from a picture: [^.]*\\b${page}\\b`).test(head)
+            && text.includes(`[Page ${page}, read from a picture]`);
+          assert.ok(unread || recognised,
+            `${mode}: page ${page} is neither named as unread nor marked as read from a picture: ${text}`);
+        }
       }
     }
   }

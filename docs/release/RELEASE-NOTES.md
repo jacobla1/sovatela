@@ -1,3 +1,39 @@
+# Release notes — Sovatela 1.9.0
+
+Release date: 2026-09-13 · [All releases](https://github.com/jacobla1/sovatela/releases)
+
+1.8.9 could tell you a scanned page had not been read. This one reads it.
+
+## Changed
+
+- **Scanned pages in a mixed PDF are read.** Until now optical recognition ran
+  only when digital extraction failed for the *whole* document, so a single
+  typed cover sheet in front of a scanned contract was enough to stop the scan
+  ever being read — the app named the page as unread and left it there. Pages
+  with no digital text are now read from the pictures on them.
+- **What was recognised is marked as recognised.** The warning names the pages
+  read from a picture, the body labels them, and the attachment badge shows
+  them. Recognised text can contain mistakes, and words, figures or whole lines
+  can be missing from it without anything marking where — which is why it is
+  never presented as though it came from the file itself.
+- **Pages whose resources are inherited are no longer invisible.** A PDF may
+  put one `/Resources` dictionary on the page tree rather than on each page.
+  Image discovery read only the page's own, so such a page looked like a page
+  with no pictures. The inherited entry is now copied down first.
+- **Still not complete.** Content painted through a tiling pattern, a soft mask
+  or a font's glyph program is not an extractable image and is not read.
+  Fax-compressed scans — what office copiers commonly produce — still cannot be
+  decoded. Both now say which of those happened rather than reporting a page
+  that may be blank.
+
+[QA-1.9.0.md](QA-1.9.0.md) records verification. Windows and Linux installers
+remain unsigned and experimental, with no clean-machine lifecycle test and no
+measured Windows OCR accuracy. Linux has no recogniser, so mixed PDFs there
+behave as they did in 1.8.9. Existing
+[accessibility limitations](https://sovatela.eu/accessibility) remain disclosed.
+
+---
+
 # Release notes — Sovatela 1.8.9
 
 Release date: 2026-09-13 · [All releases](https://github.com/jacobla1/sovatela/releases)
