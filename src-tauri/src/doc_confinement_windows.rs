@@ -30,7 +30,7 @@
 //! What it does not give: per-document isolation (the profile is stable, and
 //! `TEMP` inside the container resolves into it), an LPAC's narrower access, or
 //! proof that every descendant has exited when `kill` returns. It has not yet
-//! been checked in an installed, signed release build.
+//! been checked in an installed release build.
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::Foundation::GENERIC_WRITE;

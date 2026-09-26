@@ -1,6 +1,6 @@
 # Technical and security specification
 
-Sovatela v1.9.0 · Companion to Product spec ·
+Sovatela v1.10.0 · Companion to Product spec ·
 UX spec · [Security policy](../SECURITY.md)
 
 Fuller engineering rationale is kept internally in `ENGINEERING_NOTES.md`, which
@@ -206,11 +206,15 @@ In the application proper the limit is `usize::MAX` and the allocator's fast
 path is a single relaxed load, so the counting costs the interface nothing.
 
 What this contains: a crash, a runaway allocation and a hang, in a process the
-application can lose without noticing. What it is not is an operating system
-sandbox. The child runs with the user's own privileges and can reach whatever
-the user can reach, so a parser or recogniser driven into running code is not
-confined by it. Narrowing that is future work, recorded in
-`docs/PRODUCT-GAPS.md`.
+application can lose without noticing. From 1.10.0 it is also an operating
+system sandbox on macOS and Windows. On macOS the child installs a Seatbelt
+policy before reading any document byte; on Windows the parent creates it
+inside an AppContainer with no capabilities, in a kill-on-close job. Either way
+it cannot reach the network or the user's files outside a per-extraction
+scratch directory, and a document is refused, never read unconfined, if the
+sandbox cannot be entered. Both sandboxes leave the child some system
+services, and neither isolates one document from the next; `SECURITY.md`
+states the limits. Linux has resource limits only.
 
 Every reply is framed with a fixed marker. Without it the parent cannot tell
 its helper's output from any other program's, and a child that exits 0 with
@@ -274,9 +278,10 @@ elsewhere: this decodes attacker-supplied image data and then runs it through a
 neural network. What the helper bounds is narrower than "whatever either does",
 and the difference matters: the ceiling is enforced in Rust's global allocator,
 so allocations a system recogniser makes inside its own frameworks are not
-counted by it. The deadline and the kill do apply to the whole process, and the
-child holds the user's own filesystem and network authority — this is crash and
-runaway isolation, not a privilege sandbox. Only one extraction runs at a time,
+counted by it. The deadline and the kill do apply to the whole process. On
+macOS and Windows the child is also sandboxed — no network, and no files
+outside its scratch — while the system recogniser's own services run outside
+that sandbox. Only one extraction runs at a time,
 because several children each entitled to a gigabyte is a way to exhaust a
 machine without any one of them exceeding its limit. The PDF path
 gets a higher allocation ceiling and a longer deadline than the others, because

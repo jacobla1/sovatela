@@ -173,9 +173,9 @@ conservative: logos, annotations and other graphics can trigger it too.
 Pure scans still use the existing local OCR path on macOS and Windows; Linux
 has no OCR engine. OCR can misread or omit words and lines within a page.
 
-### Document helper confinement — unreleased macOS implementation
+### Document helper confinement — macOS, from 1.10.0
 
-The current source installs a Seatbelt policy in the macOS extraction helper
+The extraction helper installs a Seatbelt policy in the macOS extraction helper
 before reading document bytes. It denies filesystem access by default, allowing
 specific OS framework, font and language-data directories, the helper executable
 and two private temporary/cache directories. Direct network connections and
@@ -195,18 +195,17 @@ scratch behind. Scratch has no aggregate disk quota. Existing Rust allocation,
 page, pixel, output and time limits remain; native framework allocations and
 work performed by permitted OS services are not bounded by the Rust allocator.
 
-This implementation has local Apple Silicon validation only. It is not in the
-shipped 1.9.0 binary. Clean-machine, Intel macOS and release-artifact checks remain
-outstanding. The
+It is in 1.10.0; 1.9.0 and earlier do not confine the helper. It is validated on
+Apple-silicon hardware and on GitHub's hosted macOS runner, which is a virtual
+machine; Intel macOS and a clean machine remain unchecked. The
 [confinement QA record](docs/release/QA-DOC-CONFINEMENT-2026-09-14.md) records the
 tested boundary and remaining work.
 
-### Document helper confinement — Windows, from the next release
+### Document helper confinement — Windows, from 1.10.0
 
-The current source runs the extraction helper inside an AppContainer with no
-capabilities. It is on by default from 2026-09-26 (the `windows-confinement`
-build feature) and will be in the next release; **1.9.0 and earlier do not
-confine the helper on Windows.**
+The extraction helper runs inside an AppContainer with no capabilities, from
+1.10.0 (the `windows-confinement` build feature, on by default). **1.9.0 and
+earlier do not confine the helper on Windows.**
 
 The parent creates the helper — an AppContainer is a property
 of the token a process is created with, so the child's loader already runs under
@@ -252,7 +251,7 @@ no remaining security blocker. Its limits:
 - The handle-whitelist evidence covers one representative inheritable handle.
 - Office coverage uses minimal generated files, and OCR coverage a synthetic
   scan.
-- None of this has yet been checked on an installed or signed release build.
+- None of this has yet been checked on an installed release build.
 
 The [Windows confinement QA record](docs/release/QA-WINDOWS-CONFINEMENT-2026-09-24.md)
 has the measurements, the review history and the residual risks in full.

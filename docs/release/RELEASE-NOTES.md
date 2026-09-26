@@ -1,3 +1,43 @@
+# Release notes — Sovatela 1.10.0
+
+Release date: 2026-09-26 · [All releases](https://github.com/jacobla1/sovatela/releases)
+
+1.9.0 read the scanned pages of a PDF. 1.10.0 reads every document inside a
+sandbox, on macOS and on Windows.
+
+## Changed
+
+- **Documents are read inside a sandbox on macOS.** The helper process that
+  reads PDFs and Word, OpenDocument, PowerPoint and Excel files installs a
+  Seatbelt policy before it reads a single byte of the document. It has no
+  network access, cannot start other programs, and cannot read your files — it
+  may read the system's own frameworks, fonts and language data, and write only
+  to a private scratch directory that is removed afterwards.
+- **And on Windows.** The same helper runs inside an AppContainer with no
+  capabilities, placed in a job so that anything it starts is ended with it.
+  In testing it was refused files outside its scratch directory and the
+  network, could not run a program it had written, and could not use a handle
+  it had not been given.
+- **A document is refused rather than read unsandboxed.** If the sandbox cannot
+  be entered, the attachment says *the document reader could not start safely*
+  and nothing is read. There is no fallback to the old, unconfined reader.
+- **What the sandboxes do not do.** They protect the rest of your machine from a
+  hostile document; they do not isolate one document from the next. The
+  system's text recogniser runs parts of its work in OS services outside the
+  sandbox, and a regular Windows AppContainer keeps access to some system files,
+  registry keys and COM objects. [`SECURITY.md`](../../SECURITY.md) has the full
+  list.
+
+Linux keeps its memory, time and page limits and has no sandbox.
+
+[QA-1.10.0.md](QA-1.10.0.md) records verification, including four rounds of
+independent review of the Windows sandbox. Windows and Linux installers remain
+unsigned and experimental, with no clean-machine lifecycle test and no measured
+real-photo OCR accuracy. Existing
+[accessibility limitations](https://sovatela.eu/accessibility) remain disclosed.
+
+---
+
 # Release notes — Sovatela 1.9.0
 
 Release date: 2026-09-13 · [All releases](https://github.com/jacobla1/sovatela/releases)

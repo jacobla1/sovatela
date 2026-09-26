@@ -116,7 +116,7 @@ jobs:
       # Both binaries are debug builds with the feature set a release would
       # use, and eight names are sampled, not every validation flag. The
       # source-level cfg gates are what close the finding; this corroborates
-      # them. The signed --release artifact still needs checking before it
+      # them. The installed --release build still needs checking before it
       # ships.
       - name: The shipping feature shape carries no test switches
         id: releaseshape

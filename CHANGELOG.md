@@ -1,15 +1,23 @@
 # Changelog
 
-## Unreleased
+## 1.10.0 — 2026-09-26
 
+- Read documents inside a sandbox on macOS. The helper that reads PDFs and
+  Word, OpenDocument, PowerPoint and Excel files installs a Seatbelt policy
+  before it reads a byte of the document. It has no network, cannot start other
+  programs, and cannot read your files: it may read the system's frameworks,
+  fonts and language data, and write only to a private scratch directory. The
+  system text recogniser's own services run outside it.
 - Read documents inside a sandbox on Windows. The helper that reads PDFs and
   Word, OpenDocument, PowerPoint and Excel files now runs in an AppContainer
   with no capabilities. In testing it was refused files outside its own
   scratch directory and the network; like any regular AppContainer it keeps
-  some system files, registry keys and COM objects. If the sandbox cannot be
-  entered, the document is refused rather than read unconfined. It protects
-  the rest of the machine from a hostile document; it does not isolate one
-  document from the next. Limits are in `SECURITY.md`.
+  some system files, registry keys and COM objects.
+- Neither sandbox isolates one document from the next: each protects the rest
+  of the machine from a hostile document. Limits are in `SECURITY.md`.
+- On both, a document is refused with "the document reader could not start
+  safely" if the sandbox cannot be entered, rather than read without it.
+  Linux keeps its resource limits and has no sandbox.
 
 ## 1.9.0 — 2026-09-13
 

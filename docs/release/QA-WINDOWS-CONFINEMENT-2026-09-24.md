@@ -28,7 +28,8 @@ security blocker: all ten conditions met, three with bounded reservations. The
 gate now also checks that the default build is the confined one, against a
 `--no-default-features` build as the control.
 
-**Before the next release ships:** check the signed `--release` Windows build —
+**Before 1.10.0 ships:** check the installed release build — Windows installers
+are not code-signed —
 that a document is read with the helper in an AppContainer, and that it carries
 no test switch or probe. Nothing so far is a release build. This is on the
 release checklist.
@@ -250,7 +251,7 @@ test.
 - **"Release shape" overstated its coverage.** Both binaries are debug builds
   with the shipping feature set, and eight names are sampled, not every flag.
   The step is renamed "shipping feature shape", and its comment says what it
-  is not. **The signed `--release` artifact still needs checking before it
+  is not. **The `--release` artifact still needs checking before it
   ships.** The reviewer does not make that a blocker to enabling.
 - **Per-document isolation is not provided.** The profile is stable, and
   `TEMP` resolves inside it. The zero-file listing is not evidence. Clearing

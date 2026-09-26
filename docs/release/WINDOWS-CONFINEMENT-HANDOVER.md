@@ -73,7 +73,8 @@ therefore created with `CreateProcessW` and its pipes wired by hand, in
 Enabled by default on the owner's decision after the fourth review. Before the
 next release ships:
 
-- **Check the signed `--release` Windows build.** Read a document in the
+- **Check the installed release build** (Windows installers are not
+  code-signed). Read a document in the
   installed app and confirm the helper runs in an AppContainer, and that the
   binary carries no test switch or probe. Everything so far is a debug build on
   two hosted images. It is on the release checklist.
