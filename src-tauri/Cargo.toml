@@ -11,6 +11,20 @@ rust-version = "1.77.2"
 name = "scale_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# Unvalidated. See src/doc_confinement_windows.rs.
+windows-confinement = []
+# The Windows gate's switches and probes: forcing a refusal, disabling the
+# handle whitelist, overriding the environment, and the self-test and probe
+# entry points. CI only. A build without it carries none of them.
+windows-confinement-testhooks = ["windows-confinement"]
+# Local evidence build; PDFKit is not enabled in the application yet.
+pdf-comparison = []
+
+[[example]]
+name = "compare_pdf_extractors"
+required-features = ["pdf-comparison"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -101,4 +115,12 @@ windows = { version = "0.62.2", features = [
     "Security_Cryptography",
     "Storage_Streams",
     "Foundation",
+    "Win32_Security_Isolation",
+    "Win32_System_Pipes",
+    "Win32_Security_Authorization",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+    "Win32_Storage_FileSystem",
+    "Win32_System_JobObjects",
 ] }

@@ -58,11 +58,19 @@
 //!
 //! The limit is `usize::MAX` in the application itself, and the allocator's
 //! fast path is a single relaxed load, so the counting costs the GUI nothing.
-//! Only the helper lowers it, and only around the parse.
+//! Only the helper lowers it, before reading input and parsing it.
+//!
+//! On macOS, `doc_confinement` also installs Seatbelt before reading stdin.
+//! It restricts filesystem access to OS resources, the executable and private
+//! scratch, and permits named compute services required by Vision. The parent
+//! owns scratch cleanup, including after a timeout or crash. Native framework
+//! initialization before main and the permitted services are outside that
+//! installation boundary. Windows and Linux currently retain the process and
+//! resource limits only; they do not gain a privilege boundary from this module.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::io::{Read, Write};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
@@ -127,7 +135,7 @@ const READ_GRACE: Duration = Duration::from_secs(10);
 /// test harness, which reads the helper flag as a test filter, prints its own
 /// summary and exits 0. Unframed, that summary came back as the contents of
 /// the user's document.
-const REPLY_MAGIC: &[u8] = b"SOVATELA-PDF/1\n";
+pub(crate) const REPLY_MAGIC: &[u8] = b"SOVATELA-PDF/1\n";
 
 /// Which extractor the helper should run.
 ///
@@ -170,7 +178,7 @@ impl Kind {
         }
     }
 
-    fn from_token(t: &str) -> Option<Self> {
+    pub(crate) fn from_token(t: &str) -> Option<Self> {
         match t {
             "pdf" => Some(Kind::Pdf),
             "docx" => Some(Kind::Docx),
@@ -338,15 +346,29 @@ pub fn run_helper_if_requested() -> bool {
         std::process::exit(EXIT_UNREADABLE);
     };
 
-    let mut input = Vec::new();
-    if std::io::stdin().read_to_end(&mut input).is_err() {
-        std::process::exit(EXIT_UNREADABLE);
-    }
-
     set_memory_cap(match kind {
         Kind::Pdf => HELPER_MEMORY_CAP_PDF,
         _ => HELPER_MEMORY_CAP,
     });
+    #[cfg(target_os = "macos")]
+    let confinement = match crate::doc_confinement::enter() {
+        Ok(active) => active,
+        Err(error) => {
+            eprintln!("document confinement failed: {error}");
+            helper_refusal(
+                "the document reader could not start safely, so this file was not read.",
+            );
+        }
+    };
+    let mut input = Vec::new();
+    let read = std::io::stdin()
+        .take(crate::MAX_UPLOAD_BYTES as u64 + 1)
+        .read_to_end(&mut input);
+    if read.is_err() || input.len() > crate::MAX_UPLOAD_BYTES {
+        #[cfg(target_os = "macos")]
+        drop(confinement);
+        helper_refusal("this document could not be read within the upload limit.");
+    }
     // The same extraction the application would have run in-process, with the
     // cap and the deadline around it. Sharing the code rather than duplicating
     // it is the point: the bounds inside `document_text` are unit-tested where
@@ -382,7 +404,19 @@ pub fn run_helper_if_requested() -> bool {
     let _ = out.write_all(REPLY_MAGIC);
     let _ = out.write_all(payload.as_bytes());
     let _ = out.flush();
+    // process::exit does not run destructors. Direct CLI/QA invocations own
+    // their scratch here; app invocations have a separate parent-side owner.
+    #[cfg(target_os = "macos")]
+    drop(confinement);
     std::process::exit(code);
+}
+
+fn helper_refusal(message: &str) -> ! {
+    let mut out = std::io::stdout().lock();
+    let _ = out.write_all(REPLY_MAGIC);
+    let _ = out.write_all(message.as_bytes());
+    let _ = out.flush();
+    std::process::exit(EXIT_UNREADABLE);
 }
 
 /// How a helper run ended, before it is turned into a message.
@@ -512,6 +546,57 @@ fn time_limit_for(kind: Kind) -> Duration {
 /// another. The wait is bounded by each helper's own deadline.
 static EXTRACTION_SLOT: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// The helper as the wait loop below holds it.
+///
+/// On Windows with confinement compiled in this is
+/// `doc_confinement_windows::Helper`, which can hold either an AppContainer
+/// child or an ordinary one. Everywhere else there is only one kind, and this
+/// is the thinnest possible wrapper presenting the same four methods — the
+/// alternative was a second copy of the wait loop, and that loop is where the
+/// deadline, the kill and the exit-status mapping live.
+#[cfg(not(all(windows, feature = "windows-confinement")))]
+struct Helper(std::process::Child);
+
+#[cfg(not(all(windows, feature = "windows-confinement")))]
+impl Helper {
+    fn take_stdin(&mut self) -> Option<Box<dyn std::io::Write + Send>> {
+        self.0
+            .stdin
+            .take()
+            .map(|p| Box::new(p) as Box<dyn std::io::Write + Send>)
+    }
+    fn take_stdout(&mut self) -> Option<Box<dyn std::io::Read + Send>> {
+        self.0
+            .stdout
+            .take()
+            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>)
+    }
+    fn try_exit(&mut self) -> std::io::Result<Option<i32>> {
+        match self.0.try_wait() {
+            Ok(Some(s)) => Ok(Some(s.code().unwrap_or(-1))),
+            Ok(None) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+    fn kill(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[cfg(not(all(windows, feature = "windows-confinement")))]
+fn plain_child(cmd: &mut Command) -> std::io::Result<Helper> {
+    use std::process::Stdio;
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        // The child's stderr carries the allocator's own abort message, which
+        // is noise on the parent's console and says nothing the exit status
+        // does not.
+        .stderr(Stdio::null())
+        .spawn()
+        .map(Helper)
+}
+
 fn run(kind: Kind, bytes: &[u8], time_limit: Duration) -> Outcome {
     // Held for the whole call, including the child's lifetime. Poisoning is
     // ignored: the guard protects a count, not data, and a panicking caller
@@ -522,16 +607,80 @@ fn run(kind: Kind, bytes: &[u8], time_limit: Duration) -> Outcome {
         Ok(c) => c,
         Err(e) => return Outcome::Unreadable(e),
     };
+    #[cfg(target_os = "macos")]
+    let scratch = match crate::doc_confinement::Prepared::new() {
+        Ok(scratch) => scratch,
+        Err(_) => {
+            return Outcome::Unreadable(
+                "the document reader could not start safely, so this file was not read.".into(),
+            )
+        }
+    };
+    #[cfg(target_os = "macos")]
+    scratch.configure(&mut cmd);
+
+    // Windows confines from the parent rather than the child: an AppContainer
+    // is a property of the token a process is created with, so there is no
+    // equivalent of the child sealing itself. The directory is made here and
+    // opened to the container before anything is spawned into it.
+    // An owned guard, as on macOS: it removes the directory however this
+    // function returns, rather than on the two branches someone remembered.
+    #[cfg(all(windows, feature = "windows-confinement"))]
+    let win_scratch = {
+        let dir = std::env::temp_dir().join(format!(
+            "com.anaubi.sovatela.doc-{:016x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0)
+                ^ std::process::id() as u64
+        ));
+        match crate::doc_confinement_windows::Scratch::new(dir) {
+            Ok(s) => s,
+            Err(_) => {
+                return Outcome::Unreadable(
+                    "the document reader could not start safely, so this file was not read.".into(),
+                )
+            }
+        }
+    };
     cmd.arg(kind.token());
-    let mut child = match cmd
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        // The child's stderr carries the allocator's own abort message, which
-        // is noise on the parent's console and says nothing the exit status
-        // does not.
-        .stderr(Stdio::null())
-        .spawn()
-    {
+
+    // On Windows with confinement compiled in, the helper is created inside an
+    // AppContainer. That cannot go through `Command`: an AppContainer is a
+    // property of the token a process is created with, and `Command` cannot
+    // carry the attribute list that applies one. Both kinds are held as
+    // `Helper` so the wait loop below stays one implementation.
+    #[cfg(all(windows, feature = "windows-confinement"))]
+    let mut child = {
+        let exe = match std::env::current_exe() {
+            Ok(e) => e,
+            Err(e) => {
+                return Outcome::Unreadable(format!(
+                    "could not locate the application to read the document: {e}"
+                ));
+            }
+        };
+        let line = format!("\"{}\" {} {}", exe.display(), HELPER_FLAG, kind.token());
+        match crate::doc_confinement_windows::Confined::spawn(&line, &win_scratch) {
+            Ok(c) => crate::doc_confinement_windows::Helper::Confined(c),
+            // Fail closed. An unconfined retry would silently undo the
+            // confinement on exactly the machines where it failed to apply.
+            Err(e) => {
+                // The user gets one sentence; whoever is debugging needs the
+                // cause. Mapping to the generic refusal without saying what
+                // happened cost a CI round: the failure was visible and its
+                // reason was not.
+                eprintln!("confined spawn failed: {e}");
+                let _ = std::io::Write::flush(&mut std::io::stderr());
+                return Outcome::Unreadable(
+                    "the document reader could not start safely, so this file was not read.".into(),
+                );
+            }
+        }
+    };
+    #[cfg(not(all(windows, feature = "windows-confinement")))]
+    let mut child = match plain_child(&mut cmd) {
         Ok(c) => c,
         Err(e) => return Outcome::Unreadable(format!("could not start the document reader: {e}")),
     };
@@ -540,7 +689,7 @@ fn run(kind: Kind, bytes: &[u8], time_limit: Duration) -> Outcome {
     // full pipe deadlocks: the parent blocks writing a document the child has
     // stopped reading, while the child blocks writing output the parent has
     // not started reading.
-    let mut stdin = child.stdin.take();
+    let mut stdin = child.take_stdin();
     let data = bytes.to_vec();
     let writer = std::thread::spawn(move || {
         if let Some(mut pipe) = stdin.take() {
@@ -556,7 +705,7 @@ fn run(kind: Kind, bytes: &[u8], time_limit: Duration) -> Outcome {
     // spawned inherits the write end and holds it open, so a `join` here can
     // outlast the deadline by as long as a grandchild cares to live. That
     // would make the timeout decorative.
-    let mut stdout = child.stdout.take();
+    let mut stdout = child.take_stdout();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut buf = Vec::new();
@@ -571,15 +720,18 @@ fn run(kind: Kind, bytes: &[u8], time_limit: Duration) -> Outcome {
     let deadline = Instant::now() + time_limit;
     let mut timed_out = false;
     let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
+        match child.try_exit() {
+            Ok(Some(code)) => break Some(code),
             Ok(None) => {}
-            Err(_) => break None,
+            Err(_) => {
+                // Never remove parent-owned scratch while a child may still use it.
+                child.kill();
+                break None;
+            }
         }
         if Instant::now() >= deadline {
             timed_out = true;
-            let _ = child.kill();
-            let _ = child.wait();
+            child.kill();
             break None;
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -608,14 +760,14 @@ fn run(kind: Kind, bytes: &[u8], time_limit: Duration) -> Outcome {
     let Some(body) = out.strip_prefix(REPLY_MAGIC) else {
         // A child that produced nothing and failed simply died; one that
         // produced something unframed was never the helper.
-        return if out.is_empty() && status.code() != Some(0) {
+        return if out.is_empty() && status != 0 {
             Outcome::Died
         } else {
             Outcome::NotHelper
         };
     };
     match String::from_utf8(body.to_vec()) {
-        Ok(text) => classify(status.code(), text),
+        Ok(text) => classify(Some(status), text),
         Err(_) => Outcome::Unreadable("this document could not be read".into()),
     }
 }

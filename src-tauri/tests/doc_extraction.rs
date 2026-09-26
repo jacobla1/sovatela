@@ -100,7 +100,12 @@ fn run_helper(pdf: &[u8]) -> Run {
 }
 
 fn run_helper_as(kind: &str, doc: &[u8]) -> Run {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_scale"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_scale"));
+    #[cfg(target_os = "macos")]
+    let scratch = scale_lib::doc_confinement::Prepared::new().unwrap();
+    #[cfg(target_os = "macos")]
+    scratch.configure(&mut command);
+    let mut child = command
         .arg(HELPER_FLAG)
         // The helper takes the format as a token rather than the user's
         // filename: the parent already knows the format, and argv is not the

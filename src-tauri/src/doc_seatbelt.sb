@@ -1,0 +1,57 @@
+;; macOS document helper. Loaded before reading or decoding document bytes.
+;; No import of system.sb: it grants capabilities this helper does not need.
+(version 1)
+(deny default)
+(deny file-map-executable process-info* nvram* dynamic-code-generation)
+(allow process-info* (target self))
+
+;; Signed OS code, recognition models, fonts and language data. User-installed
+;; fonts, user preferences and downloaded MobileAsset models are not admitted.
+(allow file-read*
+    (subpath "/System/Library/Frameworks")
+    (subpath "/System/Library/PrivateFrameworks")
+    (subpath "/System/Library/CoreServices")
+    (subpath "/System/Library/Fonts")
+    (subpath "/System/Library/Extensions")
+    (subpath "/System/Library/LinguisticData")
+    (subpath "/usr/lib")
+    (subpath "/usr/share/icu"))
+(allow file-map-executable
+    (subpath "/System/Library/Frameworks")
+    (subpath "/System/Library/PrivateFrameworks")
+    (subpath "/System/Library/CoreServices")
+    (subpath "/System/Library/Extensions")
+    (subpath "/usr/lib"))
+(allow file-read-metadata file-test-existence
+    (literal "/var")
+    ;; path-ancestors excludes the path itself. CVNLP canonicalizes model paths
+    ;; through this directory; grant metadata, not its contents or listing.
+    (literal "/System/Library")
+    (path-ancestors "/System/Library")
+    (path-ancestors "/usr/lib")
+    (path-ancestors "/usr/share/icu")
+    (path-ancestors "/System/Volumes/Data")
+    (path-ancestors "/System/Volumes/Preboot")
+    (literal "/System/Volumes/Data")
+    (literal "/System/Volumes/Preboot"))
+(allow sysctl-read
+    (sysctl-name-prefix "hw.")
+    (sysctl-name "kern.osrelease" "kern.osversion" "kern.ostype"
+                 "kern.version" "kern.osproductversion"))
+
+;; Vision's model compiler and execution services. These services run outside
+;; this process; their own privileges are not restricted by this profile.
+(allow mach-lookup
+    (global-name "com.apple.appleneuralengine")
+    (global-name "com.apple.MTLCompilerService"))
+(allow iokit-open
+    (iokit-user-client-class
+        "IOSurfaceRootUserClient"
+        "IOSurfaceAcceleratorClient"
+        "AGXDeviceUserClient"
+        "AGXDevice"
+        "AGXCommandQueue"
+        "AGXSharedUserClient"
+        "H1xANELoadBalancerDirectPathClient"))
+
+;; The Rust loader appends only escaped, canonical scratch/executable paths.

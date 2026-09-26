@@ -186,7 +186,11 @@ fn is_readable(text: &str) -> bool {
         .is_match(text)
 }
 
-pub fn extract(bytes: &[u8]) -> Result<String, String> {
+pub type PageText = (u32, Result<String, String>);
+
+/// Digital extraction only, shared with the confined comparison executable.
+/// The boolean reports graphics or failed inspection, not text completeness.
+pub fn digital_pages(bytes: &[u8]) -> Result<(Vec<PageText>, bool), String> {
     let mut doc =
         lopdf::Document::load_mem(bytes).map_err(|e| format!("could not parse this PDF: {e}"))?;
     if doc.is_encrypted() {
@@ -217,6 +221,11 @@ pub fn extract(bytes: &[u8]) -> Result<String, String> {
         .unwrap_or_else(|_| Err("its digital text could not be extracted".to_string()));
         pages.push((number, text));
     }
+    Ok((pages, graphics))
+}
+
+pub fn extract(bytes: &[u8]) -> Result<String, String> {
+    let (mut pages, graphics) = digital_pages(bytes)?;
 
     // A mixed document: some pages carry digital text and some carry none.
     //

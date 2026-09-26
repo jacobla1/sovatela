@@ -88,12 +88,24 @@ jobs:
       # will not read. Anything else is a death, and a death here is the fault
       # this is watching for.
       #
-      # The runners almost certainly have no OCR language pack, so on Windows
-      # the expected result is 33 and not 0. That is the point: a missing
-      # language pack must be a refusal rather than a crash, and that is the
-      # half of the question CI can settle. Whether it can actually *read* a
-      # scan still needs a machine with a language pack on it.
+      # This said the runners "almost certainly have no OCR language pack", so
+      # a refusal on Windows was accepted as the expected result. That was
+      # never measured, and `windows-ocr-spike.yml` measured it: Windows
+      # Server 2025 ships `Language.OCR~~~en-US` installed, WinRT reports one
+      # recognizer language, and the helper reads the fixture — returning
+      # `INUOICE 12345`, the misread this bitmap is already known to produce.
+      #
+      # So the tolerance was hiding the assertion. If Windows OCR broke, CI
+      # stayed green, and "no real-photo Windows OCR accuracy test" was
+      # disclosed for several releases on a premise that was false.
+      #
+      # `SOVATELA_EXPECT_OCR` says a recogniser is known to be present here,
+      # so a refusal is a failure. It is not set on Linux, which has no engine
+      # by design, and not set for developers, whose Windows machine may
+      # genuinely lack the pack.
       - name: Mixed PDFs cannot silently omit scanned content
+        env:
+          SOVATELA_EXPECT_OCR: ${{ (runner.os == 'Windows' || runner.os == 'macOS') && '1' || '' }}
         run: node qa/ocr/check-mixed.mjs src-tauri/target/debug/scale${{ runner.os == 'Windows' && '.exe' || '' }}
 
       - name: The extraction helper reads a scanned PDF

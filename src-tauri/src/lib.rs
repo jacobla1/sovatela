@@ -5,10 +5,15 @@ use std::sync::Arc;
 use tauri::ipc::Channel;
 use tauri::Manager;
 
+pub mod doc_confinement;
+#[cfg(all(windows, feature = "windows-confinement"))]
+pub mod doc_confinement_windows;
 pub mod doc_sandbox;
 pub mod glm;
 pub mod ocr;
 pub mod ooxml;
+#[cfg(all(target_os = "macos", feature = "pdf-comparison"))]
+pub mod pdf_native;
 pub mod pdf_text;
 
 #[global_allocator]

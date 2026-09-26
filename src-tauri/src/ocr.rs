@@ -5,17 +5,19 @@
 //!
 //! ## Why this extracts images rather than rendering pages
 //!
-//! The obvious approach is to rasterise each page and OCR the result, which is
-//! what a PDF renderer is for. Every practical one is a large C++ library
-//! (pdfium) or AGPL (MuPDF), and either would mean a native binary to build,
-//! sign and notarize on three platforms — the expensive half of this feature,
-//! for a capability that is not actually needed.
+//! Rasterising each page and recognising the result is another option. On the
+//! platforms where this app has a recogniser, the OS also supplies a renderer:
+//! CoreGraphics on macOS and Windows.Data.Pdf on Windows. Those would not add
+//! a bundled native binary to build, sign or maintain. A cross-platform
+//! renderer such as PDFium is BSD-licensed; its costs are distribution and
+//! security maintenance, rather than an incompatible licence. MuPDF's AGPL
+//! licensing is a separate constraint, not a property of all renderers.
 //!
-//! A *scanned* page is not a page to composite. It is one image pasted onto an
-//! otherwise empty page, and `lopdf` — already here, under `pdf-extract` — can
-//! hand over that image directly. So this takes the picture out rather than
-//! redrawing the page, which costs nothing new and is exactly right for the
-//! documents this feature exists for.
+//! Many scanned pages are one image pasted onto an otherwise empty page, and
+//! `lopdf` — already here, under `pdf-extract` — can hand over that image
+//! directly. Extracting it is cheaper than redrawing the page. Rendering would
+//! cover more documents, but also expose a larger native parser surface to
+//! document bytes. Confining the helper must come before adding that path.
 //!
 //! The cost is that a filter this cannot decode is a page this cannot read, and
 //! [`unsupported_chain`] names which one rather than reporting an empty page.
@@ -29,9 +31,11 @@
 //! attacker-supplied image data and then hands it to a system recogniser.
 //!
 //! What the helper contains is a crash, a hang and a runaway allocation *on the
-//! parsing path*. It is not a privilege boundary — the child runs with the
-//! user's own rights — and the allocation ceiling cannot see the recogniser at
-//! all: Vision and the Windows Runtime allocate through CoreGraphics and COM,
+//! parsing path*. On macOS, `doc_confinement` also applies Seatbelt before input
+//! is read, with scoped OS resources, private scratch and named compute-service
+//! exceptions. Windows still runs with the user's rights. The allocation ceiling
+//! cannot see the recogniser at all: Vision and the Windows Runtime allocate
+//! through CoreGraphics and COM,
 //! where the counting allocator has no visibility. The wall clock, the page
 //! limit and the pixel limit are what bound that work.
 //!
@@ -596,7 +600,8 @@ one, and this system does not. Put the file through an OCR tool first — \
 /// Read a page with Apple's Vision framework.
 ///
 /// The image is handed over as a `CGImage` built directly over the decoded
-/// pixels — no copy, and no file written anywhere.
+/// pixels — no copy and no intermediate image file. Vision may use its private
+/// compiler/cache scratch directories while recognising the pixels.
 #[cfg(target_os = "macos")]
 fn vision_read(page: &Page) -> Result<String, String> {
     use objc2::AnyThread;

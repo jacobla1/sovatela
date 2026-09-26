@@ -173,6 +173,93 @@ conservative: logos, annotations and other graphics can trigger it too.
 Pure scans still use the existing local OCR path on macOS and Windows; Linux
 has no OCR engine. OCR can misread or omit words and lines within a page.
 
+### Document helper confinement — unreleased macOS implementation
+
+The current source installs a Seatbelt policy in the macOS extraction helper
+before reading document bytes. It denies filesystem access by default, allowing
+specific OS framework, font and language-data directories, the helper executable
+and two private temporary/cache directories. Direct network connections and
+process creation/execution are denied. App-launched helpers receive a cleared
+environment; inherited file descriptors other than stdin, stdout and stderr are
+closed before parsing. If confinement cannot be installed, extraction is refused.
+
+Vision needs access to the named Apple Neural Engine and Metal compiler services,
+plus selected GPU/accelerator interfaces. Those services run outside the helper's
+policy. Framework initialization before `main` and any pre-existing Mach ports
+are also outside the installation boundary. This reduces the helper's privileges;
+it is not evidence that compromised native code has no route out.
+
+The parent removes private scratch after the child exits or is killed. Cleanup is
+best effort; a parent crash or a directly invoked QA helper that aborts can leave
+scratch behind. Scratch has no aggregate disk quota. Existing Rust allocation,
+page, pixel, output and time limits remain; native framework allocations and
+work performed by permitted OS services are not bounded by the Rust allocator.
+
+This implementation has local Apple Silicon validation only. It is not in the
+shipped 1.9.0 binary. Clean-machine, Intel macOS and release-artifact checks remain
+outstanding. The
+[confinement QA record](docs/release/QA-DOC-CONFINEMENT-2026-09-14.md) records the
+tested boundary and remaining work.
+
+### Document helper confinement — unreleased Windows implementation
+
+The current source can create the extraction helper inside an AppContainer with
+no capabilities, behind a `windows-confinement` build feature that is **not
+enabled by default**. Nothing in any shipped binary is confined on Windows.
+
+When compiled in, the parent creates the helper — an AppContainer is a property
+of the token a process is created with, so the child's loader already runs under
+it — suspended, places it in a kill-on-close job that nothing can leave, and only
+then lets it run. The helper inherits only the three handles it is given, and
+receives two environment variables rather than the parent's environment. Its
+working directory is a per-extraction scratch directory: its access list, merged
+into the existing one, lets the container read, write and delete there, and
+traverse the directory itself, but grants no execute on what is written into it.
+If the container cannot be entered, extraction is refused; there is no
+unconfined retry.
+
+Measured on two GitHub-hosted runner images, with the shipping feature set in a
+debug build:
+
+- PDFs, including fifteen mixed-document fixtures and ten consecutive runs, and
+  minimal DOCX, ODT, PPTX and XLSX files, read inside the container with output
+  byte-identical to unconfined. Windows OCR activates inside the container.
+- A probe holding a verified AppContainer token is refused reads, overwrites and
+  creates outside its scratch with `ERROR_ACCESS_DENIED`, and cannot reach a
+  loopback listener that an unconfined control reaches before and after it.
+- An inheritable parent handle is readable from inside the container without the
+  handle whitelist, and unusable with it.
+- A descendant process holding a file open in scratch is killed with the helper,
+  and the scratch directory is removed; it is removed as well when preparing it
+  fails.
+- A program the helper writes into scratch cannot be run from inside the
+  container, while a system program can.
+- A forced confinement failure refuses the document and returns no text.
+
+An independent review found no remaining security blocker to enabling it by
+default. Whether to enable it has not been decided. The limits that would apply
+if it were:
+
+- It is a regular AppContainer, not a less-privileged one (LPAC): it keeps
+  selected system files, registry keys and COM objects. The denials above are
+  demonstrated examples, not an exhaustive proof of what it cannot reach.
+- The container's identity and profile are the same for every document, and its
+  temporary directory resolves inside that profile. **Confinement protects the
+  rest of the machine from the helper; it does not isolate one document from the
+  next.**
+- Descendants are terminated as a unit by the job, but cleanup is bounded and
+  best-effort: an unusually slow terminating process may leave scratch behind.
+- The handle-whitelist evidence covers one representative inheritable handle.
+- Office coverage uses minimal generated files, and OCR coverage a synthetic
+  scan.
+- None of this has yet been checked on an installed or signed release build.
+
+The [Windows confinement QA record](docs/release/QA-WINDOWS-CONFINEMENT-2026-09-24.md)
+has the measurements, the review history and the residual risks in full.
+
+Linux retains the existing process/resource limits and has no OS privilege
+confinement.
+
 ### Generated code
 
 Artifacts — charts, diagrams, small applications the model writes — render in an

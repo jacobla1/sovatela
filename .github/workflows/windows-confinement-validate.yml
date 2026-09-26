@@ -1,0 +1,841 @@
+name: windows-confinement-validate
+
+# Does the document helper still work inside an AppContainer?
+#
+# This is the Windows counterpart of the comparison the Seatbelt work relied
+# on: run the same inputs confined and unconfined, and require identical
+# answers. It exists because the macOS profile installed cleanly and *still*
+# broke Vision's CVNLP path on two of 210 documents — a sandbox that compiles
+# proves nothing about a sandbox that works.
+#
+# It can only ask that question because `windows-ocr-spike.yml` established
+# that a hosted runner reads the scan fixture unconfined
+# (QA-WINDOWS-OCR-2026-09-22.md). A runner that could not read it would make a
+# confined failure indistinguishable from a missing recogniser.
+#
+# **As of 2026-09-24 it passes on the application path.** The self-test goes
+# through doc_sandbox::extract_text — what the app calls — so it exercises the
+# scratch directory, its ACL, Confined::spawn, the IO threads and the wait
+# loop. The confined output is byte for byte identical to unconfined.
+#
+# Getting there took thirteen runs. One was the sandbox: a block carrying only
+# SystemRoot, SystemDrive, TEMP and TMP was refused with
+# ERROR_ENVVAR_NOT_FOUND, because an AppContainer resolves its storage under
+# %LOCALAPPDATA%\Packages. The rest were this harness — build order that
+# overwrote the binary under test, steps that reported success while the
+# executable failed, fixture steps that spawned the child and never the parent.
+#
+# Manual dispatch. It is slow, and it exists to be run when the module changes
+# rather than on every push.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.repository == 'jacobla1/Scale'
+    # Two images, because image variance is the thing a second run on a
+    # different day was supposed to catch and mostly would not: every CI run
+    # already gets a fresh VM with no AppContainer profile on it, so profile
+    # reuse was never a risk and a rerun tests little beyond drift. Running
+    # 2022 alongside 2025 tests it deliberately instead of waiting for it.
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [windows-latest, windows-2022]
+    runs-on: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          toolchain: stable
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      # Order matters, and got this wrong once. Both builds write the same
+      # scale.exe, so whichever runs last is the one the steps below execute.
+      # With the feature build first, this one overwrote it, the self-test flag
+      # went unrecognised, the process fell through to Tauri on a headless
+      # runner and the job hung for three minutes printing nothing — which
+      # read as the sandbox failing and was the build order.
+      - name: The default build must still work
+        run: cargo build --manifest-path src-tauri/Cargo.toml
+
+      # Two feature builds. `windows-confinement` alone is the shape that could
+      # ship; `windows-confinement-testhooks` adds the switches and probes this
+      # workflow measures with. The shipping shape is built first and copied
+      # aside, so the testhooks build is the scale.exe every later step runs.
+      - name: Build the shipping feature shape, and keep a copy
+        shell: pwsh
+        run: |
+          cargo build --manifest-path src-tauri/Cargo.toml --features windows-confinement
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item src-tauri\target\debug\scale.exe "$env:RUNNER_TEMP\release-shape.exe"
+
+      - name: Clippy, shipping feature shape
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --features windows-confinement -- -D warnings
+
+      - name: Build with the test hooks
+        run: cargo build --manifest-path src-tauri/Cargo.toml --features windows-confinement-testhooks
+
+      - name: Clippy, with the test hooks
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --features windows-confinement-testhooks -- -D warnings
+
+      # The third review: a build that could ship must not carry a switch that
+      # disables the handle whitelist, replaces the environment or forces a
+      # refusal, nor the probes. Searched for by name in the shipping-shape
+      # binary — and in the testhooks binary as the control, where every name
+      # must be found, or the search is not able to find anything.
+      #
+      # What this is not, as the fourth review said: a release-artifact test.
+      # Both binaries are debug builds with the feature set a release would
+      # use, and eight names are sampled, not every validation flag. The
+      # source-level cfg gates are what close the finding; this corroborates
+      # them. The signed --release artifact still needs checking before it
+      # ships.
+      - name: The shipping feature shape carries no test switches
+        id: releaseshape
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $names = @(
+            "SOVATELA_CONFINE_NO_HANDLE_LIST", "SOVATELA_CONFINE_ENV",
+            "SOVATELA_CONFINE_FORCE_FAILURE", "SOVATELA_CONFINE_FORCE_GRANT_FAILURE",
+            "--sovatela-confined-helper-selftest", "--sovatela-confined-handle-probe",
+            "--sovatela-confined-descendant-probe", "--sovatela-scratch-acl-probe"
+          )
+          $release = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes("$env:RUNNER_TEMP\release-shape.exe"))
+          $hooks   = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes("src-tauri\target\debug\scale.exe"))
+          $fail = $false
+          foreach ($n in $names) {
+            $inRelease = $release.Contains($n); $inHooks = $hooks.Contains($n)
+            Write-Host ("{0,-40} release={1,-5} testhooks={2}" -f $n, $inRelease, $inHooks)
+            if ($inRelease) { Write-Host "SHIPPING SHAPE FAILED: $n is in a build that could ship"; $fail = $true }
+            if (-not $inHooks) { Write-Host "CONTROL FAILED: $n not found in the testhooks build - the search proves nothing"; $fail = $true }
+          }
+          # And the flag is refused rather than run: exit 64, the unclaimed-flag path.
+          & "$env:RUNNER_TEMP\release-shape.exe" --sovatela-confined-helper-selftest pdf 2>&1 | ForEach-Object { Write-Host "  $_" }
+          $code = $LASTEXITCODE
+          Write-Host "shipping shape, self-test flag: exit $code"
+          if ($code -ne 64) { Write-Host "SHIPPING SHAPE FAILED: expected exit 64 for an unclaimed flag"; $fail = $true }
+          if ($fail) { exit 1 }
+          Write-Host "Shipping feature shape: no test switch or probe present, and the flag is refused."
+          exit 0
+
+      # The baseline. Unconfined, this runner reads the fixture and returns
+      # INUOICE 12345 — digits asserted, never the phrase, because Windows OCR
+      # misreads this bitmap and that is a known property of the fixture.
+      - name: Baseline — the helper reads a scan unconfined
+        shell: cmd
+        run: |
+          node qa\ocr\make-scan.mjs "%RUNNER_TEMP%\scan.pdf"
+          src-tauri\target\debug\scale.exe --sovatela-extract-doc-helper pdf < "%RUNNER_TEMP%\scan.pdf" > "%RUNNER_TEMP%\unconfined.txt" 2>nul
+          echo unconfined exit: %ERRORLEVEL%
+          type "%RUNNER_TEMP%\unconfined.txt"
+          findstr /C:"12345" "%RUNNER_TEMP%\unconfined.txt" >nul || (echo BASELINE FAILED - the runner cannot read a scan even unconfined & exit /b 1)
+          echo BASELINE OK
+
+      # The whole point. Identical input, this time created inside the
+      # container, compared against the baseline byte for byte.
+      # Bounded at the job level as well as inside the self-test. The first
+      # attempt at this hung: the self-test read stdout to EOF *before*
+      # checking its deadline, so a child that never wrote and never exited
+      # left the read blocked and the deadline unreachable. That is the same
+      # parent/child stall this project already diagnosed once, reproduced in
+      # my own harness. The self-test now kills on a watchdog thread, and this
+      # timeout is the belt to that pair of braces.
+      - name: Confined — the same scan, inside an AppContainer
+        id: confined
+        timeout-minutes: 3
+        shell: cmd
+        continue-on-error: true
+        run: |
+          rem stderr goes straight to the log rather than a file. The previous
+          rem run timed out before reaching the `type` that would have dumped
+          rem it, so the one artefact that says where it hung was discarded.
+          rem The step's exit code is the LAST command's, so a `type` after the
+          rem executable made this report success while the self-test refused.
+          rem The code is captured and re-raised at the end.
+          src-tauri\target\debug\scale.exe --sovatela-confined-helper-selftest pdf < "%RUNNER_TEMP%\scan.pdf" > "%RUNNER_TEMP%\confined.txt"
+          set CONFINED_EXIT=%ERRORLEVEL%
+          echo confined exit: %CONFINED_EXIT%
+          echo --- stdout ---
+          type "%RUNNER_TEMP%\confined.txt"
+          exit /b %CONFINED_EXIT%
+
+      - name: Compare confined against unconfined
+        if: always()
+        shell: cmd
+        run: |
+          rem Both branches used to end in echo, so a mismatch printed and
+          rem passed. A comparison that cannot fail is not a comparison.
+          fc /B "%RUNNER_TEMP%\unconfined.txt" "%RUNNER_TEMP%\confined.txt" >nul 2>&1 || (echo RESULT: outputs differ - see both dumps above & exit /b 1)
+          echo RESULT: identical - confinement changes nothing the reader returns
+
+      # These do NOT exercise confinement, and a previous version of this file
+      # claimed they did. `check-mixed.mjs` spawns the binary with
+      # --sovatela-extract-doc-helper, which is the child side; confinement is
+      # applied by the parent, in doc_sandbox::run, which these never reach.
+      # They passed on a run where the confined self-test failed to start a
+      # process at all.
+      #
+      # They are kept because a feature build that breaks ordinary extraction
+      # is worth catching. The step that tests confinement is the self-test
+      # above, which now goes through doc_sandbox::extract_text.
+      # The fixtures, through the sandbox. Until this existed the confinement
+      # evidence was one synthetic bitmap; these are fifteen documents — scans
+      # behind covers, scans between pages, a twenty-one page mixture, blank
+      # and damaged pages, two Type 3 cases — and they now run through
+      # doc_sandbox::extract_text rather than spawning the helper directly.
+      - name: All fixtures, through the confined path
+        id: confinedfixtures
+        if: always()
+        timeout-minutes: 15
+        continue-on-error: true
+        env:
+          SOVATELA_EXPECT_OCR: "1"
+          SOVATELA_CONFINED_HELPER: "1"
+        run: node qa/ocr/check-mixed.mjs src-tauri/target/debug/scale.exe
+
+      # One pass says it worked once. Ten say it is not a coin toss — which is
+      # the question a rerun was reaching for, asked in the same round.
+      - name: Ten confined extractions in a row
+        id: repeat
+        if: always()
+        timeout-minutes: 15
+        continue-on-error: true
+        shell: cmd
+        run: |
+          for /L %%i in (1,1,10) do (
+            src-tauri\target\debug\scale.exe --sovatela-confined-helper-selftest pdf < "%RUNNER_TEMP%\scan.pdf" > "%RUNNER_TEMP%\rep%%i.txt" 2>nul
+            if errorlevel 1 (echo run %%i FAILED & exit /b 1)
+            fc /B "%RUNNER_TEMP%\unconfined.txt" "%RUNNER_TEMP%\rep%%i.txt" >nul || (echo run %%i DIFFERED & exit /b 1)
+            echo run %%i ok
+          )
+          echo all ten identical
+
+      - name: Ordinary extraction still works in a feature build
+        id: realpath
+        if: always()
+        timeout-minutes: 10
+        continue-on-error: true
+        env:
+          SOVATELA_EXPECT_OCR: "1"
+        run: node qa/ocr/check-mixed.mjs src-tauri/target/debug/scale.exe
+
+      - name: Page accounting in a feature build
+        id: accounting
+        if: always()
+        timeout-minutes: 10
+        continue-on-error: true
+        env:
+          SOVATELA_EXPECT_OCR: "1"
+        run: node qa/ocr/check-page-accounting.mjs src-tauri/target/debug/scale.exe
+
+      # Does the container deny anything? Everything else shows extraction
+      # still works inside it, and a container that permitted everything would
+      # pass all of it.
+      #
+      # Two sibling directories, so the boundary tested is the one the
+      # application intends: the confined probe is given `confined-scratch` and
+      # grants the container access to it, while `outside-canary` is never
+      # granted and is not a parent of it. An earlier version put the canary
+      # under the runner temp root and handed that same root to the probe as
+      # scratch, so the difference it measured was not inside-versus-outside at
+      # all.
+      #
+      # Separate read, overwrite and create targets, reset between runs: the
+      # first version let the control create the file the confined run then
+      # wrote to, so its "create" case was an overwrite and proved nothing
+      # about creation.
+      - name: Denial probe — unconfined control, then confined
+        id: denial
+        if: always()
+        timeout-minutes: 10
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $outside = Join-Path $env:RUNNER_TEMP "outside-canary"
+          $scratch = Join-Path $env:RUNNER_TEMP "confined-scratch"
+          Remove-Item -Recurse -Force $outside, $scratch -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $outside | Out-Null
+          $readT  = Join-Path $outside "read-me.txt"
+          $overT  = Join-Path $outside "overwrite-me.txt"
+          $makeT  = Join-Path $outside "create-me.txt"
+          Set-Content -Path $readT -Value "canary-read"  -NoNewline
+          Set-Content -Path $overT -Value "canary-write" -NoNewline
+          Write-Host "outside: $outside"
+          Write-Host "scratch: $scratch"
+
+          $exe = "src-tauri\target\debug\scale.exe"
+
+          function Field($lines, $name) {
+            $m = $lines | Select-String -Pattern "probe: $name=(\S+)"
+            if ($m) { return $m.Matches[0].Groups[1].Value } else { return "MISSING" }
+          }
+
+          # --- unconfined control, on its own listener ---
+          $l1 = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+          $l1.Start(); $p1 = $l1.LocalEndpoint.Port
+          Write-Host "--- unconfined control (port $p1) ---"
+          $control = & $exe --sovatela-confinement-probe $readT $overT $makeT $p1 2>&1
+          $controlExit = $LASTEXITCODE
+          $l1.Stop()
+          $control | ForEach-Object { Write-Host "  $_" }
+          Write-Host "  exit: $controlExit"
+
+          # Reset: the control just created the create-target and overwrote the
+          # overwrite-target. Without this the confined run tests neither.
+          Remove-Item -Force $makeT -ErrorAction SilentlyContinue
+          Set-Content -Path $overT -Value "canary-write" -NoNewline
+          if (Test-Path $makeT) { Write-Host "HARNESS FAILED: create target still present"; exit 1 }
+
+          # --- confined, on a fresh listener ---
+          $l2 = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+          $l2.Start(); $p2 = $l2.LocalEndpoint.Port
+          Write-Host "--- confined (port $p2) ---"
+          $confined = & $exe --sovatela-confined-probe $scratch $readT $overT $makeT $p2 2>&1
+          $confinedExit = $LASTEXITCODE
+          $confined | ForEach-Object { Write-Host "  $_" }
+          Write-Host "  exit: $confinedExit"
+
+          # What the confined run left behind, before the post-check control
+          # touches these paths again.
+          $afterConfined = @{
+            read      = (Get-Content -Raw $readT)
+            overwrite = (Get-Content -Raw $overT)
+            created   = (Test-Path $makeT)
+          }
+
+          # Prove the listener is still there after the confined attempt.
+          #
+          # AppContainer does not refuse loopback with an access-denied error:
+          # the filtering platform drops the packets, so it surfaces as a
+          # timeout. A timeout on its own is not policy denial — it is also
+          # what a dead listener looks like — so the control reconnects to the
+          # same listener afterwards. Control connects, confined times out,
+          # control connects again: the listener was alive throughout and the
+          # difference is the container.
+          $recheck = & $exe --sovatela-confinement-probe $readT $overT $makeT $p2 2>&1
+          $recheckExit = $LASTEXITCODE
+          $l2.Stop()
+          Write-Host "  post-check control loopback: $(Field $recheck 'loopback') (exit $recheckExit)"
+
+          $fail = $false
+          # Exit codes, because a probe can print every expected field and then
+          # die. That is the same defect as a step whose status came from a
+          # trailing `type`.
+          if ($controlExit -ne 0)  { Write-Host "CONTROL FAILED: exit $controlExit";  $fail = $true }
+          if ($confinedExit -ne 0) { Write-Host "CONFINED FAILED: exit $confinedExit"; $fail = $true }
+
+          # The control must succeed at everything, or the probe is broken and
+          # proves nothing about the container.
+          if ((Field $control "appcontainer") -ne "ok:False") {
+            Write-Host "CONTROL FAILED: appcontainer = $(Field $control 'appcontainer'), expected ok:False"; $fail = $true }
+          foreach ($f in @("read","overwrite","create","scratch","loopback")) {
+            if ((Field $control $f) -ne "ok") {
+              Write-Host "CONTROL FAILED: $f = $(Field $control $f), expected ok"; $fail = $true }
+          }
+
+          # And the confined run must be denied by policy — not merely fail.
+          # NotFound, a bad path or a sharing violation must not read as denial.
+          if ((Field $confined "appcontainer") -ne "ok:True") {
+            Write-Host "CONFINED FAILED: appcontainer = $(Field $confined 'appcontainer'), expected ok:True"; $fail = $true }
+          foreach ($f in @("read","overwrite","create")) {
+            if ((Field $confined $f) -ne "denied:5") {
+              Write-Host "CONFINED FAILED: $f = $(Field $confined $f), expected denied:5 (ERROR_ACCESS_DENIED)"; $fail = $true }
+          }
+          # Either an explicit refusal or a drop, but only when the listener
+          # is provably still accepting.
+          $lb = Field $confined "loopback"
+          if ($lb -ne "denied:10013" -and $lb -ne "err:TimedOut") {
+            Write-Host "CONFINED FAILED: loopback = $lb, expected denied:10013 or err:TimedOut"; $fail = $true }
+          if ((Field $recheck "loopback") -ne "ok") {
+            Write-Host "CONFINED FAILED: the control could not reach the listener after the confined attempt ($(Field $recheck 'loopback')) - a timeout proves nothing if the listener was gone"; $fail = $true }
+          if ($recheckExit -ne 0) {
+            Write-Host "CONFINED FAILED: post-check control exit $recheckExit"; $fail = $true }
+          if ((Field $confined "scratch") -ne "ok") {
+            Write-Host "CONFINED FAILED: scratch = $(Field $confined 'scratch') - a container that cannot write its own scratch is broken, not secure"; $fail = $true }
+
+          # The post-check control ran the same probe, so it recreated the
+          # create-target and rewrote the overwrite-target. The file assertions
+          # below are about what the *confined* run did, so they are taken
+          # against the state the confined run left — captured before the
+          # recheck ran.
+          # Independent of what the probe claimed: the parent checks the files.
+          if ($afterConfined.read -ne "canary-read")       { Write-Host "CONFINED FAILED: read target was modified";  $fail = $true }
+          if ($afterConfined.overwrite -ne "canary-write") { Write-Host "CONFINED FAILED: overwrite target changed";  $fail = $true }
+          if ($afterConfined.created) { Write-Host "CONFINED FAILED: create target exists after the confined run"; $fail = $true }
+
+          if ($fail) { exit 1 }
+          Write-Host "Denial probe passed: AppContainer token, ERROR_ACCESS_DENIED on all three outside targets, loopback blocked while the listener stayed reachable, scratch writable, files untouched."
+
+      # Condition 4: the inherited-handle whitelist, tested both ways.
+      #
+      # The parent opens a file inheritably and hands its handle number to a
+      # confined child. Without PROC_THREAD_ATTRIBUTE_HANDLE_LIST the child
+      # must read the file through that number; with it, it must not. Both
+      # directions are required: if the unwhitelisted run also failed, the
+      # whitelisted one would pass because the handle was unusable for some
+      # unrelated reason. A previous attempt at this step printed a result
+      # without asserting it and was deleted.
+      #
+      # The canary is random per run and lives outside the container's grant,
+      # so the only way it reaches the child's output is through the inherited
+      # handle. The mode is taken from what Confined::spawn says it did, not
+      # from the variable this step set.
+      #
+      # pwsh is fine here: nothing is fed on stdin.
+      - name: Inherited-handle whitelist — read without it, refused with it
+        id: handles
+        if: always()
+        timeout-minutes: 10
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $dir     = Join-Path $env:RUNNER_TEMP "handle-canary"
+          $scratch = Join-Path $env:RUNNER_TEMP "handle-scratch"
+          Remove-Item -Recurse -Force $dir, $scratch -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $canary = "handle-canary-" + [guid]::NewGuid().ToString("N")
+          $file = Join-Path $dir "inherited.txt"
+          Set-Content -Path $file -Value $canary -NoNewline
+          $exe = "src-tauri\target\debug\scale.exe"
+
+          function Run-Probe([bool]$whitelistOff) {
+            if ($whitelistOff) { $env:SOVATELA_CONFINE_NO_HANDLE_LIST = "1" }
+            else { Remove-Item Env:SOVATELA_CONFINE_NO_HANDLE_LIST -ErrorAction SilentlyContinue }
+            $out = & $exe --sovatela-confined-handle-probe $scratch $file 2>&1 | ForEach-Object { "$_" }
+            $code = $LASTEXITCODE
+            Remove-Item Env:SOVATELA_CONFINE_NO_HANDLE_LIST -ErrorAction SilentlyContinue
+            return @{ out = @($out); exit = $code; text = (@($out) -join "`n") }
+          }
+          function Mode($r) {
+            $m = $r.out | Select-String -Pattern "confined: handle whitelist (\S+)"
+            if ($m) { return $m.Matches[0].Groups[1].Value } else { return "MISSING" }
+          }
+          function Token($r) {
+            $m = $r.out | Select-String -Pattern "^handle: appcontainer=(\S+)"
+            if ($m) { return $m.Matches[0].Groups[1].Value } else { return "MISSING" }
+          }
+          # The child read the canary through the handle, and nothing else.
+          function Read-Through($r) {
+            return [bool]($r.out | Select-String -CaseSensitive -Pattern ("^handle: usable:" + [regex]::Escape($canary) + "\s*$"))
+          }
+          function Strict($r) {
+            $m = $r.out | Select-String -Pattern "^handle: strict-handle-checks=(\S+)"
+            if ($m) { return $m.Matches[0].Groups[1].Value } else { return "MISSING" }
+          }
+          function Has($r, $pattern) { return [bool]($r.out | Select-String -Pattern $pattern) }
+          # STATUS_INVALID_HANDLE, as a signed exit code.
+          $invalidHandle = -1073741816
+          # The child could not use the handle, and the canary is nowhere in
+          # the output. "Not usable:canary" is not enough: a probe that never
+          # ran would satisfy it. Two forms count, and nothing else:
+          #  - the read returned an error, and the probe exited cleanly;
+          #  - the read raised STATUS_INVALID_HANDLE, which is what strict
+          #    handle checking does with a bad reference. Only when the probe
+          #    measured that policy on, said it was about to read, and printed
+          #    no result: an exit code alone could be any crash.
+          # The first run of this step, on both images, took the second form.
+          function Refusal($r) {
+            if ($r.text.Contains($canary)) { return "none" }
+            if (($r.exit -eq 0) -and (Has $r "^handle: unusable:-?\d+\s*$")) { return "error" }
+            if (($r.exit -eq $invalidHandle) -and (Has $r "^handle: reading \d+\s*$") -and
+                -not (Has $r "^handle: (usable|unusable):") -and ((Strict $r) -eq "ok:true")) { return "raised" }
+            return "none"
+          }
+          function Refused($r) { return (Refusal $r) -ne "none" }
+          # Each run's complete requirement, so it can be applied to the other
+          # run's real output and be seen to reject it.
+          function Passes-Off($r) { return ($r.exit -eq 0) -and ((Mode $r) -ceq "OFF") -and ((Token $r) -eq "ok:True") -and (Read-Through $r) }
+          function Passes-On($r)  { return ((Mode $r) -ceq "on") -and ((Token $r) -eq "ok:True") -and (Refused $r) }
+
+          Write-Host "--- whitelist OFF: the child must read through the handle ---"
+          $off = Run-Probe $true
+          $off.out | ForEach-Object { Write-Host "  $_" }
+          Write-Host "  exit: $($off.exit)"
+          Write-Host "--- whitelist on: the child must not ---"
+          $on = Run-Probe $false
+          $on.out | ForEach-Object { Write-Host "  $_" }
+          Write-Host "  exit: $($on.exit)"
+
+          $fail = $false
+          if ($off.exit -ne 0) { Write-Host "HANDLES FAILED: unwhitelisted run exit $($off.exit)"; $fail = $true }
+          if ((Mode $off) -cne "OFF") { Write-Host "HANDLES FAILED: spawn reported whitelist '$(Mode $off)' for the run meant to have none"; $fail = $true }
+          if ((Mode $on)  -cne "on")  { Write-Host "HANDLES FAILED: spawn reported whitelist '$(Mode $on)' for the run meant to have it"; $fail = $true }
+          if ((Token $off) -ne "ok:True") { Write-Host "HANDLES FAILED: unwhitelisted child token $(Token $off), expected ok:True"; $fail = $true }
+          if ((Token $on)  -ne "ok:True") { Write-Host "HANDLES FAILED: whitelisted child token $(Token $on), expected ok:True";   $fail = $true }
+          if (-not (Read-Through $off)) {
+            Write-Host "HANDLES FAILED: without the whitelist the child could not read through the handle - the test cannot tell the whitelist from a handle that was never usable"; $fail = $true }
+          if ($on.text.Contains($canary)) {
+            Write-Host "HANDLES FAILED: with the whitelist the child still read the canary - the whitelist does not stop inheritance"; $fail = $true }
+          if (-not $on.text.Contains($canary) -and -not (Refused $on)) {
+            Write-Host "HANDLES FAILED: with the whitelist the child neither reported the handle unusable nor raised STATUS_INVALID_HANDLE on reading it under strict handle checks (exit $($on.exit), strict-handle-checks $(Strict $on))"; $fail = $true }
+          Write-Host "whitelisted refusal form: $(Refusal $on) (exit $($on.exit), strict-handle-checks $(Strict $on))"
+
+          # Each run's requirement against the other run's output. On real
+          # data, the whitelisted requirement must reject the unwhitelisted
+          # child and vice versa, or the requirement is not what decides.
+          $matrix = "off-req/off-run=$(Passes-Off $off) on-req/on-run=$(Passes-On $on) on-req/off-run=$(Passes-On $off) off-req/on-run=$(Passes-Off $on)"
+          Write-Host "discrimination: $matrix"
+          if (-not ((Passes-Off $off) -and (Passes-On $on) -and -not (Passes-On $off) -and -not (Passes-Off $on))) {
+            Write-Host "HANDLES FAILED: the two requirements do not separate the two runs"; $fail = $true }
+
+          if (Test-Path $scratch) { Write-Host "HANDLES FAILED: scratch was not removed"; $fail = $true }
+
+          if ($fail) { exit 1 }
+          Write-Host "Handle whitelist passed: an inherited handle is readable from inside the container without the whitelist, and unusable with it."
+          # Explicit, because Actions appends `exit $LASTEXITCODE` to every
+          # pwsh step, and the last native exit here is the whitelisted child's
+          # STATUS_INVALID_HANDLE. Without this the step printed the line above
+          # and then failed on both images, in run 36191861329.
+          exit 0
+
+      # Condition 9: which environment variables are actually load-bearing.
+      #
+      # Run 857f1b1 used this to narrow the shipped set from ten variables to
+      # SystemRoot and LOCALAPPDATA: that pair read on both images, and each
+      # alone failed on at least one. The shipped set is now asserted by every
+      # confined step above, since they all run with it; this stays so the
+      # next change to the set is re-measured rather than re-argued. The wider
+      # rows are the old set in stages, kept as the comparison.
+      # Reported, not asserted.
+      - name: Which environment variables the container needs
+        id: envmin
+        if: always()
+        timeout-minutes: 10
+        continue-on-error: true
+        shell: cmd
+        run: |
+          rem Reported, not gated: narrowing the shipped set is a separate
+          rem change that should follow this evidence rather than precede it.
+          setlocal enabledelayedexpansion
+          for %%S in (
+            "shipped="
+            "noPath=SystemRoot,SystemDrive,windir,LOCALAPPDATA,APPDATA,USERPROFILE,NUMBER_OF_PROCESSORS,PROCESSOR_ARCHITECTURE"
+            "noProc=SystemRoot,SystemDrive,windir,LOCALAPPDATA,APPDATA,USERPROFILE"
+            "noAppdata=SystemRoot,SystemDrive,windir,LOCALAPPDATA"
+            "minimal=SystemRoot,LOCALAPPDATA"
+            "rootOnly=SystemRoot"
+            "localOnly=LOCALAPPDATA"
+          ) do (
+            for /f "tokens=1,* delims==" %%A in (%%S) do (
+              set SOVATELA_CONFINE_ENV=%%B
+              src-tauri\target\debug\scale.exe --sovatela-confined-helper-selftest pdf < "%RUNNER_TEMP%\scan.pdf" > "%RUNNER_TEMP%\env.txt" 2>nul
+              set E=!ERRORLEVEL!
+              findstr /C:"12345" "%RUNNER_TEMP%\env.txt" >nul && (set R=reads) || (set R=no)
+              echo %%A: exit=!E! !R!
+            )
+          )
+          set SOVATELA_CONFINE_ENV=
+
+      - name: Confinement failure must refuse, not fall back
+        id: failclosed
+        if: always()
+        timeout-minutes: 10
+        continue-on-error: true
+        shell: cmd
+        run: |
+          rem cmd, not pwsh: PowerShell has no stdin redirection operator, and
+          rem the helper takes a binary PDF that a PowerShell pipe would
+          rem corrupt. This is the second time that bug has been written here.
+          set SOVATELA_CONFINE_FORCE_FAILURE=1
+          src-tauri\target\debug\scale.exe --sovatela-confined-helper-selftest pdf < "%RUNNER_TEMP%\scan.pdf" > "%RUNNER_TEMP%\failclosed.txt" 2>&1
+          set FC_EXIT=%ERRORLEVEL%
+          set SOVATELA_CONFINE_FORCE_FAILURE=
+          echo exit: %FC_EXIT%
+          type "%RUNNER_TEMP%\failclosed.txt"
+          if "%FC_EXIT%"=="0" (echo FAILCLOSED FAILED: extraction succeeded with confinement forced to fail & exit /b 1)
+          findstr /C:"12345" "%RUNNER_TEMP%\failclosed.txt" >nul && (echo FAILCLOSED FAILED: document text was returned - it fell back to an unconfined read & exit /b 1)
+          findstr /C:"could not start safely" "%RUNNER_TEMP%\failclosed.txt" >nul || (echo FAILCLOSED FAILED: no safe refusal in the output & exit /b 1)
+          echo Fail-closed: confinement failure refused the document and returned no text.
+
+      # Every other kind the helper reads, confined. Only PDFs had been, and
+      # enabling confinement changes DOCX, ODT, PPTX and XLSX as well. Each is
+      # read unconfined through the helper and confined through
+      # doc_sandbox::extract_text, and the two must be byte-identical and carry
+      # the fixture's marker. The negative control reads DOCX bytes as XLSX,
+      # which must not produce the DOCX marker: the helper answers a refusal
+      # with exit 0, so only the marker check can see it.
+      - name: Every document kind, confined
+        id: kinds
+        if: always()
+        timeout-minutes: 10
+        continue-on-error: true
+        shell: cmd
+        run: |
+          node qa\ocr\make-office.mjs "%RUNNER_TEMP%\office" || exit /b 1
+          set FAIL=0
+          for %%K in (docx odt pptx xlsx) do (
+            src-tauri\target\debug\scale.exe --sovatela-extract-doc-helper %%K < "%RUNNER_TEMP%\office\confined.%%K" > "%RUNNER_TEMP%\office\u-%%K.txt" 2>nul
+            src-tauri\target\debug\scale.exe --sovatela-confined-helper-selftest %%K < "%RUNNER_TEMP%\office\confined.%%K" > "%RUNNER_TEMP%\office\c-%%K.txt"
+            if errorlevel 1 (echo %%K: CONFINED FAILED - self-test exit non-zero & set FAIL=1)
+            echo --- %%K confined:
+            type "%RUNNER_TEMP%\office\c-%%K.txt"
+            echo.
+            findstr /C:"Sovatela confined %%K 4711" "%RUNNER_TEMP%\office\u-%%K.txt" >nul || (echo %%K: BASELINE FAILED - unconfined read lacks the marker & set FAIL=1)
+            findstr /C:"Sovatela confined %%K 4711" "%RUNNER_TEMP%\office\c-%%K.txt" >nul || (echo %%K: CONFINED FAILED - marker missing & set FAIL=1)
+            fc /B "%RUNNER_TEMP%\office\u-%%K.txt" "%RUNNER_TEMP%\office\c-%%K.txt" >nul || (echo %%K: CONFINED FAILED - differs from unconfined & set FAIL=1)
+          )
+          src-tauri\target\debug\scale.exe --sovatela-confined-helper-selftest xlsx < "%RUNNER_TEMP%\office\confined.docx" > "%RUNNER_TEMP%\office\neg.txt" 2>nul
+          echo --- negative control, DOCX read as XLSX:
+          type "%RUNNER_TEMP%\office\neg.txt"
+          echo.
+          findstr /C:"Sovatela confined docx 4711" "%RUNNER_TEMP%\office\neg.txt" >nul && (echo CONTROL FAILED - the marker check accepted a wrong-kind read & set FAIL=1)
+          if "%FAIL%"=="1" exit /b 1
+          echo All four kinds read confined, identical to unconfined; the control was rejected.
+          exit /b 0
+
+      # Condition 6, the first half: a failed grant must not leave the
+      # directory behind. The guard used to be built after the grant. The
+      # probe says whether the directory existed when the failure was forced,
+      # so "gone afterwards" is not satisfied by "never made".
+      - name: Scratch is removed when the grant fails
+        id: grantfail
+        if: always()
+        timeout-minutes: 5
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $scratch = Join-Path $env:RUNNER_TEMP "grant-fail-scratch"
+          $file = Join-Path $env:RUNNER_TEMP "grant-fail-file.txt"
+          Remove-Item -Recurse -Force $scratch -ErrorAction SilentlyContinue
+          Set-Content -Path $file -Value "x" -NoNewline
+          $env:SOVATELA_CONFINE_FORCE_GRANT_FAILURE = "1"
+          $out = & src-tauri\target\debug\scale.exe --sovatela-confined-handle-probe $scratch $file 2>&1 | ForEach-Object { "$_" }
+          $code = $LASTEXITCODE
+          Remove-Item Env:SOVATELA_CONFINE_FORCE_GRANT_FAILURE
+          $out | ForEach-Object { Write-Host "  $_" }
+          Write-Host "  exit: $code"
+          $fail = $false
+          if ($code -ne 3) { Write-Host "GRANTFAIL FAILED: expected exit 3 (scratch preparation failed), got $code"; $fail = $true }
+          if (-not ($out -match "scratch existed before forced grant failure: true")) {
+            Write-Host "GRANTFAIL FAILED: the directory was not shown to exist before the failure"; $fail = $true }
+          if (Test-Path $scratch) { Write-Host "GRANTFAIL FAILED: the scratch directory was left behind"; $fail = $true }
+          if ($fail) { exit 1 }
+          Write-Host "Grant failure: the directory existed, the grant failed, and the guard removed it."
+          exit 0
+
+      # Conditions 5 and 6, the abnormal path: a wedged helper whose
+      # descendant holds a file open in scratch. Run both ways. With `kill`
+      # the grandchild must be dead and the job empty at the checkpoint; with
+      # `no-kill` the same checkpoint must find it alive — so "dead" is the
+      # kill's doing. In both, dropping the helper and then the scratch must
+      # leave nothing behind, which is the application's order however run()
+      # returns. Before either, the grandchild must be alive, in the helper's
+      # job, and holding a file that cannot be deleted.
+      - name: Descendants die with the helper, and scratch goes with them
+        id: descendants
+        if: always()
+        timeout-minutes: 10
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          function Run-Mode($mode) {
+            $scratch = Join-Path $env:RUNNER_TEMP "descendant-$mode"
+            Remove-Item -Recurse -Force $scratch -ErrorAction SilentlyContinue
+            $out = & src-tauri\target\debug\scale.exe --sovatela-confined-descendant-probe $scratch $mode 2>&1 | ForEach-Object { "$_" }
+            $code = $LASTEXITCODE
+            Write-Host "--- $mode (exit $code) ---"
+            $out | ForEach-Object { Write-Host "  $_" }
+            $fields = @{}
+            foreach ($l in $out) { if ($l -match "^descendant: ([a-z-]+)=(\S+)") { $fields[$Matches[1]] = $Matches[2] } }
+            return @{ exit = $code; f = $fields; scratch = $scratch }
+          }
+          $fail = $false
+          function Expect($r, $mode, $key, $want) {
+            $got = $r.f[$key]
+            if ($got -ne $want) { Write-Host "DESCENDANTS FAILED ($mode): $key = $got, expected $want"; $script:fail = $true }
+          }
+          $k = Run-Mode "kill"
+          $n = Run-Mode "no-kill"
+          foreach ($pair in @(@($k, "kill"), @($n, "no-kill"))) {
+            $r = $pair[0]; $m = $pair[1]
+            if ($r.exit -ne 0) { Write-Host "DESCENDANTS FAILED ($m): exit $($r.exit)"; $fail = $true }
+            if (-not $r.f.ContainsKey("pid")) { Write-Host "DESCENDANTS FAILED ($m): no grandchild was started"; $fail = $true }
+            Expect $r $m "holding" "true"
+            Expect $r $m "in-job" "true"
+            Expect $r $m "alive-before" "true"
+            Expect $r $m "removable-before" "false"
+            Expect $r $m "scratch-removed" "true"
+            if (Test-Path $r.scratch) { Write-Host "DESCENDANTS FAILED ($m): scratch still exists"; $fail = $true }
+          }
+          Expect $k "kill" "dead-after" "true"
+          Expect $k "kill" "job-empty-after" "true"
+          Expect $n "no-kill" "dead-after" "false"
+          Expect $n "no-kill" "job-empty-after" "false"
+          if ($fail) { exit 1 }
+          Write-Host "Descendants: killed with the helper and not without it; scratch removed after a held file in both."
+          exit 0
+
+      # Condition 7: the grant merges into the existing DACL. Read before and
+      # after through the application's own grant function. Every earlier
+      # entry must survive; the same check applied to the container's entries
+      # alone — what the old replacing code produced — must fail. The
+      # container must hold read, write, delete and traverse on the directory,
+      # and nothing files inherit may carry execute.
+      - name: The scratch DACL is merged, and files inherit no execute
+        id: acl
+        if: always()
+        timeout-minutes: 5
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "acl-probe"
+          Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
+          $out = & src-tauri\target\debug\scale.exe --sovatela-scratch-acl-probe $dir 2>&1 | ForEach-Object { "$_" }
+          $code = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host "  $_" }
+          Write-Host "  exit: $code"
+          $f = @{}
+          foreach ($l in $out) { if ($l -match "^acl: ([a-z-]+)=(\S+)$") { $f[$Matches[1]] = $Matches[2] } }
+          $fail = $false
+          if ($code -ne 0) { Write-Host "ACL FAILED: exit $code"; $fail = $true }
+          if (-not ([int]$f["before-count"] -gt 0)) { Write-Host "ACL FAILED: no entries before the grant - nothing to preserve"; $fail = $true }
+          foreach ($want in @(
+            @("preserved", "true"), @("replacing-rejected", "true"),
+            @("dir-container-complete", "true"), @("inheritable-execute", "false"),
+            @("file-container-present", "true"), @("file-container-execute", "false"))) {
+            if ($f[$want[0]] -ne $want[1]) { Write-Host "ACL FAILED: $($want[0]) = $($f[$want[0]]), expected $($want[1])"; $fail = $true }
+          }
+          if (Test-Path $dir) { Write-Host "ACL FAILED: probe directory left behind"; $fail = $true }
+          if ($fail) { exit 1 }
+          Write-Host "DACL: merged, the replacing form rejected, the directory granted with traverse, and files inherit no execute."
+          exit 0
+
+      # Condition 8, measured: a confined child writes a program into scratch
+      # and must be refused running it; the unconfined parent must run the same
+      # file, so the refusal is the container's and not a broken copy.
+      - name: A program written into scratch cannot be run from it
+        id: exec
+        if: always()
+        timeout-minutes: 5
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $scratch = Join-Path $env:RUNNER_TEMP "exec-scratch"
+          Remove-Item -Recurse -Force $scratch -ErrorAction SilentlyContinue
+          $out = & src-tauri\target\debug\scale.exe --sovatela-confined-exec-probe $scratch 2>&1 | ForEach-Object { "$_" }
+          $code = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host "  $_" }
+          Write-Host "  exit: $code"
+          $f = @{}
+          foreach ($l in $out) { if ($l -match "^exec: ([a-z0-9-]+)=(\S+)") { $f[$Matches[1]] = $Matches[2] } }
+          $fail = $false
+          if ($code -ne 0) { Write-Host "EXEC FAILED: exit $code"; $fail = $true }
+          foreach ($want in @(@("appcontainer", "ok:true"), @("copy", "ok"), @("parent-run", "ok:0"))) {
+            if ($f[$want[0]] -ne $want[1]) { Write-Host "EXEC FAILED: $($want[0]) = $($f[$want[0]]), expected $($want[1])"; $fail = $true }
+          }
+          # The control: in some stdio form the container runs System32's copy.
+          # A refusal from scratch counts only in a form where that worked.
+          $working = @("null", "piped") | Where-Object { $f["system32-$_"] -eq "ok:0" }
+          if (-not $working) {
+            Write-Host "EXEC FAILED: the container could not run System32\whoami.exe in any form - a refusal from scratch would prove nothing"; $fail = $true }
+          foreach ($m in $working) {
+            if ($f["scratch-$m"] -ne "denied:5") { Write-Host "EXEC FAILED: scratch-$m = $($f["scratch-$m"]), expected denied:5"; $fail = $true } }
+          foreach ($m in @("null", "piped")) {
+            if ("$($f["scratch-$m"])" -like "ok*") { Write-Host "EXEC FAILED: the container ran a program from scratch ($m)"; $fail = $true } }
+          if (Test-Path $scratch) { Write-Host "EXEC FAILED: scratch left behind"; $fail = $true }
+          if ($fail) { exit 1 }
+          Write-Host "Execute: refused inside the container, and the same file runs outside it."
+          exit 0
+
+      # Reported, not gated. Inside the container TEMP and TMP are replaced by
+      # the profile's own AC\Temp (run 36199760841), and the profile is stable
+      # across extractions, so whatever the helper writes there persists
+      # between documents. This lists it after every confined step above has
+      # run, so the size of that defect is measured rather than assumed.
+      - name: What the container left in its profile
+        id: profile
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $p = Join-Path $env:LOCALAPPDATA "Packages\com.anaubi.sovatela.doc"
+          if (-not (Test-Path $p)) { Write-Host "no profile directory at $p"; exit 0 }
+          $files = Get-ChildItem -Recurse -Force -File $p -ErrorAction SilentlyContinue
+          Write-Host "profile: $p"
+          Write-Host "files: $(@($files).Count), bytes: $((@($files) | Measure-Object Length -Sum).Sum)"
+          $files | ForEach-Object { Write-Host ("  {0,10}  {1}" -f $_.Length, $_.FullName.Substring($p.Length)) }
+          exit 0
+
+      # The gate. Every confinement-critical step above carries
+      # continue-on-error so that a failure still prints its diagnostics rather
+      # than aborting the job — which meant, until this step existed, that the
+      # whole workflow went green while confinement, all fifteen fixtures and
+      # all ten repetitions failed. That is the same false-green this work
+      # exists to remove, one level up: the job could not fail for the reason
+      # it runs.
+      - name: Summary, and fail if anything that matters failed
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "image:                    ${{ matrix.image }}"
+          Write-Host "self-test outcome:        ${{ steps.confined.outcome }}"
+          Write-Host "fixtures via sandbox:     ${{ steps.confinedfixtures.outcome }}"
+          Write-Host "ten in a row:             ${{ steps.repeat.outcome }}"
+          Write-Host "mixed fixtures (child):   ${{ steps.realpath.outcome }}"
+          Write-Host "accounting (child):       ${{ steps.accounting.outcome }}"
+          Write-Host "denial probe:             ${{ steps.denial.outcome }}"
+          Write-Host "fail-closed:              ${{ steps.failclosed.outcome }}"
+          Write-Host "handle whitelist:         ${{ steps.handles.outcome }}"
+          Write-Host "shipping feature shape:   ${{ steps.releaseshape.outcome }}"
+          Write-Host "every kind:               ${{ steps.kinds.outcome }}"
+          Write-Host "grant failure cleanup:    ${{ steps.grantfail.outcome }}"
+          Write-Host "descendants:              ${{ steps.descendants.outcome }}"
+          Write-Host "scratch DACL:             ${{ steps.acl.outcome }}"
+          Write-Host "execute from scratch:     ${{ steps.exec.outcome }}"
+          Write-Host "profile contents:         ${{ steps.profile.outcome }} (reported, not gated)"
+          Write-Host "env minimisation:        ${{ steps.envmin.outcome }} (reported, not gated)"
+          Write-Host ""
+          $required = @{
+            "confined self-test"      = "${{ steps.confined.outcome }}"
+            "fixtures via sandbox"    = "${{ steps.confinedfixtures.outcome }}"
+            "ten in a row"            = "${{ steps.repeat.outcome }}"
+            "mixed fixtures (child)"  = "${{ steps.realpath.outcome }}"
+            "accounting (child)"      = "${{ steps.accounting.outcome }}"
+            "denial probe"            = "${{ steps.denial.outcome }}"
+            "fail-closed"             = "${{ steps.failclosed.outcome }}"
+            "handle whitelist"        = "${{ steps.handles.outcome }}"
+            "shipping feature shape"  = "${{ steps.releaseshape.outcome }}"
+            "every kind"              = "${{ steps.kinds.outcome }}"
+            "grant failure cleanup"   = "${{ steps.grantfail.outcome }}"
+            "descendants"             = "${{ steps.descendants.outcome }}"
+            "scratch DACL"            = "${{ steps.acl.outcome }}"
+            "execute from scratch"    = "${{ steps.exec.outcome }}"
+          }
+          $failed = $required.GetEnumerator() | Where-Object { $_.Value -ne "success" }
+          if ($failed) {
+            foreach ($f in $failed) { Write-Host "REQUIRED STEP FAILED: $($f.Key) = $($f.Value)" }
+            exit 1
+          }
+          Write-Host "All required steps succeeded."
+          Write-Host ""
+          Write-Host "The confined steps go through the parent: the self-test, the"
+          Write-Host "confined fixtures and the kinds step call doc_sandbox::extract_text,"
+          Write-Host "which creates and grants a per-run scratch and spawns into it. The"
+          Write-Host "'child' fixture steps call the helper directly and test ordinary"
+          Write-Host "extraction, not confinement."
+          exit 0

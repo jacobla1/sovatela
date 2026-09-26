@@ -1,0 +1,157 @@
+name: windows-ocr-spike
+
+# One question: can a GitHub-hosted Windows runner actually *read* a scan?
+#
+# `ci.yml` assumes it cannot: its comment says the runners "almost certainly
+# have no OCR language pack", so `check-mixed.mjs` accepts exit 33 with a
+# "language pack" message as a pass on Windows, and "no real-photo Windows OCR
+# accuracy test" has been a standing disclosure for several releases. Nothing
+# automated anywhere confirms Windows OCR reads anything.
+#
+# **The first run of this workflow showed that assumption is wrong.** On
+# Windows Server 2025, `Language.OCR~~~en-US~0.0.1.0` is already `Installed`
+# before anything is added. So the install step below is probably redundant,
+# and the open question is narrower: whether the helper can actually use it.
+#
+# That matters beyond the disclosure. The next piece of confinement work is
+# AppContainer for the document helper, and the risk that decides whether it
+# is safe to ship is whether WinRT OCR still activates inside one. A runner
+# that cannot OCR unconfined cannot answer that question confined, so a green
+# CI run would prove nothing about the thing most likely to break — which is
+# exactly how the macOS profile passed its own checks and still broke Vision's
+# CVNLP path on two documents.
+#
+# Windows OCR is a Feature on Demand. This tries to install it and then runs
+# the existing scan fixture. Success means Windows confinement can be built
+# with real validation behind it; failure means any such code lands
+# unvalidated, and that should be a decision rather than a discovery.
+#
+# Deliberately manual: it installs an OS feature and is slow, so it has no
+# business on every push.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ocr-spike:
+    if: github.repository == 'jacobla1/Scale'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Before changing anything: what does this runner have? A pass here
+      # would mean the premise is wrong and the rest is unnecessary.
+      # `powershell` is Windows PowerShell 5.1, not pwsh 7. WinRT type
+      # resolution — `[Type, Assembly, ContentType=WindowsRuntime]` — does not
+      # work in 7, and using it there reports "no languages" for a runner that
+      # may well have one. That is a false negative about the whole question.
+      - name: What the runner has before any install
+        shell: powershell
+        run: |
+          Write-Host "OS: $((Get-CimInstance Win32_OperatingSystem).Caption)"
+          Write-Host "--- OCR-related capabilities ---"
+          try {
+            Get-WindowsCapability -Online |
+              Where-Object { $_.Name -like '*OCR*' -or $_.Name -like '*Language.OCR*' } |
+              Select-Object Name, State | Format-Table -AutoSize | Out-String | Write-Host
+          } catch { Write-Host "Get-WindowsCapability failed: $_" }
+          Write-Host "--- can WinRT OCR see any language? ---"
+          # The same question the app asks. No language means no recogniser.
+          try {
+            $ocr = [Windows.Media.Ocr.OcrEngine, Windows.Media.Ocr, ContentType=WindowsRuntime]
+            $langs = $ocr::AvailableRecognizerLanguages
+            Write-Host "available recognizer languages: $($langs.Count)"
+            foreach ($l in $langs) { Write-Host "  $($l.LanguageTag)" }
+          } catch { Write-Host "WinRT OCR query failed: $_" }
+
+      - name: Try to install the OCR feature on demand
+        id: install
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $names = @('Language.OCR~~~en-US~0.0.1.0')
+          foreach ($n in $names) {
+            Write-Host "attempting $n"
+            try {
+              $r = Add-WindowsCapability -Online -Name $n -ErrorAction Stop
+              Write-Host "  added: $($r | Out-String)"
+            } catch {
+              Write-Host "  failed: $_"
+            }
+          }
+          Write-Host "--- state after ---"
+          Get-WindowsCapability -Online |
+            Where-Object { $_.Name -like '*OCR*' } |
+            Select-Object Name, State | Format-Table -AutoSize | Out-String | Write-Host
+
+      - name: Does WinRT OCR have a language now
+        id: langs
+        shell: powershell
+        continue-on-error: true
+        run: |
+          try {
+            $ocr = [Windows.Media.Ocr.OcrEngine, Windows.Media.Ocr, ContentType=WindowsRuntime]
+            $langs = $ocr::AvailableRecognizerLanguages
+            Write-Host "available recognizer languages: $($langs.Count)"
+            foreach ($l in $langs) { Write-Host "  $($l.LanguageTag)" }
+            if ($langs.Count -gt 0) { "available=true" | Out-File -Append $env:GITHUB_OUTPUT }
+            else { "available=false" | Out-File -Append $env:GITHUB_OUTPUT }
+          } catch {
+            Write-Host "query failed: $_"
+            "available=false" | Out-File -Append $env:GITHUB_OUTPUT
+          }
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          toolchain: stable
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Build the helper
+        run: cargo build --manifest-path src-tauri/Cargo.toml
+
+      # The actual question. `scan-only` is a picture of "INVOICE 12345" with
+      # no text layer, so reading it requires a working recogniser and nothing
+      # else. Exit 0 with the digits present means this runner can OCR;
+      # exit 33 means it still cannot.
+      #
+      # Digits, never the whole phrase: Windows OCR misreads this bitmap
+      # fixture as INUOICE, which is a known and accepted property of the
+      # fixture rather than a failure.
+      - name: Can this runner read a scan
+        shell: cmd
+        run: |
+          node qa\ocr\make-scan.mjs "%RUNNER_TEMP%\spike.pdf"
+          src-tauri\target\debug\scale.exe --sovatela-extract-doc-helper pdf < "%RUNNER_TEMP%\spike.pdf" > "%RUNNER_TEMP%\out.txt" 2>nul
+          echo exit: %ERRORLEVEL%
+          type "%RUNNER_TEMP%\out.txt"
+          findstr /C:"12345" "%RUNNER_TEMP%\out.txt" >nul && echo RESULT: this runner CAN read a scan || echo RESULT: this runner did NOT return the digits
+
+      # Reported rather than asserted. A spike that fails the job on a negative
+      # answer would make "we learned something" look like "something broke",
+      # and the negative answer is a legitimate result that changes the plan.
+      - name: Summary
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "WinRT reported a recognizer language: ${{ steps.langs.outputs.available }}"
+          Write-Host "Feature install step outcome: ${{ steps.install.outcome }}"
