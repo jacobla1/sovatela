@@ -175,3 +175,22 @@ while verifying the first draft" above.
 The two installed-build checks passed, as recorded above. This record replaced
 the pending copy attached to the draft **while it was still a draft**, which
 1.9.0 did in the wrong order.
+
+Published at 2026-09-26T14:25:14Z, after those checks and not before. The
+record above is the copy attached to the release; what follows was added
+afterwards, in the repository only.
+
+- The published source passes its own suite at the public tag: `npm ci` and
+  **697 tests across 37 files** at `a0549ca`. (Procedure step 1 says to run
+  this before tagging; it was run after, against the same commit.)
+- The private repository is tagged `v1.10.0` at `61bf8c6`, the commit the
+  public tag's provenance names. The private tags for 1.8.8, 1.8.9 and 1.9.0
+  were never made.
+- Site built from the published artifacts, after their checksums and
+  signature verified: **8 release asset links resolve**; release feed 14
+  entries, newest 1.10.0.
+- All **nine** live pages and files are byte-identical to the built ones.
+- Live `version.json` reads **1.10.0**; all six installer links return
+  **200**; the `.dmg` fetched from the live link hashes to
+  `2997df21988d93472d778fdc61072906ca9e31ad049292624a2447213afc33da`, which is
+  what the site publishes for it.
