@@ -1,4 +1,4 @@
-# app	/Users/jacob/githubApps/Scale/src-tauri/target/release/bundle/macos/Sovatela.app
+# app	~/src-tauri/target/release/bundle/macos/Sovatela.app
 # version	1.6.0
 phase	time	source	remote
 idle	08:59:14	rust	51.159.86.116:443

@@ -8,7 +8,8 @@ not met, and the claim is withdrawn — see
 review was addressed and measured — see
 [Answering the third review](#answering-the-third-review--2026-09-26). The
 fourth review no longer blocks enabling by default — see
-[Fourth review](#fourth-review--2026-09-26).*
+[Fourth review](#fourth-review--2026-09-26). **Enabled by default on
+2026-09-26**, for the next release.*
 
 Supersedes the status in
 [QA-WINDOWS-CONFINEMENT-2026-09-23.md](QA-WINDOWS-CONFINEMENT-2026-09-23.md),
@@ -17,14 +18,20 @@ not reach the scratch directory, its ACL, the IO threads or the wait loop.
 
 ## Status
 
-**Working on the path the application uses. Gated off by default.** Nothing in
-a shipped build is confined on Windows. `doc_sandbox::run` uses the container
-only when `windows-confinement` is compiled in, and fails closed if it cannot
-be entered — there is no unconfined retry.
+**On by default from 2026-09-26, for the next release.** `windows-confinement`
+is a default feature, so `doc_sandbox::run` runs the helper in the container
+and fails closed if it cannot be entered — there is no unconfined retry.
+**No shipped build is confined yet: 1.9.0 and earlier are not.**
 
-**The fourth review, on `84c53d3`, no longer blocks enabling it by default.**
-All ten conditions are met, three with bounded reservations. Whether to enable
-it is the owner's decision and has not been made.
+The owner enabled it after the fourth review, on `84c53d3`, found no remaining
+security blocker: all ten conditions met, three with bounded reservations. The
+gate now also checks that the default build is the confined one, against a
+`--no-default-features` build as the control.
+
+**Before the next release ships:** check the signed `--release` Windows build —
+that a document is read with the helper in an AppContainer, and that it carries
+no test switch or probe. Nothing so far is a release build. This is on the
+release checklist.
 
 ## What was measured
 

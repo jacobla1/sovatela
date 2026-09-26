@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Read documents inside a sandbox on Windows. The helper that reads PDFs and
+  Word, OpenDocument, PowerPoint and Excel files now runs in an AppContainer
+  with no capabilities. In testing it was refused files outside its own
+  scratch directory and the network; like any regular AppContainer it keeps
+  some system files, registry keys and COM objects. If the sandbox cannot be
+  entered, the document is refused rather than read unconfined. It protects
+  the rest of the machine from a hostile document; it does not isolate one
+  document from the next. Limits are in `SECURITY.md`.
+
 ## 1.9.0 — 2026-09-13
 
 - Read the scanned pages of a mixed PDF. A typed cover sheet in front of a

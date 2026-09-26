@@ -201,13 +201,14 @@ outstanding. The
 [confinement QA record](docs/release/QA-DOC-CONFINEMENT-2026-09-14.md) records the
 tested boundary and remaining work.
 
-### Document helper confinement — unreleased Windows implementation
+### Document helper confinement — Windows, from the next release
 
-The current source can create the extraction helper inside an AppContainer with
-no capabilities, behind a `windows-confinement` build feature that is **not
-enabled by default**. Nothing in any shipped binary is confined on Windows.
+The current source runs the extraction helper inside an AppContainer with no
+capabilities. It is on by default from 2026-09-26 (the `windows-confinement`
+build feature) and will be in the next release; **1.9.0 and earlier do not
+confine the helper on Windows.**
 
-When compiled in, the parent creates the helper — an AppContainer is a property
+The parent creates the helper — an AppContainer is a property
 of the token a process is created with, so the child's loader already runs under
 it — suspended, places it in a kill-on-close job that nothing can leave, and only
 then lets it run. The helper inherits only the three handles it is given, and
@@ -236,9 +237,8 @@ debug build:
   container, while a system program can.
 - A forced confinement failure refuses the document and returns no text.
 
-An independent review found no remaining security blocker to enabling it by
-default. Whether to enable it has not been decided. The limits that would apply
-if it were:
+It was enabled after four rounds of independent review, the last of which found
+no remaining security blocker. Its limits:
 
 - It is a regular AppContainer, not a less-privileged one (LPAC): it keeps
   selected system files, registry keys and COM objects. The denials above are

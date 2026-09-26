@@ -12,7 +12,12 @@ name = "scale_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
-# Unvalidated. See src/doc_confinement_windows.rs.
+# On by default from 2026-09-26, after four rounds of independent review; see
+# docs/release/QA-WINDOWS-CONFINEMENT-2026-09-24.md. It compiles to nothing
+# outside Windows. On Windows it runs the document helper inside an
+# AppContainer and refuses the document if that fails. `--no-default-features`
+# builds the unconfined helper, for diagnosis only.
+default = ["windows-confinement"]
 windows-confinement = []
 # The Windows gate's switches and probes: forcing a refusal, disabling the
 # handle whitelist, overriding the environment, and the self-test and probe

@@ -5,9 +5,10 @@ live in
 [QA-WINDOWS-CONFINEMENT-2026-09-24.md](QA-WINDOWS-CONFINEMENT-2026-09-24.md),
 and this says what is done, what is not, and what to distrust.
 
-**Head when written: `305b93b`; run `36200553780` passes all nineteen required
-steps on both images.** Feature `windows-confinement`, **off by default**.
-Nothing in any shipped binary is confined on Windows.
+**On by default from 2026-09-26** (`windows-confinement` is a default feature),
+for the next release. **No shipped build is confined yet: 1.9.0 and earlier are
+not.** The last full evidence run is `36200553780` at `305b93b`, all nineteen
+required steps on both images.
 
 The third review (on `e7b3c94`) found conditions 6 and 7 not met, and one of
 those misses — the SIDs — had been marked fixed from a commit message without
@@ -69,16 +70,16 @@ therefore created with `CreateProcessW` and its pipes wired by hand, in
 
 ## Pick up here
 
-**Enabling by default is the user's decision, and has not been made.** Nothing
-in the review requires more code first. If it is enabled:
+Enabled by default on the owner's decision after the fourth review. Before the
+next release ships:
 
-- **Check the signed `--release` artifact** before it ships: that it confines,
-  and that it carries no test switch or probe. Everything so far is a debug
-  build with the shipping feature set, on two hosted images.
-- **Publish the residual risks** from the QA record's "Fourth review", in
-  `SECURITY.md` and wherever confinement is described. In particular, promise
-  host confinement, **not per-document isolation**: the profile is stable and
-  `TEMP` resolves inside it.
+- **Check the signed `--release` Windows build.** Read a document in the
+  installed app and confirm the helper runs in an AppContainer, and that the
+  binary carries no test switch or probe. Everything so far is a debug build on
+  two hosted images. It is on the release checklist.
+- `SECURITY.md` states the residual risks, including that this is host
+  confinement, **not per-document isolation**. Keep it that way wherever
+  confinement is described.
 
 Recorded so a later pass does not rediscover them:
 
@@ -177,5 +178,5 @@ Everything else is verified on macOS as usual: `cargo test`, `cargo clippy
 
 ## Unrelated, and waiting
 
-The public mirror is well behind `main` and still at 1.9.0, and the installed
-first-run walkthrough still blocks the announcement. Neither needs Windows.
+The installed first-run walkthrough still blocks the announcement. It does not
+need Windows. The public mirror was brought up to date on 2026-09-26.

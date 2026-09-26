@@ -22,8 +22,8 @@ Sandbox implementation and app rasterisation have not started in this increment.
 
 The executable was the one in the already-mounted, read-only **1.9.0** release
 DMG, not a local build. `CFBundleShortVersionString` was read before execution;
-`hdiutil info` identified the mounted image as
-`/Users/jacob/Downloads/Sovatela_1.9.0_universal.dmg` at `/Volumes/Sovatela`.
+`hdiutil info` identified the mounted image as the downloaded
+`Sovatela_1.9.0_universal.dmg`, mounted at `/Volumes/Sovatela`.
 The observed DMG SHA-256 was:
 
 ```text

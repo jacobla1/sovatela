@@ -22,6 +22,10 @@ const executable = resolve(process.argv[2]);
 // refusal — that is a real configuration, not a defect.
 const expectOcr = process.env.SOVATELA_EXPECT_OCR === "1";
 
+// How many scanned pages the helper recognises before it stops: ocr.rs's
+// MAX_OCR_PAGES. Pages beyond it are named as unread by design.
+const OCR_PAGE_LIMIT = 20;
+
 // Which side of the sandbox boundary to test.
 //
 // By default these spawn the helper directly — the child — which is what they
@@ -97,7 +101,8 @@ for (const [mode, missing, digital] of [
         // What must hold everywhere is that the page is *accounted for*. That
         // is the property every one of these fixtures exists to defend.
         const head = text.split('\n\n')[0];
-        for (const page of missing.split(', ')) {
+        const pages = missing.split(', ');
+        for (const [index, page] of pages.entries()) {
           const unread = head.includes(`Pages without readable digital text:`)
             && new RegExp(`Pages without readable digital text: [^.]*\\b${page}\\b`).test(head)
             && text.includes(`[Page ${page}] could not be read`);
@@ -105,6 +110,17 @@ for (const [mode, missing, digital] of [
             && text.includes(`[Page ${page}, read from a picture]`);
           assert.ok(unread || recognised,
             `${mode}: page ${page} is neither named as unread nor marked as read from a picture: ${text}`);
+          // Where a recogniser is known to be present, "named as unread" is
+          // not an acceptable answer for a page within the limit. Accepting it
+          // is how a Seatbelt policy that broke recognition on the hosted macOS
+          // runner passed fourteen of these fifteen fixtures: only scan-only
+          // demanded text, and it alone failed. Every other fixture accounted
+          // for its scanned page by declaring it unread, which is correct on a
+          // machine that cannot read and a defect on one that can.
+          if (expectOcr && index < OCR_PAGE_LIMIT) {
+            assert.ok(recognised,
+              `${mode}: page ${page} was not recognised, on a machine where a recogniser is expected: ${text}`);
+          }
         }
       }
     }

@@ -71,28 +71,34 @@ jobs:
       - name: Build frontend
         run: npm run build
 
-      # Order matters, and got this wrong once. Both builds write the same
-      # scale.exe, so whichever runs last is the one the steps below execute.
-      # With the feature build first, this one overwrote it, the self-test flag
-      # went unrecognised, the process fell through to Tauri on a headless
-      # runner and the job hung for three minutes printing nothing — which
-      # read as the sandbox failing and was the build order.
-      - name: The default build must still work
-        run: cargo build --manifest-path src-tauri/Cargo.toml
-
-      # Two feature builds. `windows-confinement` alone is the shape that could
-      # ship; `windows-confinement-testhooks` adds the switches and probes this
-      # workflow measures with. The shipping shape is built first and copied
-      # aside, so the testhooks build is the scale.exe every later step runs.
-      - name: Build the shipping feature shape, and keep a copy
+      # Two builds, and order matters: both write the same scale.exe, so
+      # whichever runs last is the one the steps below execute. It went wrong
+      # once — a later build overwrote the binary under test, the self-test
+      # flag went unrecognised, and the job hung on a headless Tauri launch.
+      #
+      # The default build is the shape that ships: `windows-confinement` is a
+      # default feature from 2026-09-26. It is built first and copied aside;
+      # `windows-confinement-testhooks` adds the switches and probes this
+      # workflow measures with, and that build is the scale.exe every later
+      # step runs.
+      - name: Build the shipping shape (the default build), and keep a copy
         shell: pwsh
         run: |
-          cargo build --manifest-path src-tauri/Cargo.toml --features windows-confinement
+          cargo build --manifest-path src-tauri/Cargo.toml
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Copy-Item src-tauri\target\debug\scale.exe "$env:RUNNER_TEMP\release-shape.exe"
 
-      - name: Clippy, shipping feature shape
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --features windows-confinement -- -D warnings
+      - name: Clippy, shipping shape
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      # The unconfined build still compiles, for diagnosis, and is kept as the
+      # control for the check below that the default build is the confined one.
+      - name: Build without default features, and keep a copy
+        shell: pwsh
+        run: |
+          cargo build --manifest-path src-tauri/Cargo.toml --no-default-features
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item src-tauri\target\debug\scale.exe "$env:RUNNER_TEMP\unconfined-shape.exe"
 
       - name: Build with the test hooks
         run: cargo build --manifest-path src-tauri/Cargo.toml --features windows-confinement-testhooks
@@ -132,13 +138,22 @@ jobs:
             if ($inRelease) { Write-Host "SHIPPING SHAPE FAILED: $n is in a build that could ship"; $fail = $true }
             if (-not $inHooks) { Write-Host "CONTROL FAILED: $n not found in the testhooks build - the search proves nothing"; $fail = $true }
           }
+          # And the default build is the confined one. The environment line is
+          # printed only by Confined::spawn, which is compiled only with the
+          # feature: it must be in the default build and not in the
+          # --no-default-features build, or this cannot tell them apart.
+          $unconfined = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes("$env:RUNNER_TEMP\unconfined-shape.exe"))
+          $marker = "confined: environment carries"
+          Write-Host ("{0,-40} default={1,-5} no-default-features={2}" -f $marker, $release.Contains($marker), $unconfined.Contains($marker))
+          if (-not $release.Contains($marker)) { Write-Host "SHIPPING SHAPE FAILED: the default build does not contain the confinement code"; $fail = $true }
+          if ($unconfined.Contains($marker)) { Write-Host "CONTROL FAILED: the marker is also in the unconfined build - it cannot tell them apart"; $fail = $true }
           # And the flag is refused rather than run: exit 64, the unclaimed-flag path.
           & "$env:RUNNER_TEMP\release-shape.exe" --sovatela-confined-helper-selftest pdf 2>&1 | ForEach-Object { Write-Host "  $_" }
           $code = $LASTEXITCODE
           Write-Host "shipping shape, self-test flag: exit $code"
           if ($code -ne 64) { Write-Host "SHIPPING SHAPE FAILED: expected exit 64 for an unclaimed flag"; $fail = $true }
           if ($fail) { exit 1 }
-          Write-Host "Shipping feature shape: no test switch or probe present, and the flag is refused."
+          Write-Host "Shipping shape: confinement compiled in, no test switch or probe present, and the flag is refused."
           exit 0
 
       # The baseline. Unconfined, this runner reads the fixture and returns

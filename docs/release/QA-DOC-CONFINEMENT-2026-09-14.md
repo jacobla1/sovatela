@@ -189,3 +189,30 @@ explain the live reporting used here. WebKit's
 provide the directory-suffix ABI reference. Microsoft documents the distinction
 between write restrictions and read isolation in
 [mandatory integrity control](https://learn.microsoft.com/en-us/windows/win32/secauthz/mandatory-integrity-control).
+
+## 2026-09-26: the policy broke recognition on the hosted macOS runner
+
+The first `ci.yml` run in two weeks failed on `macos-latest` only: the
+scan-only fixture came back unreadable. Bisected on CI — `3acfe0f` (1.9.0)
+passes on today's runner, `f40f606`, which added this policy, fails, and so
+does everything after it — so it was this policy, not a runner change.
+
+The runner is a virtual machine (`VirtualMac2,1`, "Apple M1 (Virtual)",
+macOS 26.6.2). Its GPU is paravirtualised, and the kernel logged the helper
+being denied `iokit-open-user-client AppleParavirtDeviceUserClient`. The
+policy admitted only Apple-silicon GPU classes (`AGX…`), so under Seatbelt
+Metal had no device and Vision recognised nothing. Three variants were run on
+the runner; allowing that one class alone restored recognition (`INVOICE
+12345`, all fifteen fixtures). `kern.hv_vmm_present` is also denied and does
+not matter; `com.apple.cvmsServ` is not needed. The class exists only inside a
+virtual machine, and grants there what `AGX…` grants on hardware.
+
+It went unnoticed for two reasons. `ci.yml` had not been run since
+2026-09-13. And `check-mixed.mjs` accepted "named as unread" for a scanned
+page even where a recogniser is expected, so fourteen of fifteen fixtures
+passed with recognition broken; it now requires recognised text for the
+first 20 scanned pages when `SOVATELA_EXPECT_OCR=1`.
+
+This is also a finding about the policy's reach: it had been validated on
+Apple-silicon hardware only. Intel Macs and other virtualised configurations
+remain unvalidated.

@@ -1,11 +1,18 @@
 name: ci
 
 # Build + test on all three desktop OSes, and validate the claude-glm
-# credential-read path per platform. Deliberately NOT run on every push —
-# a 3-OS Tauri build (macOS billed 10x) is costly — so it runs on PRs to main
-# and on demand. Trigger it manually before cutting a release:
-#   Actions → ci → Run workflow
+# credential-read path per platform.
+#
+# Runs on every push to main, as well as on PRs and on demand. It used to run
+# only on PRs and on demand, because a 3-OS Tauri build is costly (macOS is
+# billed at ten times the rate). That saving had a price: nothing ran it
+# between 2026-09-13 and 2026-09-26, and in that gap the macOS helper's
+# Seatbelt policy (f40f606) broke text recognition on the hosted runner without
+# anyone seeing it for fifty-odd commits. A red build on the commit that
+# caused it is cheaper than a bisect two weeks later.
 on:
+  push:
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:

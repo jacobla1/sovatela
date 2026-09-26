@@ -13,29 +13,24 @@
 //! the user's own rights. Bounding a crash and an allocation is not bounding a
 //! compromise.
 //!
-//! ## Status: working on the application path, gated off by default
+//! ## Status: on by default
 //!
-//! Behind the `windows-confinement` feature, which is not enabled by default.
-//! `doc_sandbox::run` uses this when it is compiled in, and fails closed if
-//! the container cannot be entered — there is no unconfined retry.
+//! The `windows-confinement` feature is a default feature from 2026-09-26,
+//! after four rounds of independent review. `doc_sandbox::run` uses this, and
+//! fails closed if the container cannot be entered — there is no unconfined
+//! retry.
 //!
-//! `windows-confinement-validate.yml` exercises the real path:
-//! `doc_sandbox::extract_text` reads a scanned PDF through a confined helper,
-//! and the result is compared against the same fixture read unconfined. As of
-//! 2026-09-24 they are **byte for byte identical** — the scratch directory is
-//! created and ACL'd, the container is entered, the child starts, WinRT OCR
-//! activates inside it and returns `INUOICE 12345` with exit 0.
+//! `windows-confinement-validate.yml` is the gate. On two hosted images it
+//! reads every supported document kind through `doc_sandbox::extract_text`
+//! inside the container, byte-identical to unconfined, and measures denial
+//! outside scratch, the handle whitelist in both directions, descendant kill,
+//! the scratch DACL, execute denial in scratch, and the refusal path. The
+//! record is `docs/release/QA-WINDOWS-CONFINEMENT-2026-09-24.md`.
 //!
-//! That settles the two risks this could have foundered on. An AppContainer is
-//! built for packaged applications, and a desktop process placed in one can
-//! fail to activate WinRT classes; had OCR not started, every scanned PDF on
-//! Windows would have become "this machine has no recogniser".
-//!
-//! **One runner image, once.** Not Intel, not a clean machine, not any Windows
-//! release but the Server 2025 image, not a signed artifact, and not a
-//! real-photo accuracy test — the fixture is a synthetic bitmap whose known
-//! misreads are `INUOICE` and `SOURTELR`. Do not enable this by default on a
-//! single observation.
+//! What it does not give: per-document isolation (the profile is stable, and
+//! `TEMP` inside the container resolves into it), an LPAC's narrower access, or
+//! proof that every descendant has exited when `kill` returns. It has not yet
+//! been checked in an installed, signed release build.
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::Foundation::GENERIC_WRITE;

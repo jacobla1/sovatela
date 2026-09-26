@@ -52,6 +52,13 @@
         "AGXDevice"
         "AGXCommandQueue"
         "AGXSharedUserClient"
-        "H1xANELoadBalancerDirectPathClient"))
+        "H1xANELoadBalancerDirectPathClient"
+        ;; The GPU of a macOS virtual machine. Without it Metal has no device
+        ;; there, and Vision recognises nothing: on GitHub's macos-latest runner
+        ;; (VirtualMac2,1) this profile turned every scan unreadable, and the
+        ;; kernel logged only this denial as specific to the VM. It exists only
+        ;; inside a virtual machine, and grants there what AGX grants on
+        ;; hardware. Measured 2026-09-26: this one class restores recognition.
+        "AppleParavirtDeviceUserClient"))
 
 ;; The Rust loader appends only escaped, canonical scratch/executable paths.
