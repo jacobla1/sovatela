@@ -107,14 +107,17 @@ On CI:
 Nothing so far is a release build. These run against the draft release's
 installers, and the release is not published until they pass:
 
-- [ ] **Windows**: install the release build — Windows installers are not
+- [x] **Windows**: install the release build — Windows installers are not
       code-signed. Attach a scanned PDF and a `.docx`; both read. While one is
       being read, the helper process shows `AppContainer` in Process Explorer's
       *Integrity* column. The installed `scale.exe` contains none of the
       `SOVATELA_CONFINE_` switch names.
-- [ ] **macOS**: install the notarized build. Attach a scanned PDF and a
+- [x] **macOS**: install the notarized build. Attach a scanned PDF and a
       `.docx`; both read, and the scan's text is recognised. While one is being
       read, Activity Monitor's *Sandbox* column shows `Yes` for the helper.
+
+Both passed on 2026-09-26, checked by the owner against the second draft's
+installers.
 
 ## Limits
 
@@ -139,4 +142,36 @@ installers, and the release is not published until they pass:
 
 ## Release verification
 
-Run after the tag, against what was published. **Pending.**
+Run after the tag, against the draft, before publishing it.
+
+- **CI** run `36243662535` at private `61bf8c6`, the commit this release is
+  generated from: success on macOS, Linux and Windows, including the new step
+  that reads the fifteen fixtures with the helper inside an app bundle.
+- **Windows confinement gate** run `36237041367` at `fbba729`: every required
+  step succeeded on both images. The only code change since is the macOS
+  Seatbelt policy and its loader, which the Windows build does not compile.
+- **Release** run `36244067366` at `v1.10.0` (public `a0549ca`): all seven jobs
+  succeeded, including `verify-macos-signature` and `verify-release-assets`.
+  The macOS build waited at the `release` environment gate until approved by
+  hand. The draft carries **11 assets**.
+- `scripts/verify-release.sh v1.10.0`: **10 passed, 0 failed, 0 skipped** —
+  checksums over 7 files, the minisign signature, 6 build attestations, macOS
+  signed/notarized/stapled, the provenance record naming `v1.10.0` and public
+  commit `a0549ca6c34c`, and the publisher re-run at `61bf8c67bc9a`
+  reproducing the published tree exactly.
+
+Against the **shipped binary** from the draft's `Sovatela_1.10.0_universal.dmg`,
+mounted read-only, `CFBundleShortVersionString` **1.10.0**, Developer ID,
+notarized and stapled, its helper run from inside the app bundle:
+
+- The scan fixture reads as `INVOICE 12345`.
+- **15 mixed/control fixtures pass with `SOVATELA_EXPECT_OCR=1`**, so every
+  scanned page is recognised, and **3 page-accounting cases pass**.
+- DOCX, ODT, PPTX and XLSX each read, with their marker.
+
+The same checks against the first draft's helper returned 0 of 15; see "Found
+while verifying the first draft" above.
+
+The two installed-build checks passed, as recorded above. This record replaced
+the pending copy attached to the draft **while it was still a draft**, which
+1.9.0 did in the wrong order.
