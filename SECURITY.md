@@ -177,8 +177,9 @@ has no OCR engine. OCR can misread or omit words and lines within a page.
 
 The extraction helper installs a Seatbelt policy in the macOS extraction helper
 before reading document bytes. It denies filesystem access by default, allowing
-specific OS framework, font and language-data directories, the helper executable
-and two private temporary/cache directories. Direct network connections and
+specific OS framework, font and language-data directories, the helper executable,
+read-only access to the application's own bundle when it runs from one, and two
+private temporary/cache directories. Direct network connections and
 process creation/execution are denied. App-launched helpers receive a cleared
 environment; inherited file descriptors other than stdin, stdout and stderr are
 closed before parsing. If confinement cannot be installed, extraction is refused.

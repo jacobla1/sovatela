@@ -182,6 +182,20 @@ mod macos {
         ))
     }
 
+    /// The application bundle the executable runs from, if it runs from one.
+    ///
+    /// `X.app/Contents/MacOS/<executable>` gives `X.app`; anything else, such as
+    /// a bare binary under `target/`, gives nothing.
+    fn bundle_root(executable: &Path) -> Option<&Path> {
+        let macos = executable.parent()?;
+        let contents = macos.parent()?;
+        let bundle = contents.parent()?;
+        (macos.file_name()? == "MacOS"
+            && contents.file_name()? == "Contents"
+            && bundle.extension()? == "app")
+            .then_some(bundle)
+    }
+
     fn profile(temp: &Path, cache: &Path, executable: &Path) -> io::Result<CString> {
         let mut result = include_str!("doc_seatbelt.sb").to_owned();
         for directory in [temp, cache] {
@@ -195,6 +209,19 @@ mod macos {
                 .ok_or_else(|| failure("missing executable parent"))?,
         )?;
         result.push_str(&format!("\n(allow file-read-metadata file-test-existence (literal {exe}) (path-ancestors {exe}))\n(allow file-read-data (literal {exe}) (literal {parent}))\n"));
+        // Read-only access to the helper's own application bundle.
+        //
+        // Inside `Sovatela.app`, CoreFoundation resolves the main bundle — its
+        // directory and `Info.plist` — and Vision fails without it: the
+        // notarized 1.10.0 draft refused every scan with "__objc2.missingError"
+        // while the same source read them as a bare binary. Every check before
+        // then, local and CI, ran the helper bare, so none could see it. The
+        // bundle is the application's own signed code and resources; reading
+        // it grants nothing the helper's user could not already see.
+        if let Some(bundle) = bundle_root(executable) {
+            let bundle = quote(bundle)?;
+            result.push_str(&format!("\n(allow file-read* (subpath {bundle}))\n"));
+        }
         CString::new(result).map_err(|_| failure("invalid sandbox profile"))
     }
 
@@ -274,6 +301,43 @@ mod macos {
             );
             assert!(quote(Path::new("relative")).is_err());
             assert!(quote(Path::new("/tmp/a\n(allow default)")).is_err());
+        }
+
+        #[test]
+        fn the_bundle_is_found_only_for_an_app_executable() {
+            assert_eq!(
+                bundle_root(Path::new("/Applications/Sovatela.app/Contents/MacOS/scale")),
+                Some(Path::new("/Applications/Sovatela.app"))
+            );
+            for bare in [
+                "/Users/x/Scale/src-tauri/target/debug/scale",
+                "/Applications/Sovatela.app/Contents/Resources/scale",
+                "/tmp/Contents/MacOS/scale",
+                "/scale",
+            ] {
+                assert_eq!(bundle_root(Path::new(bare)), None, "{bare}");
+            }
+        }
+
+        #[test]
+        fn a_bundled_helper_may_read_its_own_bundle_and_a_bare_one_gains_nothing() {
+            let temp = Path::new("/private/var/folders/x/T/s");
+            let cache = Path::new("/private/var/folders/x/C/s");
+            let bundled = profile(
+                temp,
+                cache,
+                Path::new("/Applications/Sovatela.app/Contents/MacOS/scale"),
+            )
+            .unwrap();
+            assert!(bundled
+                .to_str()
+                .unwrap()
+                .contains("(allow file-read* (subpath \"/Applications/Sovatela.app\"))"));
+            let bare = profile(temp, cache, Path::new("/opt/scale/target/debug/scale")).unwrap();
+            assert!(!bare
+                .to_str()
+                .unwrap()
+                .contains("(allow file-read* (subpath \"/opt"));
         }
 
         #[test]

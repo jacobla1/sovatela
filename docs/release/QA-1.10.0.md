@@ -46,6 +46,31 @@ crate it already used; the third-party manifest's package set is unchanged.
   flagging pages two readers disagree on — is in the source and not in the
   application. The shipped warning is unchanged.
 
+## Found while verifying the first draft
+
+The first draft of this release, built from `v1.10.0` at public commit
+`b7619f2` (release run `36237495305`), passed every job in the release
+workflow and was **not published**. Run from the notarized `.dmg` on Apple
+silicon, its helper refused every scan — "The operation couldn't be completed.
+(__objc2.missingError error 0.)" — while reading office documents correctly.
+
+The cause: inside `Sovatela.app`, CoreFoundation resolves the main bundle, and
+the Seatbelt policy denied the helper reading it. Every earlier check ran the
+helper as a bare binary, which has no bundle. The policy now grants the helper
+read-only access to its own bundle, only when it runs from one, and `ci.yml`
+runs the fifteen fixtures with the helper inside a minimal bundle. That step
+fails with the old policy and passes with the fix; both were run. The bisection
+is in [QA-DOC-CONFINEMENT-2026-09-14.md](QA-DOC-CONFINEMENT-2026-09-14.md).
+
+The installed-build checks below exist for exactly this, and the first of them
+to run caught it.
+
+**The tag was moved.** The unpublished draft was deleted and the `v1.10.0` tag
+removed from `b7619f2`, then re-created on the mirror commit carrying the fix.
+The first tag was public for about two hours and no release was published from
+it. A clone that fetched it holds a `v1.10.0` pointing at `b7619f2`; the one
+this release is built from is the one on GitHub now.
+
 ## Verification before tagging
 
 Local, on macOS (Apple silicon), at the prepared commit:

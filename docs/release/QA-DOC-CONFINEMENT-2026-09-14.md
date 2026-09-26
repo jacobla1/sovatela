@@ -216,3 +216,37 @@ first 20 scanned pages when `SOVATELA_EXPECT_OCR=1`.
 This is also a finding about the policy's reach: it had been validated on
 Apple-silicon hardware only. Intel Macs and other virtualised configurations
 remain unvalidated.
+
+## 2026-09-26: the policy broke recognition inside an application bundle
+
+Checking the notarized 1.10.0 **draft** before publishing it: its helper refused
+every scan with "The operation couldn't be completed. (__objc2.missingError
+error 0.)", while the same source read the same scan as a bare binary. Office
+documents, which do not use Vision, were unaffected.
+
+Bisected on this Mac, one variable at a time:
+
+- A local release build run bare reads the scan, so optimisation is not it.
+- The same binary inside a copy of the app bundle fails, signed ad hoc with or
+  without the hardened runtime, so neither signing nor notarisation is it.
+- Inside the bundle with `(allow default)` it reads, so the policy is the cause.
+- Granting one operation class at a time, only `file-read*` restores it.
+- Granting reads of the linguistic-data asset does not; granting reads of the
+  bundle does — the bundle directory and `Info.plist` alone are enough.
+
+Inside `Sovatela.app`, CoreFoundation resolves the main bundle, and Vision fails
+when the sandbox denies it. The policy now grants the helper read-only access to
+its own bundle, only when it runs from one (`X.app/Contents/MacOS/…`). A bare
+binary gains nothing.
+
+Every check before this ran the helper bare — locally, in `ci.yml`, and in
+`check-mixed.mjs` — so none could see it. `ci.yml` now also runs the fifteen
+fixtures with the helper inside a minimal bundle (three `Info.plist` keys),
+which fails on the first scanned page with the old policy and reads all fifteen
+with the fix; both directions were run.
+
+Not explained: a copy of the helper run from under `/tmp`, which on macOS is a
+symlink to `/private/tmp`, crashed with SIGSEGV under the policy, while the same
+file under the home directory ran normally. `/Applications` is not a symlink,
+so an installed app does not meet this, but a helper started through a
+symlinked path is not supported.

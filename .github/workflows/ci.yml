@@ -115,6 +115,34 @@ jobs:
           SOVATELA_EXPECT_OCR: ${{ (runner.os == 'Windows' || runner.os == 'macOS') && '1' || '' }}
         run: node qa/ocr/check-mixed.mjs src-tauri/target/debug/scale${{ runner.os == 'Windows' && '.exe' || '' }}
 
+      # The same check with the helper inside an application bundle, as it runs
+      # when installed. Run bare, the helper has no main bundle; inside
+      # `Sovatela.app` CoreFoundation resolves one, and the Seatbelt policy has
+      # to let it read it. It did not, and the notarized 1.10.0 draft refused
+      # every scan, while every check here passed because each ran the helper
+      # bare. A three-key Info.plist is enough to reproduce that: with the old
+      # policy this step fails on the first scanned page, and with the fix it
+      # reads all fifteen fixtures.
+      - name: Mixed PDFs, with the helper inside an app bundle (macOS)
+        if: runner.os == 'macOS'
+        env:
+          SOVATELA_EXPECT_OCR: "1"
+        run: |
+          app="$RUNNER_TEMP/BundleTest.app"
+          mkdir -p "$app/Contents/MacOS"
+          cp src-tauri/target/debug/scale "$app/Contents/MacOS/scale"
+          cat > "$app/Contents/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+          <key>CFBundleIdentifier</key><string>com.anaubi.sovatela.bundletest</string>
+          <key>CFBundleExecutable</key><string>scale</string>
+          <key>CFBundlePackageType</key><string>APPL</string>
+          </dict></plist>
+          PLIST
+          codesign --force --deep -s - "$app"
+          node qa/ocr/check-mixed.mjs "$app/Contents/MacOS/scale"
+
       - name: The extraction helper reads a scanned PDF
         shell: bash
         run: |
