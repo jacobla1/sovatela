@@ -171,9 +171,65 @@ const fixtures = {
   ]),
 };
 
+// A Word template with a style part, for the template jobs: the helper vets
+// templates and builds documents from them, and on Windows that runs in the
+// container too. A document the check reports "Heading1" for, and a framed
+// build request — the template's length as eight little-endian bytes, the
+// template, then the Markdown — whose reply is a base64 .docx.
+fixtures["template.docx"] = zip([
+  [
+    "[Content_Types].xml",
+    xml +
+      '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+      '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+      '<Default Extension="xml" ContentType="application/xml"/>' +
+      '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>' +
+      '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>' +
+      "</Types>",
+  ],
+  [
+    "_rels/.rels",
+    xml +
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+      '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>' +
+      "</Relationships>",
+  ],
+  [
+    "word/_rels/document.xml.rels",
+    xml +
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+      '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>' +
+      "</Relationships>",
+  ],
+  [
+    "word/document.xml",
+    xml +
+      '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>' +
+      "<w:p><w:r><w:t>x</w:t></w:r></w:p></w:body></w:document>",
+  ],
+  [
+    "word/styles.xml",
+    xml +
+      '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
+      '<w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/></w:style>' +
+      '<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/></w:style>' +
+      "</w:styles>",
+  ],
+]);
+{
+  const template = fixtures["template.docx"];
+  const length = Buffer.alloc(8);
+  length.writeBigUInt64LE(BigInt(template.length));
+  fixtures["template-build.bin"] = Buffer.concat([
+    length,
+    template,
+    Buffer.from("# Built in the container\n\nFrom a template.", "utf8"),
+  ]);
+}
+
 mkdirSync(dir, { recursive: true });
 for (const [kind, bytes] of Object.entries(fixtures)) {
-  const path = join(dir, `confined.${kind}`);
+  const path = join(dir, kind.includes(".") ? kind : `confined.${kind}`);
   writeFileSync(path, bytes);
-  console.log(`${path}: ${bytes.length} bytes, marker "${marker(kind)}"`);
+  console.log(`${path}: ${bytes.length} bytes${kind.includes(".") ? "" : `, marker "${marker(kind)}"`}`);
 }

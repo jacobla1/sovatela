@@ -197,15 +197,29 @@ impl std::error::Error for CompletionError {}
 /// pool and paying a fresh TCP + TLS handshake before the first byte of every
 /// message. Measured against api.scaleway.ai: ~90-130ms to complete the
 /// handshake and ~150ms to first byte cold, versus ~45ms on a warm connection.
-pub fn http_client() -> reqwest::Client {
-    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+///
+/// **It follows no redirects.** Every provider call it makes carries a
+/// credential, and reqwest strips `Authorization` when a redirect crosses to
+/// another origin but not a custom header: Black Forest Labs' key travels as
+/// `x-key`, and a redirect from its endpoint would have carried the key to
+/// wherever it pointed. The 1.10.0 launch review reproduced exactly that. No
+/// provider API this client talks to redirects, so a 3xx is answered as the
+/// failure it is, and the request goes nowhere it was not sent.
+///
+/// And it does not fall back. It used to answer a failed build with
+/// `reqwest::Client::new()`, which has neither the timeouts nor the redirect
+/// rule; a client that cannot be built as configured is an error.
+pub fn http_client() -> Result<reqwest::Client, String> {
+    static CLIENT: std::sync::OnceLock<Result<reqwest::Client, String>> =
+        std::sync::OnceLock::new();
     CLIENT
         .get_or_init(|| {
             reqwest::Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(15))
                 .read_timeout(std::time::Duration::from_secs(300))
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
-                .unwrap_or_else(|_| reqwest::Client::new())
+                .map_err(|e| format!("could not start the network client ({e})"))
         })
         .clone()
 }

@@ -141,6 +141,24 @@ pub(crate) const REPLY_MAGIC: &[u8] = b"SOVATELA-PDF/1\n";
 ///
 /// Passed as a token rather than the user's filename: the parent already knows
 /// the format, and argv is not the place to put a name that came from outside.
+/// The two formats a user template can be for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Office {
+    Docx,
+    Pptx,
+}
+
+impl Office {
+    /// The name the template reader dispatches on. The user's own file name
+    /// is not passed to the helper, as for documents.
+    fn template_name(self) -> &'static str {
+        match self {
+            Office::Docx => "template.docx",
+            Office::Pptx => "template.pptx",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Pdf,
@@ -148,6 +166,12 @@ pub enum Kind {
     Odt,
     Pptx,
     Xlsx,
+    /// Vet a user's document template: open it, trial-build a document from
+    /// it and validate that document. Replies with the styles it defines.
+    TemplateCheck(Office),
+    /// Build a document from a template and Markdown, validated, and reply
+    /// with the finished file.
+    TemplateBuild(Office),
 }
 
 impl Kind {
@@ -175,6 +199,10 @@ impl Kind {
             Kind::Odt => "odt",
             Kind::Pptx => "pptx",
             Kind::Xlsx => "xlsx",
+            Kind::TemplateCheck(Office::Docx) => "template-check-docx",
+            Kind::TemplateCheck(Office::Pptx) => "template-check-pptx",
+            Kind::TemplateBuild(Office::Docx) => "template-build-docx",
+            Kind::TemplateBuild(Office::Pptx) => "template-build-pptx",
         }
     }
 
@@ -185,6 +213,10 @@ impl Kind {
             "odt" => Some(Kind::Odt),
             "pptx" => Some(Kind::Pptx),
             "xlsx" => Some(Kind::Xlsx),
+            "template-check-docx" => Some(Kind::TemplateCheck(Office::Docx)),
+            "template-check-pptx" => Some(Kind::TemplateCheck(Office::Pptx)),
+            "template-build-docx" => Some(Kind::TemplateBuild(Office::Docx)),
+            "template-build-pptx" => Some(Kind::TemplateBuild(Office::Pptx)),
             _ => None,
         }
     }
@@ -198,6 +230,7 @@ impl Kind {
             Kind::Odt => "document.odt",
             Kind::Pptx => "document.pptx",
             Kind::Xlsx => "document.xlsx",
+            Kind::TemplateCheck(o) | Kind::TemplateBuild(o) => o.template_name(),
         }
     }
 }
@@ -360,11 +393,12 @@ pub fn run_helper_if_requested() -> bool {
             );
         }
     };
+    let input_limit = max_input_for(kind);
     let mut input = Vec::new();
     let read = std::io::stdin()
-        .take(crate::MAX_UPLOAD_BYTES as u64 + 1)
+        .take(input_limit as u64 + 1)
         .read_to_end(&mut input);
-    if read.is_err() || input.len() > crate::MAX_UPLOAD_BYTES {
+    if read.is_err() || input.len() > input_limit {
         #[cfg(target_os = "macos")]
         drop(confinement);
         helper_refusal("this document could not be read within the upload limit.");
@@ -373,7 +407,11 @@ pub fn run_helper_if_requested() -> bool {
     // cap and the deadline around it. Sharing the code rather than duplicating
     // it is the point: the bounds inside `document_text` are unit-tested where
     // they are, and this adds a ceiling those bounds cannot be argued out of.
-    let result = std::panic::catch_unwind(|| crate::document_text(kind.stand_in_name(), &input));
+    let result = std::panic::catch_unwind(|| match kind {
+        Kind::TemplateCheck(office) => template_check(office, &input),
+        Kind::TemplateBuild(office) => template_build(office, &input),
+        _ => crate::document_text(kind.stand_in_name(), &input),
+    });
 
     // Digital extraction accounts for every page and warns about non-text
     // content, including scans beside digital text. Only when no digital page
@@ -409,6 +447,140 @@ pub fn run_helper_if_requested() -> bool {
     #[cfg(target_os = "macos")]
     drop(confinement);
     std::process::exit(code);
+}
+
+/// The most input the helper accepts for this kind.
+fn max_input_for(kind: Kind) -> usize {
+    let template = crate::ooxml::template::MAX_TEMPLATE_FILE_BYTES as usize;
+    match kind {
+        Kind::TemplateCheck(_) => template,
+        Kind::TemplateBuild(_) => template + 8 + MAX_TEMPLATE_MARKDOWN,
+        _ => crate::MAX_UPLOAD_BYTES,
+    }
+}
+
+/// The most output the parent reads for this kind. A built document is
+/// returned whole, base64-encoded, and carries the template's own parts, so it
+/// can be larger than any extracted text.
+fn max_output_for(kind: Kind) -> usize {
+    match kind {
+        Kind::TemplateBuild(_) => MAX_TEMPLATE_OUTPUT,
+        _ => MAX_HELPER_OUTPUT,
+    }
+}
+
+/// The most Markdown a template build is given: a generated document.
+const MAX_TEMPLATE_MARKDOWN: usize = 8 * 1024 * 1024;
+
+/// The most a built document may come back as, base64 included.
+const MAX_TEMPLATE_OUTPUT: usize = 128 * 1024 * 1024;
+
+// Custom templates are parsed here, in the helper, and nowhere else.
+//
+// A template is an archive the user chose, and an archive is untrusted input
+// whoever chose it: opening the zip and reading its XML is the same class of
+// work as reading an attached document. Until 1.10.1 it ran in the
+// application's own process — on a blocking thread, which is not a boundary —
+// while the release notes said every document was read inside a sandbox. The
+// 1.10.0 launch review found it. The main process now never opens a template:
+// it hands the bytes here and receives either the styles a template defines or
+// a finished, validated document.
+
+/// Vet a template, trial-build a document from it and validate that, as the
+/// application did in-process. Replies with the styles it defines.
+fn template_check(office: Office, bytes: &[u8]) -> Result<String, String> {
+    let template = crate::ooxml::template::accept(office.template_name(), bytes)?;
+    serde_json::to_string(&template.styles).map_err(|e| e.to_string())
+}
+
+/// Build a document from a template and Markdown, validate it, and reply with
+/// the file, base64-encoded so the reply stays text.
+fn template_build(office: Office, input: &[u8]) -> Result<String, String> {
+    use base64::Engine as _;
+    let (bytes, markdown) = split_template_input(input)?;
+    let template = crate::ooxml::template::load(office.template_name(), bytes)?;
+    let document = match office {
+        Office::Docx => crate::ooxml::docx::from_markdown_with(Some(&template), markdown),
+        Office::Pptx => crate::ooxml::pptx::from_markdown_with(Some(&template), markdown),
+    }?;
+    crate::ooxml::validate(&document)
+        .map_err(|problems| format!("the document came out malformed: {}", problems.join("; ")))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(document))
+}
+
+/// A template and Markdown on one stdin: the template's length as eight bytes,
+/// little-endian, then the template, then the Markdown.
+fn frame_template_input(template: &[u8], markdown: &str) -> Vec<u8> {
+    let mut input = Vec::with_capacity(8 + template.len() + markdown.len());
+    input.extend_from_slice(&(template.len() as u64).to_le_bytes());
+    input.extend_from_slice(template);
+    input.extend_from_slice(markdown.as_bytes());
+    input
+}
+
+fn split_template_input(input: &[u8]) -> Result<(&[u8], &str), String> {
+    let malformed = || "the template request was malformed".to_string();
+    if input.len() < 8 {
+        return Err(malformed());
+    }
+    let (length, rest) = input.split_at(8);
+    let length = u64::from_le_bytes(length.try_into().map_err(|_| malformed())?);
+    let length = usize::try_from(length).map_err(|_| malformed())?;
+    if length > rest.len() {
+        return Err(malformed());
+    }
+    let (template, markdown) = rest.split_at(length);
+    let markdown = std::str::from_utf8(markdown).map_err(|_| malformed())?;
+    Ok((template, markdown))
+}
+
+/// Vet a user's template in the confined helper, and return the styles it
+/// defines.
+///
+/// The reply is checked rather than trusted: a helper is, by assumption, the
+/// process a hostile document may have taken over.
+pub fn check_template(office: Office, bytes: &[u8]) -> Result<Vec<String>, String> {
+    let kind = Kind::TemplateCheck(office);
+    let reply = run(kind, bytes, time_limit_for(kind)).into_result()?;
+    let styles: Vec<String> = serde_json::from_str(&reply)
+        .map_err(|_| "the template check did not answer in the expected form".to_string())?;
+    if styles.len() > 10_000
+        || styles
+            .iter()
+            .any(|s| s.is_empty() || s.len() > 256 || s.chars().any(char::is_control))
+    {
+        return Err("the template check answered with an implausible list of styles".into());
+    }
+    Ok(styles)
+}
+
+/// Build a document from a user's template and Markdown in the confined
+/// helper, and return the finished, validated file.
+pub fn build_with_template(
+    office: Office,
+    template: &[u8],
+    markdown: &str,
+) -> Result<Vec<u8>, String> {
+    use base64::Engine as _;
+    if markdown.len() > MAX_TEMPLATE_MARKDOWN {
+        return Err("that document is too long to build from a template".into());
+    }
+    let kind = Kind::TemplateBuild(office);
+    let reply = run(
+        kind,
+        &frame_template_input(template, markdown),
+        time_limit_for(kind),
+    )
+    .into_result()?;
+    let document = base64::engine::general_purpose::STANDARD
+        .decode(reply.trim())
+        .map_err(|_| "the template build did not answer in the expected form".to_string())?;
+    // An Office file is a zip archive. Anything else is not the document asked
+    // for, whatever produced it.
+    if !document.starts_with(b"PK\x03\x04") {
+        return Err("the template build did not return a document".into());
+    }
+    Ok(document)
 }
 
 fn helper_refusal(message: &str) -> ! {
@@ -706,13 +878,12 @@ fn run(kind: Kind, bytes: &[u8], time_limit: Duration) -> Outcome {
     // outlast the deadline by as long as a grandchild cares to live. That
     // would make the timeout decorative.
     let mut stdout = child.take_stdout();
+    let output_limit = max_output_for(kind);
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut buf = Vec::new();
         if let Some(pipe) = stdout.take() {
-            let _ = pipe
-                .take(MAX_HELPER_OUTPUT as u64 + 1)
-                .read_to_end(&mut buf);
+            let _ = pipe.take(output_limit as u64 + 1).read_to_end(&mut buf);
         }
         let _ = tx.send(buf);
     });
@@ -754,7 +925,7 @@ fn run(kind: Kind, bytes: &[u8], time_limit: Duration) -> Outcome {
     let Ok(out) = rx.recv_timeout(READ_GRACE) else {
         return Outcome::Died;
     };
-    if out.len() > MAX_HELPER_OUTPUT {
+    if out.len() > output_limit {
         return Outcome::Died;
     }
     let Some(body) = out.strip_prefix(REPLY_MAGIC) else {
@@ -969,6 +1140,23 @@ mod tests {
             Outcome::NotHelper,
             "plausible-looking text without the frame must still be refused"
         );
+    }
+
+    #[test]
+    fn a_template_request_round_trips_and_a_malformed_one_is_refused() {
+        let framed = super::frame_template_input(b"PK-template", "# Markdown");
+        let (template, markdown) = super::split_template_input(&framed).unwrap();
+        assert_eq!(template, b"PK-template");
+        assert_eq!(markdown, "# Markdown");
+        // Too short for the length, a length past the end, and Markdown that
+        // is not UTF-8 are all refused rather than read.
+        assert!(super::split_template_input(b"short").is_err());
+        let mut past_end = 1_000u64.to_le_bytes().to_vec();
+        past_end.extend_from_slice(b"tiny");
+        assert!(super::split_template_input(&past_end).is_err());
+        let mut not_utf8 = 0u64.to_le_bytes().to_vec();
+        not_utf8.extend_from_slice(&[0xff, 0xfe]);
+        assert!(super::split_template_input(&not_utf8).is_err());
     }
 
     #[test]

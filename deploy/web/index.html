@@ -212,11 +212,13 @@
       <p>Chat and image understanding run on Scaleway in Paris. Optional search,
         image generation and terminal tools have different data paths; web search
         can contact public websites anywhere. See the <a href="/security/">security page</a>.</p>
-      <p>Mixed PDFs show a <strong>PDF partly read</strong> warning in 1.8.8:
-        digital text is kept, but images and scanned content in those files are
-        not read. Pages without readable digital text are numbered. Logos and
-        other graphics can also trigger the warning. Earlier releases could
-        silently omit scanned pages behind digital text.</p>
+      <p>PDF extraction can be incomplete. On macOS and Windows, pages with no
+        readable digital text are read from their pictures by the system's own
+        text recogniser, and marked as recognised; it can misread or leave out
+        words. A <strong>PDF partly read</strong> warning names pages and
+        graphics that were not read, but it does not catch every omission, so
+        check the original before relying on an answer. Linux has no text
+        recogniser: scanned pages there are named as unread.</p>
     </header>
 
     <ol class="steps">

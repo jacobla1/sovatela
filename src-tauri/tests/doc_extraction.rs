@@ -344,3 +344,56 @@ fn a_docx_with_many_large_parts_cannot_take_the_application_down() {
         );
     }
 }
+
+/// A template and Markdown on one stdin, as `doc_sandbox` frames them.
+fn template_request(template: &[u8], markdown: &str) -> Vec<u8> {
+    let mut input = (template.len() as u64).to_le_bytes().to_vec();
+    input.extend_from_slice(template);
+    input.extend_from_slice(markdown.as_bytes());
+    input
+}
+
+/// B3 of the 1.10.0 launch review: templates are parsed in the helper, not
+/// the application. These run the real helper binary — confined, on macOS —
+/// on a real Word package, so they show the jobs work inside the sandbox as
+/// well as that they exist.
+#[test]
+fn a_template_is_vetted_in_the_helper_and_reports_its_styles() {
+    let template = scale_lib::ooxml::docx::from_markdown("# Title\n\nBody.").unwrap();
+    let run = run_helper_as("template-check-docx", &template);
+    assert_eq!(run.code, Some(0), "{}", run.stdout);
+    let styles: Vec<String> = serde_json::from_str(&run.stdout).expect(&run.stdout);
+    assert!(styles.iter().any(|s| s == "Heading1"), "{styles:?}");
+}
+
+#[test]
+fn a_document_is_built_from_a_template_in_the_helper() {
+    use base64::Engine as _;
+    let template = scale_lib::ooxml::docx::from_markdown("# Title\n\nBody.").unwrap();
+    let run = run_helper_as(
+        "template-build-docx",
+        &template_request(&template, "# Built here\n\nFrom the template."),
+    );
+    assert_eq!(run.code, Some(0), "{}", run.stdout);
+    let document = base64::engine::general_purpose::STANDARD
+        .decode(run.stdout.trim())
+        .expect("the reply is base64");
+    assert!(document.starts_with(b"PK\x03\x04"));
+    assert_eq!(scale_lib::ooxml::validate(&document), Ok(()));
+    // The Markdown is in the document, not merely a valid empty one.
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&document)).unwrap();
+    let mut body = String::new();
+    std::io::Read::read_to_string(
+        &mut archive.by_name("word/document.xml").unwrap(),
+        &mut body,
+    )
+    .unwrap();
+    assert!(body.contains("Built here"), "{body}");
+}
+
+#[test]
+fn a_template_that_is_not_an_archive_is_refused_in_the_helper() {
+    let run = run_helper_as("template-check-docx", b"this is not a zip archive");
+    assert_eq!(run.code, Some(33), "{}", run.stdout);
+    assert!(!run.stdout.contains("Heading1"));
+}

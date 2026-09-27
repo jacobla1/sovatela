@@ -1,9 +1,55 @@
+# Release notes — Sovatela 1.10.1
+
+Release date: 2026-09-27 · [All releases](https://github.com/jacobla1/sovatela/releases)
+
+An independent review of 1.10.0, made before announcing it, found three
+problems. This release fixes them.
+
+## Fixed
+
+- **A Black Forest Labs key could follow a redirect to another host.** The key
+  is sent to BFL in an `x-key` header, and the app's provider requests followed
+  redirects; the library it uses removes standard authorisation headers when a
+  redirect changes host, but not that one. It needed BFL's own endpoint to
+  answer with a redirect, and none is known — but it was so in every release
+  from 1.0.0. Provider requests now follow no redirects. Disclosed as
+  [GHSA-h696-pjhx-m886](https://github.com/jacobla1/sovatela/security/advisories/GHSA-h696-pjhx-m886).
+  If you used BFL image generation, rotating your BFL key rules out any
+  exposure.
+- **A configured proxy defeated the private-network check on fetches.** Before
+  fetching a web page or an image, the app checks the address is public and
+  connects to exactly that address. A proxy is given the name and looks it up
+  again itself, so with one configured the check did not bind the connection.
+  Those fetches now never use a proxy.
+- **Custom document templates were parsed outside the sandbox.** 1.10.0 read
+  every attached document inside the sandbox, but a template you chose for
+  generated Word and PowerPoint files was opened in the app's own process. It
+  is now vetted, and every document built from it, inside the same sandboxed
+  helper; the app never opens the template itself.
+
+## Clarified
+
+- On macOS the sandboxed helper may read its own app bundle, which the system's
+  frameworks need; it gains nothing else. Its scratch directory is removed when
+  it finishes, on a best-effort basis: a crash can leave one behind.
+- The download page and security page no longer say scanned pages in mixed
+  PDFs are unread — 1.9.0 began reading them — or that a remote plain-http
+  image endpoint is accepted; it is refused.
+
+[QA-1.10.1.md](QA-1.10.1.md) records verification. Windows and Linux installers
+remain unsigned and experimental, with no clean-machine lifecycle test and no
+measured real-photo OCR accuracy. Existing
+[accessibility limitations](https://sovatela.eu/accessibility) remain disclosed.
+
+---
+
 # Release notes — Sovatela 1.10.0
 
 Release date: 2026-09-26 · [All releases](https://github.com/jacobla1/sovatela/releases)
 
 1.9.0 read the scanned pages of a PDF. 1.10.0 reads every document inside a
-sandbox, on macOS and on Windows.
+sandbox, on macOS and on Windows. *(Corrected: custom document templates were
+the exception, parsed outside the sandbox until 1.10.1.)*
 
 ## Changed
 

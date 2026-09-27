@@ -420,7 +420,35 @@ fn trimmed_nonempty(v: &str) -> Option<String> {
 /// stalled connection can't hang a request forever. Generous (5 min) because
 /// GLM's thinking phase can stall the visible stream for minutes — 120s
 /// proved too aggressive and killed real replies mid-thought.
-fn http_client() -> reqwest::Client {
+/// A client that connects to one address the app has already vetted, and
+/// nowhere else: no redirects, no proxy.
+///
+/// Both halves matter. Redirects are handled by the caller, hop by hop, each
+/// vetted afresh. And a proxy defeats the pin: a forward proxy is handed the
+/// hostname and resolves it itself, so the address checked here is not
+/// necessarily the one the request reaches. The 1.10.0 launch review showed it
+/// — with a proxy configured, a request pinned to one address was answered by
+/// the proxy — and split DNS at the proxy could land it on a private network.
+/// So these clients never use one, and a fetch that cannot be made directly
+/// fails rather than going round.
+///
+/// Port 0 means the URL's own port; only the pinned address is connected to.
+pub fn pinned_client(
+    host: &str,
+    pinned: std::net::IpAddr,
+    read_timeout: std::time::Duration,
+) -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .read_timeout(read_timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .resolve(host, std::net::SocketAddr::new(pinned, 0))
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+fn http_client() -> Result<reqwest::Client, String> {
     glm::http_client()
 }
 
@@ -636,7 +664,7 @@ async fn set_terminal_key(key: String) -> Result<(), String> {
 /// Cheap check that a key works: hit the models endpoint (no tokens billed).
 #[tauri::command]
 async fn validate_key(key: String) -> Result<bool, String> {
-    let client = http_client();
+    let client = http_client()?;
     let resp = client
         .get(format!("{}/models", base_url()))
         .bearer_auth(&key)
@@ -782,7 +810,7 @@ async fn check_connection() -> Result<String, String> {
         Some(k) => k,
         None => return Ok("nokey".into()),
     };
-    let client = http_client();
+    let client = http_client()?;
     match client
         .get(format!("{}/models", base_url()))
         .bearer_auth(&key)
@@ -1144,8 +1172,9 @@ fn bfl_polling_allowed(url: &str) -> bool {
 ///
 /// So the hop is refused rather than reasoned about. A redirect to anywhere
 /// `endpoint_transport_ok` would not accept as a destination fails the request.
-fn endpoint_client() -> reqwest::Client {
-    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+fn endpoint_client() -> Result<reqwest::Client, String> {
+    static CLIENT: std::sync::OnceLock<Result<reqwest::Client, String>> =
+        std::sync::OnceLock::new();
     CLIENT
         .get_or_init(|| {
             reqwest::Client::builder()
@@ -1161,7 +1190,7 @@ fn endpoint_client() -> reqwest::Client {
                     }
                 }))
                 .build()
-                .unwrap_or_else(|_| reqwest::Client::new())
+                .map_err(|e| format!("could not start the network client ({e})"))
         })
         .clone()
 }
@@ -1870,7 +1899,7 @@ async fn extract_memories(
     messages: Vec<serde_json::Value>,
 ) -> Result<Vec<String>, String> {
     let key = get_api_key()?.ok_or_else(|| "No API key stored".to_string())?;
-    let client = http_client();
+    let client = http_client()?;
 
     // Build a plain transcript from {role, content} pairs.
     let transcript = messages
@@ -2389,15 +2418,10 @@ async fn fetch_as_data_url(url: &str, trusted_origin: Option<&str>) -> Result<St
             .host_str()
             .ok_or_else(|| "invalid image URL".to_string())?
             .to_string();
-        let hop_client = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(15))
-            .read_timeout(std::time::Duration::from_secs(60))
-            .redirect(reqwest::redirect::Policy::none())
-            // Connect to the address `resolve_image_hop` checked, not to
-            // whatever the name answers with next time it is asked.
-            .resolve(&host, std::net::SocketAddr::new(pinned, 0))
-            .build()
-            .map_err(|e| e.to_string())?;
+        // Connect to the address `resolve_image_hop` checked, not to whatever
+        // the name answers with next time it is asked — and not through a
+        // proxy, which would resolve it again itself.
+        let hop_client = pinned_client(&host, pinned, std::time::Duration::from_secs(60))?;
         let resp = hop_client
             .get(current.clone())
             .send()
@@ -2782,7 +2806,7 @@ async fn custom_image_generate(s: &AppSettings, prompt: &str) -> Result<String, 
     // As in `searxng_search`: the stored setting is checked again at the point
     // the prompt and the token actually leave the machine.
     endpoint_transport_ok(&s.image_url)?;
-    let client = endpoint_client();
+    let client = endpoint_client()?;
     let mut body = serde_json::json!({
         "prompt": prompt,
         "n": 1,
@@ -2879,7 +2903,7 @@ fn reset_usage() {
 /// recorded costs stay frozen at the prices in effect when they were incurred.
 #[tauri::command]
 async fn update_pricing() -> Result<pricing::PricingInfo, String> {
-    let client = http_client();
+    let client = http_client()?;
     let resp = client
         .get(pricing::REMOTE_PRICING_URL)
         .send()
@@ -2910,7 +2934,7 @@ async fn update_pricing() -> Result<pricing::PricingInfo, String> {
 #[tauri::command]
 async fn check_for_update() -> Result<update::UpdateCheck, String> {
     let current = env!("CARGO_PKG_VERSION").to_string();
-    let resp = http_client()
+    let resp = http_client()?
         .get(update::LATEST_VERSION_URL)
         .send()
         .await
@@ -2967,7 +2991,7 @@ async fn generate_image(
         .collect::<Result<Vec<_>, _>>()?;
     let cancel = request_id.as_deref().map(|id| state.flag(id));
     let _cleanup = CancelCleanup(state.inner(), request_id.clone());
-    let client = http_client();
+    let client = http_client()?;
 
     let provider = resolve_image_provider(&s);
 
@@ -3139,22 +3163,13 @@ async fn save_document(
 ) -> Result<Option<String>, String> {
     // Generating is pure computation over text already in memory — no network,
     // no filesystem read — so the only work off the runtime is the write.
-    let (template, template_problem) = load_configured_template(&app, &kind);
-    let bytes = tokio::task::spawn_blocking({
+    let template = configured_template(&app, &kind);
+    let (bytes, template_problem) = tokio::task::spawn_blocking({
         let kind = kind.clone();
-        move || generate_document(&kind, &source, template.as_ref())
+        move || build_document(&kind, &source, template)
     })
     .await
     .map_err(|_| "generating the document failed unexpectedly".to_string())??;
-
-    // Checked before it is written, not after. A file that will not open is
-    // worse than a refusal, because the user finds out somewhere else.
-    ooxml::validate(&bytes).map_err(|problems| {
-        format!(
-            "the document came out malformed and was not saved: {}",
-            problems.join("; ")
-        )
-    })?;
 
     // The dialog is opened here rather than in the interface, so the only
     // destination that exists is the one the user chose. Cancelling is not an
@@ -3168,43 +3183,88 @@ async fn save_document(
     Ok(template_problem)
 }
 
-/// The user's own template for this format, if they have chosen one.
+/// The user's own template for this format, if they have chosen one: the
+/// file's bytes, unopened.
 ///
-/// A template that no longer loads — moved, edited, or replaced since it was
-/// accepted — falls back to the built-in one rather than failing the save. The
-/// user asked for a document; giving them one in the default style beats
-/// giving them nothing.
-fn load_configured_template<R: tauri::Runtime>(
+/// The application process never opens a template. It is an archive, and
+/// opening an archive and reading its XML is the same untrusted work as reading
+/// an attached document, so it happens in the confined helper — see
+/// `doc_sandbox::build_with_template`. Until 1.10.1 this function parsed the
+/// template here, outside any sandbox, and the 1.10.0 launch review found it.
+fn configured_template<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     kind: &str,
-) -> (Option<ooxml::template::Template>, Option<String>) {
-    let name = match kind {
-        "docx" => "template.docx",
-        "pptx" => "template.pptx",
-        _ => return (None, None),
+) -> Option<(doc_sandbox::Office, Vec<u8>)> {
+    let (office, name) = match kind {
+        "docx" => (doc_sandbox::Office::Docx, "template.docx"),
+        "pptx" => (doc_sandbox::Office::Pptx, "template.pptx"),
+        _ => return None,
     };
-    let Ok(dir) = app.path().app_data_dir() else {
-        return (None, None);
-    };
+    let dir = app.path().app_data_dir().ok()?;
     // No template configured is the ordinary case, not a problem.
-    let Ok(bytes) = std::fs::read(dir.join("templates").join(name)) else {
-        return (None, None);
-    };
-    match ooxml::template::load(name, &bytes) {
-        Ok(t) => (Some(t), None),
-        // Falling back to the built-in is right: the user asked for a
-        // document, and one in the default style beats none. Doing it
-        // *silently* is not — they would get a document in the wrong design
-        // with no way to find out why, and this used to say so only to a log
-        // nobody reads.
-        Err(e) => (
-            None,
-            Some(format!(
-                "Your saved {kind} template could not be used ({e}) The built-in one was \
-                 used instead — choose your template again in Settings, Document templates."
-            )),
-        ),
+    let bytes = std::fs::read(dir.join("templates").join(name)).ok()?;
+    Some((office, bytes))
+}
+
+/// Build a document, validated: from the user's template in the confined
+/// helper when there is one, and otherwise from the built-in design here.
+///
+/// A template that no longer builds — moved, edited or replaced since it was
+/// accepted — falls back to the built-in design rather than failing the save,
+/// and says so: the user asked for a document, and one in the default style
+/// beats none, but getting the wrong design with no reason given does not.
+fn build_document(
+    kind: &str,
+    source: &str,
+    template: Option<(doc_sandbox::Office, Vec<u8>)>,
+) -> Result<(Vec<u8>, Option<String>), String> {
+    let mut note = None;
+    if let Some((office, bytes)) = template {
+        match doc_sandbox::build_with_template(office, &bytes, source) {
+            Ok(document) => return Ok((document, None)),
+            Err(e) => {
+                note = Some(format!(
+                    "Your saved {kind} template could not be used ({e}) The built-in one was \
+                     used instead — choose your template again in Settings, Document templates."
+                ))
+            }
+        }
     }
+    let document = generate_document(kind, source, None)?;
+    // Checked before it is written, not after. A file that will not open is
+    // worse than a refusal, because the user finds out somewhere else.
+    ooxml::validate(&document).map_err(|problems| {
+        format!(
+            "the document came out malformed and was not saved: {}",
+            problems.join("; ")
+        )
+    })?;
+    Ok((document, note))
+}
+
+/// The styles a template defines, from the confined helper, remembered per
+/// template file: the preview asks on every change, and a helper per keystroke
+/// would be a process per keystroke.
+fn template_styles(office: doc_sandbox::Office, bytes: Vec<u8>) -> Option<Vec<String>> {
+    type Cache = std::sync::Mutex<Vec<(Vec<u8>, Vec<String>)>>;
+    static CACHE: std::sync::OnceLock<Cache> = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some((_, styles)) = cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|(b, _)| *b == bytes)
+    {
+        return Some(styles.clone());
+    }
+    let styles = doc_sandbox::check_template(office, &bytes).ok()?;
+    let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
+    // Two templates at most, one per format; the oldest goes.
+    if cache.len() >= 2 {
+        cache.remove(0);
+    }
+    cache.push((bytes, styles.clone()));
+    Some(styles)
 }
 
 /// The document format a filename promises, if this app can build it.
@@ -3322,17 +3382,21 @@ async fn set_template(app: tauri::AppHandle, kind: String) -> Result<Option<Temp
     let wanted = kind.clone();
     let (bytes, name) = tokio::task::spawn_blocking(move || {
         let bytes = std::fs::read(&source).map_err(|e| format!("Could not read that file: {e}"))?;
-        // Vetted, and proved by building a document from it — while the user
-        // is still looking at a file picker, rather than in three days when a
-        // document fails to generate.
-        let template = ooxml::template::accept(&name, &bytes)?;
         // The file is stored under the requested kind's name, so a deck
         // chosen for the Word slot would be loaded later as a Word template
-        // and fail there instead of here.
-        if template.kind.slot() != wanted {
+        // and fail there instead of here. Decided from the name, as it always
+        // was, and before the file is opened.
+        let lower = name.to_lowercase();
+        let slot = if lower.ends_with(".docx") || lower.ends_with(".dotx") {
+            "docx"
+        } else if lower.ends_with(".pptx") || lower.ends_with(".potx") {
+            "pptx"
+        } else {
+            return Err("that is not a Word or PowerPoint file.".into());
+        };
+        if slot != wanted {
             return Err(format!(
-                "that is a {} template, and it was chosen for {}.",
-                template.kind.slot(),
+                "that is a {slot} template, and it was chosen for {}.",
                 if wanted == "docx" {
                     "Word documents"
                 } else {
@@ -3340,6 +3404,17 @@ async fn set_template(app: tauri::AppHandle, kind: String) -> Result<Option<Temp
                 }
             ));
         }
+        let office = if slot == "docx" {
+            doc_sandbox::Office::Docx
+        } else {
+            doc_sandbox::Office::Pptx
+        };
+        // Vetted, and proved by building a document from it — while the user
+        // is still looking at a file picker, rather than in three days when a
+        // document fails to generate. In the confined helper: the application
+        // process never opens a template.
+        doc_sandbox::check_template(office, &bytes)
+            .map_err(|e| format!("that template cannot be used: {e}"))?;
         Ok::<_, String>((bytes, name))
     })
     .await
@@ -3474,8 +3549,16 @@ async fn preview_document(
     // cannot be loaded — and the two paths that actually produce a file both
     // report it. Repeating it on every preview would put a warning in front of
     // someone who has not asked for a document yet.
-    let (template, _) = load_configured_template(&app, &kind);
-    ooxml::preview::of(&kind, template.as_ref(), &source)
+    let styles = match configured_template(&app, &kind) {
+        Some((office, bytes)) => {
+            tokio::task::spawn_blocking(move || template_styles(office, bytes))
+                .await
+                .ok()
+                .flatten()
+        }
+        None => None,
+    };
+    ooxml::preview::of(&kind, styles.as_deref(), &source)
 }
 
 /// The resolved web-search backend for a message.
@@ -3710,7 +3793,7 @@ async fn searxng_search(base: &str, token: &str, query: &str) -> Result<String, 
     // written by an older build — or edited by hand — reaches this function
     // without ever passing through `set_search_settings`.
     endpoint_transport_ok(base)?;
-    let client = endpoint_client();
+    let client = endpoint_client()?;
     let url = format!("{}/search", base.trim_end_matches('/'));
     let mut req = client.get(&url).query(&[("q", query), ("format", "json")]);
     if !token.is_empty() {
@@ -4930,7 +5013,7 @@ async fn test_search(app: tauri::AppHandle) -> Result<String, String> {
     let Some(backend) = resolve_search(&s) else {
         return Err("No search provider is configured yet.".into());
     };
-    let client = http_client();
+    let client = http_client()?;
     let query = "European Union";
     let out = match &backend {
         SearchBackend::Linkup(key) => linkup_search(&client, key, query).await?,
@@ -5117,14 +5200,7 @@ async fn fetch_page(url: &str) -> Result<String, String> {
         let host = current
             .host_str()
             .ok_or_else(|| "invalid URL".to_string())?;
-        let client = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(15))
-            .read_timeout(std::time::Duration::from_secs(60))
-            .redirect(reqwest::redirect::Policy::none())
-            // Port 0 = the scheme's port; only the pinned IP is connected to.
-            .resolve(host, std::net::SocketAddr::new(pinned, 0))
-            .build()
-            .map_err(|e| e.to_string())?;
+        let client = pinned_client(host, pinned, std::time::Duration::from_secs(60))?;
         let r = client
             .get(current.clone())
             .header(reqwest::header::ACCEPT, "text/html,text/plain,*/*")
@@ -5471,11 +5547,15 @@ async fn execute_tool<R: tauri::Runtime>(
             // succeed should say so without first making the user approve it.
             let built = match document_kind_of(&path) {
                 Some(kind) => {
-                    let (template, template_problem) = load_configured_template(ctx.app, kind);
-                    match generate_document(kind, content, template.as_ref()).and_then(|doc| {
-                        ooxml::validate(&doc).map(|_| doc).map_err(|p| p.join("; "))
-                    }) {
-                        Ok(doc) => Some((kind, doc, template_problem)),
+                    let template = configured_template(ctx.app, kind);
+                    let source = content.to_string();
+                    let built = tokio::task::spawn_blocking(move || {
+                        build_document(kind, &source, template)
+                    })
+                    .await
+                    .unwrap_or_else(|_| Err("building the document failed unexpectedly".into()));
+                    match built {
+                        Ok((doc, template_problem)) => Some((kind, doc, template_problem)),
                         Err(e) => return format!("Could not build {path}: {e}"),
                     }
                 }
@@ -6588,7 +6668,7 @@ async fn run_chat<R: tauri::Runtime>(
     conversation_id: Option<String>,
     on_event: Channel<StreamEvent>,
 ) -> Result<(), String> {
-    let client = http_client();
+    let client = http_client()?;
 
     // Resolve the search backend (Qwant Staan or a self-hosted SearXNG).
     let backend = if web_search {
@@ -13965,7 +14045,7 @@ mod tests {
     #[ignore]
     async fn integ_scaleway_chat_completes_and_splits_tokens() {
         let key = key_or_skip!("SCALEWAY_API_KEY");
-        let client = http_client();
+        let client = http_client().unwrap();
         let messages = vec![serde_json::json!({
             "role": "user",
             "content": "Reply with exactly one word: pong."
@@ -14007,7 +14087,7 @@ mod tests {
         let key = key_or_skip!("SCALEWAY_API_KEY");
         // Probe the models endpoint directly against the real Scaleway host,
         // independent of any GLM_CHAT_ENDPOINT override used by mock tests.
-        let client = http_client();
+        let client = http_client().unwrap();
         let resp = client
             .get(format!("{}/models", glm::DEFAULT_ENDPOINT))
             .bearer_auth(key.trim())
@@ -14026,7 +14106,7 @@ mod tests {
     #[ignore]
     async fn integ_linkup_search_returns_results() {
         let key = key_or_skip!("LINKUP_API_KEY");
-        let client = http_client();
+        let client = http_client().unwrap();
         let out = linkup_search(&client, key.trim(), "European Union institutions")
             .await
             .expect("Linkup search failed");
@@ -14046,6 +14126,7 @@ mod tests {
     async fn integ_configured_models_still_exist() {
         let key = key_or_skip!("SCALEWAY_API_KEY");
         let body: serde_json::Value = http_client()
+            .unwrap()
             .get(format!("{}/models", base_url()))
             .bearer_auth(key.trim())
             .send()
@@ -14077,7 +14158,7 @@ mod tests {
     #[ignore]
     async fn integ_staan_search_returns_results() {
         let key = key_or_skip!("STAAN_API_KEY");
-        let client = http_client();
+        let client = http_client().unwrap();
         let out = staan_search(&client, key.trim(), "European Union institutions")
             .await
             .expect("Staan search failed");
@@ -14105,7 +14186,7 @@ mod tests {
             eprintln!("SKIP integ_bfl_image_generates: set RUN_PAID_TESTS=1 (bills ~$0.04/image)");
             return;
         }
-        let client = http_client();
+        let client = http_client().unwrap();
         let cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>> = None;
         let sample = bfl_generate(
             &client,
@@ -14151,7 +14232,7 @@ mod tests {
             );
             return;
         }
-        let client = http_client();
+        let client = http_client().unwrap();
         let cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>> = None;
 
         let mut references = Vec::new();
@@ -14206,7 +14287,7 @@ mod tests {
             eprintln!("SKIP integ_ovh_image_generates: set RUN_PAID_TESTS=1 (bills compute time)");
             return;
         }
-        let client = http_client();
+        let client = http_client().unwrap();
         let cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>> = None;
         let data = ovh_generate(
             &client,
@@ -15507,6 +15588,85 @@ mod tests {
         assert_eq!(ip, "127.0.0.1".parse::<std::net::IpAddr>().unwrap());
     }
 
+    /// One-shot local HTTP server: answers every connection with `response`
+    /// and records each request's head, so a test can see what arrived.
+    fn recording_server(response: String) -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 1024];
+                while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match stream.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    }
+                }
+                log.lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&buf).into_owned());
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        (port, seen)
+    }
+
+    /// B1 of the 1.10.0 launch review: a provider's key must not follow a
+    /// redirect to another origin.
+    ///
+    /// reqwest strips `Authorization` across origins but not a custom header,
+    /// and Black Forest Labs' key travels as `x-key`. The control shows the
+    /// test can see a leak: a client that follows redirects delivers the key
+    /// to the second server. The shared provider client must not.
+    #[tokio::test]
+    async fn a_redirect_cannot_carry_a_provider_key_to_another_origin() {
+        let ok = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        let redirect_to = |port: u16| {
+            format!("HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{port}/steal\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        };
+
+        // Control: redirects followed, and the key arrives at the second origin.
+        let (thief, stolen) = recording_server(ok.to_string());
+        let (origin, _) = recording_server(redirect_to(thief));
+        reqwest::Client::new()
+            .get(format!("http://127.0.0.1:{origin}/submit"))
+            .header("x-key", "control-secret")
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            stolen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|r| r.contains("control-secret")),
+            "the control did not observe the leak, so this test could not see one"
+        );
+
+        // The shared client: the redirect is returned, not followed.
+        let (thief, stolen) = recording_server(ok.to_string());
+        let (origin, _) = recording_server(redirect_to(thief));
+        let resp = http_client()
+            .unwrap()
+            .get(format!("http://127.0.0.1:{origin}/submit"))
+            .header("x-key", "real-secret")
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_redirection(), "got {}", resp.status());
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(
+            stolen.lock().unwrap().is_empty(),
+            "the second origin was contacted: {:?}",
+            stolen.lock().unwrap()
+        );
+    }
+
     #[test]
     fn the_fetch_resolves_each_hop_exactly_once() {
         // A structural guard on the shape of the bug rather than the branch:
@@ -15523,7 +15683,7 @@ mod tests {
              is vetted must be the address that is connected to"
         );
         assert!(body.contains("let pinned = resolve_image_hop("));
-        assert!(body.contains(".resolve(&host, std::net::SocketAddr::new(pinned, 0))"));
+        assert!(body.contains("pinned_client(&host, pinned,"));
     }
 
     /// A response that is not an image must not be embedded as one.

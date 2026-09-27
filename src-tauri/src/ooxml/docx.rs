@@ -380,7 +380,7 @@ pub fn from_markdown_with(
     // they are decided once, in `preview::docx_blocks`, and both read the
     // answer. A preview that disagrees with the file is not a bug that can be
     // introduced by editing this function.
-    let blocks = super::preview::docx_blocks(template, md);
+    let blocks = super::preview::docx_blocks(template.map(|t| t.styles.as_slice()), md);
 
     // One numbering instance per list, decided before the body is written so
     // each item can name the id it belongs to.

@@ -614,6 +614,18 @@ jobs:
             findstr /C:"Sovatela confined %%K 4711" "%RUNNER_TEMP%\office\c-%%K.txt" >nul || (echo %%K: CONFINED FAILED - marker missing & set FAIL=1)
             fc /B "%RUNNER_TEMP%\office\u-%%K.txt" "%RUNNER_TEMP%\office\c-%%K.txt" >nul || (echo %%K: CONFINED FAILED - differs from unconfined & set FAIL=1)
           )
+          rem Templates, inside the container: vetted, then built from. From
+          rem 1.10.1 the application never opens a template itself.
+          src-tauri\target\debug\scale.exe --sovatela-confined-helper-selftest template-check-docx < "%RUNNER_TEMP%\office\template.docx" > "%RUNNER_TEMP%\office\tc.txt"
+          if errorlevel 1 (echo TEMPLATE FAILED - the check was refused & set FAIL=1)
+          type "%RUNNER_TEMP%\office\tc.txt"
+          echo.
+          findstr /C:"Heading1" "%RUNNER_TEMP%\office\tc.txt" >nul || (echo TEMPLATE FAILED - the check did not report the template's styles & set FAIL=1)
+          src-tauri\target\debug\scale.exe --sovatela-confined-helper-selftest template-build-docx < "%RUNNER_TEMP%\office\template-build.bin" > "%RUNNER_TEMP%\office\tb.txt"
+          if errorlevel 1 (echo TEMPLATE FAILED - the build was refused & set FAIL=1)
+          findstr /B /C:"UEsDB" "%RUNNER_TEMP%\office\tb.txt" >nul || (echo TEMPLATE FAILED - the build did not return a Word document & set FAIL=1)
+          src-tauri\target\debug\scale.exe --sovatela-confined-helper-selftest template-check-docx < "%RUNNER_TEMP%\office\confined.xlsx" > "%RUNNER_TEMP%\office\tneg.txt" 2>nul
+          if not errorlevel 1 (echo CONTROL FAILED - a spreadsheet was accepted as a Word template & set FAIL=1)
           src-tauri\target\debug\scale.exe --sovatela-confined-helper-selftest xlsx < "%RUNNER_TEMP%\office\confined.docx" > "%RUNNER_TEMP%\office\neg.txt" 2>nul
           echo --- negative control, DOCX read as XLSX:
           type "%RUNNER_TEMP%\office\neg.txt"

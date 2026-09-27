@@ -17,7 +17,6 @@
 //! Drift is not tested for; it is unavailable.
 
 use super::markdown::{parse, Block, Span};
-use super::template::Template;
 use serde::Serialize;
 
 /// A run of text, and what the writer will do with it.
@@ -132,8 +131,11 @@ pub enum Preview {
 /// The blocks a `.docx` will be built from.
 ///
 /// Called by the preview and by the writer, which is the point.
-pub fn docx_blocks(template: Option<&Template>, md: &str) -> Vec<PreviewBlock> {
-    let defined = template.map(|t| t.styles.as_slice());
+///
+/// `defined` is the styles the user's template defines, when there is one —
+/// the only thing about a template the preview needs, and all the application
+/// process is given: the template itself is opened only in the helper.
+pub fn docx_blocks(defined: Option<&[String]>, md: &str) -> Vec<PreviewBlock> {
     let blocks = parse(md);
 
     // Which list each item belongs to, decided once for the whole document.
@@ -237,10 +239,10 @@ pub fn pptx_slides(md: &str) -> Vec<PreviewSlide> {
 }
 
 /// What a preview of this source, in this format, should show.
-pub fn of(kind: &str, template: Option<&Template>, md: &str) -> Result<Preview, String> {
+pub fn of(kind: &str, styles: Option<&[String]>, md: &str) -> Result<Preview, String> {
     match kind {
         "docx" => Ok(Preview::Blocks {
-            blocks: docx_blocks(template, md),
+            blocks: docx_blocks(styles, md),
         }),
         "pptx" => Ok(Preview::Slides {
             slides: pptx_slides(md),
@@ -254,6 +256,7 @@ pub fn of(kind: &str, template: Option<&Template>, md: &str) -> Result<Preview, 
 
 #[cfg(test)]
 mod tests {
+    use super::super::template::Template;
     use super::*;
 
     fn text(spans: &[PreviewSpan]) -> String {
@@ -408,7 +411,7 @@ mod tests {
     }
 
     fn heading_styles(t: Option<&Template>, md: &str) -> Vec<Option<String>> {
-        docx_blocks(t, md)
+        docx_blocks(t.map(|t| t.styles.as_slice()), md)
             .iter()
             .filter_map(|b| match b {
                 PreviewBlock::Heading { style, .. } => Some(style.clone()),

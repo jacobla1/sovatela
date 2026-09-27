@@ -40,7 +40,9 @@ service name `com.anaubi.sovatela`. They are:
 - read and used only in the Rust backend. A key you type necessarily passes
   through the interface once, on its way to being stored; after that it does
   not travel back,
-- sent only to the provider they belong to.
+- sent only to the provider they belong to. **Until 1.10.1 this did not fully
+  hold for a Black Forest Labs key**, which could follow a redirect from BFL's
+  endpoint to another host — see the security history below.
 
 Plaintext copies written by early pre-release versions are migrated into the
 credential store on first launch and removed.
@@ -163,17 +165,30 @@ Turning web search off removes this entire class.
 
 ### Document extraction can be incomplete
 
-In 1.8.7 and earlier, a PDF with a digital cover page could silently omit later
-scanned pages. **1.8.8 detects and warns; it does not add full mixed-PDF OCR.**
-Digital text is kept, pages without readable digital text are numbered, and a
-**PDF partly read** badge appears before sending and in saved conversations.
-The model receives the same warning. Graphics on a page with digital text also
-trigger it, including images, PDF forms and inline images. The check is
-conservative: logos, annotations and other graphics can trigger it too.
-Pure scans still use the existing local OCR path on macOS and Windows; Linux
-has no OCR engine. OCR can misread or omit words and lines within a page.
+Since 1.9.0, pages of a PDF with no readable digital text are read from their
+pictures by the system's text recogniser on macOS and Windows, including pages
+behind a digital cover, and are labelled as recognised wherever they appear.
+Recognition can misread a figure or leave out words or lines without marking
+where. Linux has no recogniser, and names those pages as unread.
+
+A **PDF partly read** badge appears before sending and in saved conversations,
+and the model receives the same warning, when pages or graphics could not be
+read — images beside digital text on the same page, PDF forms, inline images,
+patterns, soft masks and some Type 3 fonts among them. It is conservative, so
+logos and annotations can trigger it too, and it is not complete: it has been
+evaded before, and a page with one readable character counts as read. Up to 20
+scanned pages are recognised per document. Check the original before relying
+on an answer.
+
+History: in 1.8.7 and earlier a PDF with a digital cover page could silently
+omit later scanned pages; 1.8.8 added the warning; 1.9.0 began reading those
+pages.
 
 ### Document helper confinement — macOS, from 1.10.0
+
+Custom document templates are vetted and built in the same helper from
+1.10.1; the application process never opens one. In 1.10.0 they were parsed in
+the application's own process, outside the sandbox.
 
 The extraction helper installs a Seatbelt policy in the macOS extraction helper
 before reading document bytes. It denies filesystem access by default, allowing
@@ -252,7 +267,9 @@ no remaining security blocker. Its limits:
 - The handle-whitelist evidence covers one representative inheritable handle.
 - Office coverage uses minimal generated files, and OCR coverage a synthetic
   scan.
-- None of this has yet been checked on an installed release build.
+- The owner checked the installed 1.10.0 release builds: the helper runs in an
+  AppContainer on Windows and sandboxed on macOS, and reads documents. Not on a
+  clean machine, and not Intel macOS.
 
 The [Windows confinement QA record](docs/release/QA-WINDOWS-CONFINEMENT-2026-09-24.md)
 has the measurements, the review history and the residual risks in full.
@@ -327,13 +344,11 @@ that, the field's own example would not work: `localhost` is a private address
 and `http://` is not HTTPS, so following the placeholder would fail at the last
 step. The exemption is what makes a self-hosted endpoint usable at all.
 
-The cost is that if the endpoint you configure is remote *and* plain `http://`,
-images fetched from it are also plain `http://` — no transport encryption for
-that hop, on a network you may not control. Nothing warns you. The app cannot
-distinguish "my own server on my own machine" from "someone else's server I
-typed an http URL for"; both are addresses you chose deliberately, and refusing
-the second would refuse the first. **If your image endpoint is not on your own
-machine, give it an `https://` address.**
+Plain `http://` is accepted only for an endpoint on this machine —
+`localhost` or a loopback address. A remote endpoint must be `https://`; the
+app refuses to use one that is not, and applies the same rule to every redirect
+hop. *This paragraph is corrected:* it used to say a remote plain-`http://`
+endpoint was accepted without warning, which the code does not do.
 
 The exemption is no wider than that origin, and it is re-checked at every
 redirect: an endpoint on `:4000` cannot redirect the app to another port on the
@@ -551,6 +566,21 @@ than filed away:
   second was overtaken by events: an advisory was published, and this page went
   on saying one had not been. A page whose subject is candour cannot be the last
   place still making a withdrawn claim about who was exposed
+- **Found by the 1.10.0 launch review and fixed in 1.10.1** — an independent
+  review of 1.10.0 before its public announcement:
+  - A **Black Forest Labs key could follow a redirect** to another host. Keys
+    travel to BFL as an `x-key` header, the shared client followed redirects,
+    and the HTTP library strips `Authorization` across hosts but not a custom
+    header. It needed BFL's own HTTPS endpoint to answer with a redirect; none
+    is known. Present in **1.0.0 through 1.10.0**, disclosed as
+    [GHSA-h696-pjhx-m886](https://github.com/jacobla1/sovatela/security/advisories/GHSA-h696-pjhx-m886),
+    CVSS 5.3. Rotate the key if you want to rule out exposure.
+  - **A configured proxy defeated the address pin** on web and image fetches:
+    the app checked an address, but a proxy resolves the name again itself. It
+    only applied with a proxy configured. Those fetches now never use one.
+  - **Custom templates were parsed outside the sandbox**, in the application
+    process, while the release notes said every document was read inside one.
+    They are now vetted and built in the confined helper.
 - **Accessibility defects**, stated rather than glossed —
   [Accessibility statement](docs/ACCESSIBILITY.md)
 - **Security and robustness reviews** (July 2026) and the mitigation plan that

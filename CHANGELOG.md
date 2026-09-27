@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.10.1 — 2026-09-27
+
+Fixes for three problems an independent review of 1.10.0 found before its
+public announcement.
+
+- A Black Forest Labs API key is no longer sent onward if BFL's endpoint
+  answers with a redirect. Provider requests now follow no redirects at all.
+  Present since 1.0.0; no exploitation is known. Advisory
+  GHSA-h696-pjhx-m886. Rotate your BFL key if you want to rule out exposure.
+- Web and image fetches no longer go through a configured proxy, which
+  resolved the address again itself and so bypassed the check that keeps
+  those fetches off private networks.
+- Custom document templates are now vetted and built inside the document
+  sandbox. In 1.10.0 they were parsed in the app's own process.
+- The download page, security page and README no longer describe mixed-PDF
+  scans as unread, or a remote plain-http image endpoint as accepted; both
+  were out of date.
+
 ## 1.10.0 — 2026-09-26
 
 - Read documents inside a sandbox on macOS. The helper that reads PDFs and

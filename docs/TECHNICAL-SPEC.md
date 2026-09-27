@@ -1,6 +1,6 @@
 # Technical and security specification
 
-Sovatela v1.10.0 · Companion to Product spec ·
+Sovatela v1.10.1 · Companion to Product spec ·
 UX spec · [Security policy](../SECURITY.md)
 
 Fuller engineering rationale is kept internally in `ENGINEERING_NOTES.md`, which
@@ -215,6 +215,12 @@ scratch directory, and a document is refused, never read unconfined, if the
 sandbox cannot be entered. Both sandboxes leave the child some system
 services, and neither isolates one document from the next; `SECURITY.md`
 states the limits. Linux has resource limits only.
+
+Custom document templates go through the same helper from 1.10.1: it vets a
+template and trial-builds a document from it when one is chosen, and builds
+every document that uses one, replying with the finished file. The application
+process reads the template's bytes and hands them over; it never opens the
+archive or parses its XML.
 
 Every reply is framed with a fixed marker. Without it the parent cannot tell
 its helper's output from any other program's, and a child that exits 0 with

@@ -9,7 +9,10 @@
 > release being prepared rather than one you can download. What is released is
 > on the [releases page](https://github.com/jacobla1/sovatela/releases) and at
 > [sovatela.eu](https://sovatela.eu); a version tagged here and then withdrawn
-> is burned rather than reused, so a gap in the numbers is deliberate.
+> is burned rather than reused, so a gap in the numbers is deliberate. **One
+> exception:** the `v1.10.0` tag was moved once, from `b7619f2` to `a0549ca`,
+> before any release was published from it. The release's
+> [QA record](docs/release/QA-1.10.0.md) says why.
 
 A small, friendly **desktop chat client** for **Z.ai's GLM-5.2**, served from
 Europe on **Scaleway's Generative APIs**. Built with **Tauri v2 + Svelte 5**.
@@ -22,9 +25,11 @@ conversations, no keys and no crash reports.
 memory, document generation and artifact rendering all run on your machine. The
 model does not: chat, vision, search and image generation are calls to providers
 you configure. Every network call goes to one of those providers, to
-`sovatela.eu` when you press *Check for updates*, or to a page the model reads
-while web search is on — and one of them is automatic, a connection check at
-launch. [Security](SECURITY.md) lists all of them, with what is sent and when.
+`sovatela.eu` for update checks, to GitHub for the price list, to image
+addresses a provider returns, or to a page the model reads while web search is
+on — and a connection check runs automatically at launch. This paragraph is a
+summary: the [Network section of Security](SECURITY.md#network) is the complete
+list, with what is sent and when.
 
 ## Design principle: sovereignty
 
