@@ -43,15 +43,39 @@ Local, on macOS (Apple silicon):
 
 On CI: see "Release verification" below.
 
-## Required before the draft is published
+## Installed-build checks
 
-- [ ] **Windows**, installed release build: a scanned PDF and a `.docx` read; the
-      helper shows `AppContainer` in Process Explorer; choose a `.docx`
-      template in Settings and save a generated Word document with it — it
-      opens in Word with the template's design.
-- [ ] **macOS**, installed notarized build: the same two documents read; the
-      helper shows `Yes` in Activity Monitor's *Sandbox* column; the same
-      template check.
+These were a condition of publishing. **The Windows check was not done: the
+owner published without it, on 2026-09-27, rather than hold the fixes back.**
+It is recorded here as outstanding, not as passed.
+
+- [ ] **Windows**, installed release build — **not done.** The evidence for
+      Windows is CI's: the confinement gate (run `36275545069` at `e2162f4`, the
+      same code as this release apart from version strings) passed every
+      required step on `windows-latest` and `windows-2022`, including reading
+      documents in the container and both template jobs there — the check
+      returning `["Normal","Heading1"]`, the build returning a Word document,
+      and a spreadsheet offered as a Word template refused. That is a debug build
+      on two hosted runner images, not an installed release. To be done and
+      added here.
+- [x] **macOS**, installed notarized build (`/Applications/Sovatela 11.app`,
+      version 1.10.1, the running copy confirmed by its process path), checked
+      by the owner on 2026-09-27:
+  - a scanned PDF (OCR badge), a digital cover followed by a scan ("PDF partly
+    read — page 2 from a picture"), and a `.docx` were read, and the model
+    quoted each correctly — `INVOICE 12345`, `DIGITAL PAGE 1`, the partly-read
+    warning, and the document's text;
+  - with a template chosen in Settings, a generated Word document was saved and
+    opened in Word without a repair prompt; it carries exactly the template's
+    two styles, with the subheadings on the nearest heading style it defines,
+    and real list items;
+  - Activity Monitor could not catch the helper, which lives under a second.
+    Instead `sandbox_check` was asked about the installed app's own helper,
+    held open on its input: **sandboxed**, a system file readable, `~/.zshrc`
+    and a document on the Desktop **denied**; an ordinary process as the
+    control was unsandboxed and allowed all three. The attachments above are
+    also evidence: a helper that failed to enter the sandbox would have
+    refused them.
 
 ## Before the announcement — the launch review's B4
 
@@ -82,4 +106,32 @@ parser.
 
 ## Release verification
 
-Run after the tag, against the draft, before publishing it. **Pending.**
+Run after the tag, against the draft, before publishing it.
+
+- **CI** run `36276238780` at private `d422b71`, the commit this release is
+  generated from: success on macOS, Linux and Windows, including the fifteen
+  fixtures with the helper inside an app bundle.
+- **The published source's own suite, before tagging:** 697 tests across 37
+  files at the public commit.
+- **Release** run `36294681908` at `v1.10.1` (public `e879d72`): all seven jobs
+  succeeded, including `verify-macos-signature` and `verify-release-assets`,
+  after the macOS build was approved by hand at the `release` gate. 11 assets.
+- `scripts/verify-release.sh v1.10.1`: **10 passed, 0 failed, 0 skipped** —
+  checksums over 7 files, the minisign signature, 6 build attestations, macOS
+  signed/notarized/stapled, the provenance record naming `v1.10.1` and public
+  commit `e879d728663f`, and the publisher re-run at `d422b7115f9f`
+  reproducing the published tree exactly.
+
+Against the **shipped binary** from the draft's `.dmg`, mounted read-only,
+version 1.10.1, notarized, its helper run from inside the app bundle:
+
+- the scan reads as `INVOICE 12345`;
+- **15 mixed/control fixtures pass with `SOVATELA_EXPECT_OCR=1`**, and **3
+  page-accounting cases**;
+- DOCX, ODT, PPTX and XLSX each read, with their marker;
+- **both template jobs work in the shipped app:** the check reports the
+  template's styles, the build returns a Word document containing the
+  Markdown, and a spreadsheet offered as a Word template is refused.
+
+This record replaced the pending copy attached to the draft while it was still
+a draft.
