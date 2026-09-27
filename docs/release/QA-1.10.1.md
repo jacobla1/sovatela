@@ -135,3 +135,21 @@ version 1.10.1, notarized, its helper run from inside the app bundle:
 
 This record replaced the pending copy attached to the draft while it was still
 a draft.
+
+Published at 2026-09-27T21:38:59Z, with the Windows installed check
+outstanding as recorded above. What follows was added afterwards, in the
+repository only; the attached copy ends above.
+
+- Advisory **GHSA-h696-pjhx-m886** published at 2026-09-27T21:39:00Z, medium,
+  CVSS 5.3, affecting 1.0.0 through 1.10.0, patched in 1.10.1.
+- The private repository is tagged `v1.10.1` at `d422b71`, the commit the
+  public tag's provenance names.
+- Site built from the published artifacts, after their checksums and
+  signature verified: 8 release asset links resolve; release feed 15 entries,
+  newest 1.10.1.
+- All nine live pages and files are byte-identical to the built ones; the
+  security page links the advisory.
+- Live `version.json` reads **1.10.1**; all six installer links return
+  **200**; the `.dmg` fetched from the live link hashes to
+  `dc6f21c54769b5e0cf8024067362b1f7ba21a7492e4bad39d801271d3afc72ce`, which
+  is what the site publishes for it.
