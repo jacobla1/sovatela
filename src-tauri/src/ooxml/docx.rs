@@ -52,7 +52,7 @@ fn abstract_definitions(bullet_id: u32, decimal_id: u32) -> String {
 /// declaring only `w:` produces a document that is well-formed to anything
 /// scanning it and invalid to anything that resolves namespaces. Word's answer
 /// is "Word experienced an error trying to open the file".
-const W: &str = concat!(
+pub(super) const W: &str = concat!(
     r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" "#,
     r#"xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships""#
 );

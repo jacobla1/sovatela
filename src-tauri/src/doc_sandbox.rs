@@ -264,6 +264,11 @@ impl CappedAllocator {
         // already allocated, so the first frees are of memory this counter
         // never saw. A wrapping subtraction there would underflow to an
         // enormous live figure and refuse everything afterwards.
+        //
+        // Newer stable deprecates `fetch_update` for `try_update`, the same
+        // method renamed; `try_update` does not exist at the declared
+        // rust-version (1.77.2), so the old name stays until that is raised.
+        #[allow(deprecated)]
         let _ = LIVE.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |live| {
             Some(live.saturating_sub(size))
         });

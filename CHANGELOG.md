@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.10.2 — 2026-10-08
+
+Fixes for what an independent re-review of 1.10.1 found before its public
+announcement.
+
+- A document template can no longer hide a field that fetches a web address.
+  Templates were already refused for carrying one, but the check could be
+  misled — most simply by a second, unrelated attribute placed in front of
+  the real instruction — and then every document built from the template kept
+  the field. When a recipient updated the fields in Word, it fetched the
+  address, telling whoever controls it that the document was opened. Present
+  since templates arrived in 1.6.0; no exploitation is known. Advisory
+  GHSA-xj29-h3wq-6h2w. A template is now refused if its fields are written in
+  any way Word does not write them itself.
+- The TLS library behind every HTTPS connection is updated to rustls 0.23.45,
+  which fixes RUSTSEC-2026-0285: 0.23.41 accepted some TLS 1.3 handshake
+  messages it should have rejected.
+- DOMPurify, which cleans every reply before it is shown, is updated from
+  3.4.14 to 3.4.16. Two advisories against 3.4.14 (GHSA-p98j-92pf-mc4p,
+  GHSA-6688-9rhm-gjv2) affect only its in-place mode, which Sovatela does not
+  use, so this release was not exposed; it is updated so that it does not ship
+  a sanitizer with known advisories.
+- The README's release procedure described builds drafted in a private
+  repository. Installers have been built in the public one since 1.7.0.
+
 ## 1.10.1 — 2026-09-27
 
 Fixes for three problems an independent review of 1.10.0 found before its

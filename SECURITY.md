@@ -581,6 +581,29 @@ than filed away:
   - **Custom templates were parsed outside the sandbox**, in the application
     process, while the release notes said every document was read inside one.
     They are now vetted and built in the confined helper.
+- **Found by the 1.10.1 launch re-review and fixed in 1.10.2** — a second
+  independent review, of 1.10.1, before its public announcement:
+  - **A template could hide a field that fetches.** Templates carrying a field
+    such as `INCLUDEPICTURE "http://…"` were refused, but the check read the
+    first attribute with the right name whatever its namespace, so an
+    unrelated one placed in front of the real instruction was what it judged.
+    The reviewer's template passed, every document built from it kept the
+    field, and Word fetched the address once the fields were updated — telling
+    whoever controls it that the document had been opened, on the recipient's
+    machine. Eight other ways to make the checked text differ from the text
+    Word runs were found while fixing it. Present in **1.6.0 through 1.10.1**,
+    every release with templates, and disclosed as
+    [GHSA-xj29-h3wq-6h2w](https://github.com/jacobla1/sovatela/security/advisories/GHSA-xj29-h3wq-6h2w).
+    A template is now refused if its fields are written in any way Word does
+    not write them. A document already built from a template received from
+    someone else can be checked in Word with View ▸ Field Codes.
+  - **The TLS library** (rustls 0.23.41) accepted some TLS 1.3 handshake
+    messages it should have rejected, RUSTSEC-2026-0285; updated to 0.23.45.
+    Found by the project's weekly dependency audit rather than the review.
+  - **The HTML sanitizer** (DOMPurify 3.4.14) carried two advisories,
+    GHSA-p98j-92pf-mc4p and GHSA-6688-9rhm-gjv2, both in its `IN_PLACE` mode.
+    Sovatela sanitizes a string with neither that mode nor hooks, so it was not
+    exposed; updated to 3.4.16 regardless.
 - **Accessibility defects**, stated rather than glossed —
   [Accessibility statement](docs/ACCESSIBILITY.md)
 - **Security and robustness reviews** (July 2026) and the mitigation plan that

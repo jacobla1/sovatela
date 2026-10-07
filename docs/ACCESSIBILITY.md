@@ -1,6 +1,6 @@
 # Accessibility statement
 
-Applies to: Sovatela v1.10.1 · Last reviewed: 2026-08-29
+Applies to: Sovatela v1.10.2 · Last reviewed: 2026-08-29
 
 ## Our position
 

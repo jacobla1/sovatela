@@ -125,7 +125,8 @@ endpoint for chat; see the Roadmap.
   page furniture; headings and lists use your template's own styles for them,
   where it defines any. Templates are checked when you choose one; those
   containing macros, linking to anything outside themselves, or carrying a
-  field that fetches when the document is opened, are refused, and only
+  field that fetches when the document is opened — or a field written in a way
+  Word does not write one, which could hide such a field — are refused, and only
   pictures are taken from a template's media folder. What the conversion
   does not carry is listed in
   [Technical specification § 7](docs/TECHNICAL-SPEC.md#7-known-technical-debt).
@@ -241,15 +242,22 @@ This produces a **draft release** with a universal macOS `.dmg` (Intel + Apple
 Silicon), Windows `.msi`/`.exe`, and Linux `.deb`/`.AppImage`/`.rpm`.
 
 Development happens in a separate working repository, and this source tree is
-published from it at each release. Builds are drafted there and are not
-downloadable; publishing is a second, deliberate step. Signing is verified on
-the drafted artifacts, and **those same files** — never a rebuild, which would
-have different checksums — are uploaded to the public release on
-`jacobla1/sovatela`, which is what the download page is built from. Full
-procedure: [`deploy/web/README.md`](deploy/web/README.md).
+published from it at each release. The installers are built **here**, by
+`release.yml` on `jacobla1/sovatela`, from the published tree — since 1.7.0;
+1.6.2 and earlier were built in the private repository. The workflow leaves a
+draft release carrying a build attestation for every file, so each installer
+can be traced to the public commit that produced it. Signing, notarization
+and the attestations are verified on the draft, and publishing it is a second,
+deliberate step: **those same files**, never a rebuild, become the release the
+download page is built from. Full procedure:
+[`deploy/web/README.md`](deploy/web/README.md).
 
-That split is why the checksums on the download page match the files on the
-release: nothing is compiled between verifying an artifact and publishing it.
+That is why the checksums on the download page match the files on the release:
+nothing is compiled between verifying an artifact and publishing it.
+
+*Corrected for 1.10.2.* Until then this section still described the procedure
+used up to 1.6.2 — builds drafted in the private repository and their files
+uploaded here — which contradicted the attestations on every release since.
 
 ### Signing & notarization (macOS)
 

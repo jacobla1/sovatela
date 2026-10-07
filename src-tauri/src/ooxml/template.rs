@@ -395,7 +395,14 @@ pub fn load(name: &str, bytes: &[u8]) -> Result<Template, String> {
 
         let data = read_entry(&mut archive, name, budget)?;
         well_formed(name, &data)?;
-        fields_are_self_contained(name, &data)?;
+        // Everything but the pictures, which are not markup — and which only
+        // reach this point as pictures, by the check above. The field reader
+        // used to run over them and stop at the first byte it could not
+        // read, harmlessly; it now refuses what it cannot read, since
+        // stopping early is how a check is walked past.
+        if !name.contains("/media/") {
+            fields_are_self_contained(name, &data)?;
+        }
         budget = budget.saturating_sub(data.len() as u64);
 
         if name.ends_with(".rels") {
@@ -483,8 +490,11 @@ pub fn load(name: &str, bytes: &[u8]) -> Result<Template, String> {
                     // `ALLOWED_FIELDS` exists to prevent.
                     //
                     // Checked after the strip, because what is checked has to
-                    // be what actually travels.
-                    fields_are_self_contained("word/document.xml", sect.as_bytes())?;
+                    // be what actually travels — and inside the root it
+                    // travels into, since the fragment's prefixes are
+                    // declared by the generated document, not by itself.
+                    let travelling = format!("<section {}>{sect}</section>", super::docx::W);
+                    fields_are_self_contained("word/document.xml", travelling.as_bytes())?;
                     Some(sect)
                 }
                 None => None,
@@ -1090,22 +1100,60 @@ const ALLOWED_FIELDS: &[&str] = &[
     "FORMDROPDOWN",
 ];
 
-/// An attribute by local name, whatever prefix it carries.
+/// The namespaces WordprocessingML is written in: the one Word saves, and the
+/// strict one it can also read.
+const WORD_NAMESPACES: [&[u8]; 2] = [
+    b"http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+    b"http://purl.oclc.org/ooxml/wordprocessingml/main",
+];
+
+fn is_word(ns: &quick_xml::name::ResolveResult) -> bool {
+    matches!(ns, quick_xml::name::ResolveResult::Bound(n) if WORD_NAMESPACES.contains(&n.0))
+}
+
+/// The value of one of Word's own attributes on a field element, or why it
+/// cannot be told.
 ///
-/// The opposite choice from `parse_relationships`, deliberately. There an
-/// unprefixed attribute is the real one and a prefixed `x:TargetMode` is a
-/// different attribute wearing the same name, so matching by local name was a
-/// bypass. Here the attribute *is* prefixed — `w:instr` is in the
-/// wordprocessingml namespace — and a template may legally bind that namespace
-/// to any prefix it likes. Requiring `w:` would be the bypass. Matching by
-/// local name can only over-match, and over-matching refuses a template that
-/// would have been fine, which is the direction a check like this should fail
-/// in.
-fn attr_local(e: &quick_xml::events::BytesStart, want: &[u8]) -> Option<String> {
-    e.attributes().flatten().find_map(|a| {
-        (a.key.local_name().as_ref() == want)
-            .then(|| String::from_utf8_lossy(a.value.as_ref()).into_owned())
-    })
+/// Namespace-aware, and strict about it, because the previous version was
+/// neither. It took the *first* attribute with the right local name, whatever
+/// its namespace, on the reasoning that matching by local name could only
+/// over-match. It could also mis-match: an unrelated `x:instr=" PAGE "` placed
+/// ahead of the real `w:instr=" INCLUDEPICTURE … "` was what got judged, and
+/// Word ran the other one. The 1.10.1 launch review built that template, the
+/// installed helper accepted it, and Word fetched the URL.
+///
+/// So the question is no longer "what would Word make of this", which needs a
+/// second copy of Word's parser to answer. It is "is this written the way Word
+/// writes it". An attribute of the same name in another vocabulary, the same
+/// attribute twice, or a character reference inside it is not, and the field
+/// is refused rather than interpreted.
+fn word_attr(
+    reader: &quick_xml::NsReader<&[u8]>,
+    e: &quick_xml::events::BytesStart,
+    want: &[u8],
+) -> Result<Option<String>, &'static str> {
+    let mut found = None;
+    for attr in e.attributes() {
+        let attr = attr.map_err(|_| "an attribute that cannot be read")?;
+        let (ns, local) = reader.resolver().resolve_attribute(attr.key);
+        if local.as_ref() != want {
+            continue;
+        }
+        if !is_word(&ns) {
+            return Err("an attribute of the same name from another vocabulary");
+        }
+        if found.is_some() {
+            return Err("the same attribute twice");
+        }
+        if attr.value.windows(2).any(|w| w == b"&#") {
+            return Err("a character reference in the instruction");
+        }
+        let value = attr
+            .decoded_and_normalized_value(quick_xml::XmlVersion::Implicit1_0, reader.decoder())
+            .map_err(|_| "a value that cannot be decoded")?;
+        found = Some(value.into_owned());
+    }
+    Ok(found)
 }
 
 /// The field type a field instruction names, upper-cased.
@@ -1117,63 +1165,227 @@ fn field_type(instruction: &str) -> Option<String> {
         .filter(|w| !w.is_empty())
 }
 
+/// A complex field the reader is inside.
+struct OpenField {
+    /// The element holding the run the field began in. Its instruction has to
+    /// stay there.
+    container: Option<usize>,
+    instruction: String,
+    /// Past its `separate` (or never had one): what follows is the result.
+    instructed: bool,
+}
+
 /// Refuse a copied part that carries a field instruction able to reach outside
-/// the document.
+/// the document — or one written in a way that makes its instruction
+/// uncertain.
 ///
 /// The instruction may be spelled two ways and split across any number of
 /// runs — `INCLUDE` in one and `PICTURE "http://…"` in the next is the same
 /// field — so the runs between a field's `begin` and its `separate` or `end`
 /// are joined before anything is decided about them.
+///
+/// Joined *as Word joins them*, which is the part that kept going wrong. The
+/// check is only worth anything if the text it judges is the text Word runs,
+/// and every way the two can differ was a way past it:
+///
+/// - an attribute or element of the same name in another vocabulary, which
+///   Word ignores and this read;
+/// - instruction text as character references or CDATA, which this dropped;
+/// - a deleted instruction, which comes back when a recipient rejects the
+///   change;
+/// - instruction text in a branch Word skips — the fallback of an
+///   `mc:AlternateContent`, or an element Word is told to ignore — which put
+///   an allowed word in front of the real one for this reader alone;
+/// - a `separate` followed by an `end` popping two fields instead of one, so
+///   the outer field's instruction arrived after it had been closed and was
+///   dropped.
+///
+/// None of those is how Word writes a field. So rather than learn to read each
+/// of them the way Word would, this refuses them: a field's markers and
+/// instruction text are Word's own elements, in runs that sit side by side in
+/// one container, with the instruction as plain text. A template saved by
+/// Word passes; one that was written to confuse a checker is told so.
 fn fields_are_self_contained(name: &str, data: &[u8]) -> Result<(), String> {
     use quick_xml::events::Event;
 
+    let unclear = |why: &str| {
+        format!(
+            "that template's {name} contains a field written in a way Word does not write it \
+             ({why}), so Sovatela cannot tell what it would do. Re-saving the template from Word \
+             may fix this — accept or reject any tracked changes first. Otherwise remove the \
+             field (View \u{25b8} Field Codes shows them) and choose the template again."
+        )
+    };
+
     let text = String::from_utf8_lossy(data);
-    let mut reader = quick_xml::Reader::from_str(&text);
-    // One buffer per open field, because fields nest.
-    let mut open: Vec<String> = Vec::new();
+    let mut reader = quick_xml::NsReader::from_str(&text);
+    // The elements open around the reader: an id for each, and whether it is
+    // one of Word's runs.
+    let mut path: Vec<(usize, bool)> = Vec::new();
+    let mut next_id = 0usize;
+    // One per open complex field, because fields nest.
+    let mut fields: Vec<OpenField> = Vec::new();
     let mut instructions: Vec<String> = Vec::new();
-    let mut capturing = false;
+    // The text of the instruction element being read, and whether it is the
+    // innermost field's own instruction rather than the cached result of a
+    // field nested inside another's.
+    let mut reading: Option<(String, bool)> = None;
 
     loop {
-        match reader.read_event() {
-            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => match e.local_name().as_ref() {
-                // The one-element spelling carries the whole instruction as an
-                // attribute.
-                b"fldSimple" => {
-                    if let Some(instr) = attr_local(&e, b"instr") {
-                        instructions.push(instr);
-                    }
+        let (word, event) = match reader.read_resolved_event() {
+            Ok((ns, event)) => (is_word(&ns), event),
+            Err(e) => return Err(unclear(&format!("markup that cannot be read: {e}"))),
+        };
+        match &event {
+            Event::Start(e) | Event::Empty(e) => {
+                let started = matches!(event, Event::Start(_));
+                let local = e.local_name();
+                let local = local.as_ref();
+                if reading.is_some() {
+                    return Err(unclear("markup inside a field instruction"));
                 }
-                b"fldChar" => match attr_local(&e, b"fldCharType").as_deref() {
-                    Some("begin") => open.push(String::new()),
-                    // `separate` ends the instruction and starts the cached
-                    // result, which is ordinary text.
-                    Some("separate") | Some("end") => {
-                        if let Some(done) = open.pop() {
-                            instructions.push(done);
+                let field_markup = matches!(
+                    local,
+                    b"fldSimple" | b"fldChar" | b"instrText" | b"delInstrText"
+                );
+                if field_markup && !word {
+                    return Err(unclear("a field element from another vocabulary"));
+                }
+                let in_run = path.last().is_some_and(|p| p.1);
+                let container = path.len().checked_sub(2).map(|i| path[i].0);
+                match (field_markup, local) {
+                    // The one-element spelling carries the whole instruction
+                    // as an attribute.
+                    (true, b"fldSimple") => {
+                        if let Some(instr) = word_attr(&reader, e, b"instr").map_err(unclear)? {
+                            instructions.push(instr);
                         }
                     }
+                    (true, b"fldChar") => {
+                        if !in_run {
+                            return Err(unclear("a field marker outside a run"));
+                        }
+                        let kind = word_attr(&reader, e, b"fldCharType").map_err(unclear)?;
+                        match kind.as_deref() {
+                            Some("begin") => {
+                                // A field nested inside another's instruction
+                                // is evaluated first and its result spliced
+                                // in, so one placed before the outer field has
+                                // named its type could name it — `{ {QUOTE
+                                // "INCLUDEPICTURE"} "http://…" }` — while the
+                                // cached result on file says something else.
+                                // Word writes the type word first.
+                                if let Some(outer) = fields.last().filter(|f| !f.instructed) {
+                                    let typed = field_type(&outer.instruction).is_some()
+                                        && outer.instruction.ends_with(char::is_whitespace);
+                                    if !typed {
+                                        return Err(unclear(
+                                            "a field nested where the type of another belongs",
+                                        ));
+                                    }
+                                }
+                                fields.push(OpenField {
+                                    container,
+                                    instruction: String::new(),
+                                    instructed: false,
+                                })
+                            }
+                            // `separate` ends the instruction and starts the
+                            // cached result, which is ordinary text. `end`
+                            // ends the field, and the instruction with it if
+                            // there was no `separate`.
+                            Some(kind @ ("separate" | "end")) => {
+                                let Some(field) = fields.last_mut() else {
+                                    return Err(unclear("a field that ends without beginning"));
+                                };
+                                if !field.instructed {
+                                    if field.container != container {
+                                        return Err(unclear(
+                                            "a field instruction that leaves the place it began",
+                                        ));
+                                    }
+                                    field.instructed = true;
+                                    instructions.push(std::mem::take(&mut field.instruction));
+                                } else if kind == "separate" {
+                                    return Err(unclear("a field with two separators"));
+                                }
+                                if kind == "end" {
+                                    fields.pop();
+                                }
+                            }
+                            _ => return Err(unclear("a field marker of no known kind")),
+                        }
+                    }
+                    // Instruction text belongs to the innermost field still
+                    // reading its instruction. Usually that is the innermost
+                    // field of all; when it is not, the text is the cached
+                    // result of a field nested in that instruction, which is
+                    // how Word writes one — `IF {PAGE} = 1` stores the page
+                    // number as instruction text. It is recomputed on update,
+                    // so it is not judged; the type word before it is.
+                    (true, b"instrText") => {
+                        let owner = fields.iter().rposition(|f| !f.instructed);
+                        let belongs = owner.is_some_and(|i| fields[i].container == container);
+                        if !in_run || !belongs {
+                            return Err(unclear(
+                                "field instruction text outside the field it belongs to",
+                            ));
+                        }
+                        if started {
+                            let own = owner == Some(fields.len() - 1);
+                            reading = Some((String::new(), own));
+                        }
+                    }
+                    (true, _) => return Err(unclear("a tracked deletion inside a field")),
                     _ => {}
-                },
-                b"instrText" => capturing = true,
-                _ => {}
-            },
-            Ok(Event::Text(t)) if capturing => {
-                if let (Some(current), Ok(s)) = (open.last_mut(), t.xml10_content()) {
-                    current.push_str(&s);
+                }
+                if started {
+                    path.push((next_id, word && local == b"r"));
+                    next_id += 1;
                 }
             }
-            Ok(Event::End(e)) => {
-                if e.local_name().as_ref() == b"instrText" {
-                    capturing = false;
+            Event::Text(t) => {
+                if let Some((s, _)) = reading.as_mut() {
+                    let t = t
+                        .xml10_content()
+                        .map_err(|_| unclear("text that cannot be decoded"))?;
+                    s.push_str(&t);
                 }
             }
-            // A part that cannot be read is refused before this runs.
-            Ok(Event::Eof) | Err(_) => break,
+            Event::GeneralRef(r) => {
+                if let Some((s, _)) = reading.as_mut() {
+                    if r.is_char_ref() {
+                        return Err(unclear("a character reference in the instruction"));
+                    }
+                    let entity = r
+                        .decode()
+                        .map_err(|_| unclear("text that cannot be decoded"))?;
+                    let Some(value) = quick_xml::escape::resolve_predefined_entity(&entity) else {
+                        return Err(unclear("an entity in the instruction"));
+                    };
+                    s.push_str(value);
+                }
+            }
+            Event::CData(_) if reading.is_some() => {
+                return Err(unclear("a CDATA section in the instruction"));
+            }
+            Event::End(_) => {
+                // Nothing may open inside an instruction, so the first end
+                // while reading one is its own.
+                if let Some((s, own)) = reading.take() {
+                    if let Some(field) = fields.last_mut().filter(|_| own) {
+                        field.instruction.push_str(&s);
+                    }
+                }
+                path.pop();
+            }
+            Event::Eof => break,
             _ => {}
         }
     }
-    instructions.extend(open);
+    if !fields.is_empty() {
+        return Err(unclear("a field that never ends"));
+    }
 
     for instruction in instructions {
         let Some(kind) = field_type(&instruction) else {
@@ -2486,6 +2698,150 @@ mod tests {
                 load("house.docx", &template_with_header(header)).is_err(),
                 "case {n}: the field rode into the document"
             );
+        }
+    }
+
+    #[test]
+    fn a_fetching_field_cannot_hide_behind_what_the_checker_reads_instead() {
+        // The 1.10.1 launch review: the checker took the *first* attribute
+        // named `instr`, whatever its namespace, so an unrelated `x:instr`
+        // saying PAGE stood in front of the `w:instr` Word actually reads.
+        // The installed helper accepted the template, the build kept the
+        // field, and Word fetched the URL once the field was updated.
+        //
+        // Every case here is a way for the text the checker judges to differ
+        // from the text Word runs. Each was accepted before this test.
+        let w = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
+        let x = r#"xmlns:x="urn:sovatela-review""#;
+        let mc = r#"xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" mc:Ignorable="w14 x""#;
+        let url = "&quot;http://127.0.0.1:8731/beacon.png&quot;";
+        let run = |text: &str| format!("<w:r><w:instrText>{text}</w:instrText></w:r>");
+        let chr = |t: &str| format!(r#"<w:r><w:fldChar w:fldCharType="{t}"/></w:r>"#);
+        // `INCLUDEPICTURE "http://…" ` spelled entirely as character
+        // references, which the reader hands over separately from text.
+        let referenced: String = r#"INCLUDEPICTURE "http://127.0.0.1:8731/beacon.png" "#
+            .chars()
+            .map(|c| format!("&#{};", c as u32))
+            .collect();
+
+        let cases = [
+            // The review's case: a foreign attribute ahead of the real one.
+            format!(r#"<w:fldSimple {x} x:instr=" PAGE " w:instr=" INCLUDEPICTURE {url} \d "/>"#),
+            // The same namespace bound to a second prefix.
+            format!(
+                r#"<w:fldSimple xmlns:q="http://schemas.openxmlformats.org/wordprocessingml/2006/main" q:instr=" PAGE " w:instr=" INCLUDEPICTURE {url} "/>"#
+            ),
+            // A complex field whose `begin` the checker reads as `separate`,
+            // so it never opens and the instruction has nowhere to go.
+            format!(
+                r#"<w:r><w:fldChar {x} x:fldCharType="separate" w:fldCharType="begin"/></w:r>{}{}{}"#,
+                run(&format!("INCLUDEPICTURE {url}")),
+                chr("separate"),
+                chr("end")
+            ),
+            // A foreign end-of-field element that Word ignores closes the
+            // field early for the checker.
+            format!(
+                r#"{}<w:r><x:fldChar {x} x:fldCharType="end"/></w:r>{}{}{}"#,
+                chr("begin"),
+                run(&format!("INCLUDEPICTURE {url}")),
+                chr("separate"),
+                chr("end")
+            ),
+            // The instruction as character references, with an allowed word
+            // after it for the checker to find first.
+            format!(
+                "{}{}{}",
+                chr("begin"),
+                run(&format!("{referenced}PAGE")),
+                chr("end")
+            ),
+            // The instruction as CDATA.
+            format!(
+                "{}{}{}",
+                chr("begin"),
+                run(r#"<![CDATA[INCLUDEPICTURE "http://127.0.0.1:8731/beacon.png"]]>"#),
+                chr("end")
+            ),
+            // A deleted instruction, which comes back when a recipient rejects
+            // the change.
+            format!(
+                r#"{}<w:r><w:delInstrText>INCLUDEPICTURE {url}</w:delInstrText></w:r>{}"#,
+                chr("begin"),
+                chr("end")
+            ),
+            // A fallback branch Word skips puts an allowed word in front of the
+            // instruction for the checker only.
+            format!(
+                r#"{}<mc:AlternateContent><mc:Choice Requires="w14"><w:r><w:t/></w:r></mc:Choice><mc:Fallback>{}</mc:Fallback></mc:AlternateContent>{}{}"#,
+                chr("begin"),
+                run("PAGE "),
+                run(&format!("INCLUDEPICTURE {url}")),
+                chr("end")
+            ),
+            // A nested field computing the outer field's type, with a
+            // harmless word as its cached result.
+            format!(
+                "{}{}{}{}{}{}{}{}{}",
+                chr("begin"),
+                chr("begin"),
+                run(r#"QUOTE "INCLUDEPICTURE""#),
+                chr("separate"),
+                run("PAGE"),
+                chr("end"),
+                run(&format!(" {url}")),
+                chr("separate"),
+                chr("end")
+            ),
+            // A nested field's `separate` and `end` each closed a field, so
+            // the outer one was gone before its instruction arrived.
+            format!(
+                "{}{}{}{}{}{}{}{}{}",
+                chr("begin"),
+                run(" "),
+                chr("begin"),
+                run("PAGE"),
+                chr("separate"),
+                chr("end"),
+                run(&format!("INCLUDEPICTURE {url}")),
+                chr("separate"),
+                chr("end")
+            ),
+        ];
+        let mut wrong = Vec::new();
+        for (n, body) in cases.iter().enumerate() {
+            let header = format!(r#"<w:hdr {w} {mc}><w:p>{body}</w:p></w:hdr>"#);
+            match load("house.docx", &template_with_header(&header)) {
+                Ok(_) => wrong.push(format!("case {n}: accepted")),
+                Err(e) if !(e.contains("INCLUDEPICTURE") || e.contains("cannot tell")) => {
+                    wrong.push(format!("case {n}: refused for another reason ({e})"))
+                }
+                Err(_) => {}
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    #[test]
+    fn a_header_written_the_way_word_writes_it_is_still_accepted() {
+        // The field check refuses anything Word does not write, so it has to
+        // accept what Word does: a page number in a text box, which Word
+        // saves twice — a drawing for itself and a VML fallback for older
+        // readers — each with a whole field inside its own paragraph; a
+        // field nested in another's instruction, with its cached result
+        // stored as instruction text, which is what Word 16 wrote when asked
+        // to re-save exactly this; quotes escaped in an
+        // attribute; and an instruction split across runs mid-argument.
+        let w = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" xmlns:v="urn:schemas-microsoft-com:vml" mc:Ignorable="wps""#;
+        let page = r#"<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> PAGE </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>1</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>"#;
+        let header = format!(
+            r#"<w:hdr {w}><w:p><w:r><mc:AlternateContent><mc:Choice Requires="wps"><w:drawing><wps:wsp><wps:txbx><w:txbxContent>{page}</w:txbxContent></wps:txbx></wps:wsp></w:drawing></mc:Choice><mc:Fallback><w:pict><v:rect><v:textbox><w:txbxContent>{page}</w:txbxContent></v:textbox></v:rect></w:pict></mc:Fallback></mc:AlternateContent></w:r></w:p>
+            <w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> IF </w:instrText></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> PAGE </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:instrText>1</w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r><w:r><w:instrText xml:space="preserve"> = 1 "First" "" </w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>
+            <w:p><w:fldSimple w:instr=" STYLEREF &quot;Heading 1&quot; \* MERGEFORMAT "><w:r><w:t>Chapter</w:t></w:r></w:fldSimple>
+            <w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> DATE \@ "d </w:instrText></w:r><w:r><w:instrText>MMMM yyyy" &amp; </w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p></w:hdr>"#
+        );
+        if let Err(e) = load("house.docx", &template_with_header(&header)) {
+            panic!("an ordinary Word header was refused: {e}");
         }
     }
 

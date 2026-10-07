@@ -1,3 +1,57 @@
+# Release notes — Sovatela 1.10.2
+
+Release date: 2026-10-08 · [All releases](https://github.com/jacobla1/sovatela/releases)
+
+A second independent review, of 1.10.1 and again before announcing it, found a
+way past the template check. This release closes it, and updates the library
+behind every HTTPS connection.
+
+## Fixed
+
+- **A template could hide a field that fetches a web address.** Templates that
+  carry a field such as `INCLUDEPICTURE "http://…"` have been refused since
+  templates arrived in 1.6.0, because every document built from one would carry
+  the field to whoever received it. The check could be misled: it read the first
+  attribute with the right name, whatever vocabulary it came from, so an
+  unrelated one placed in front of the real instruction was what it judged. The
+  reviewer's template passed, the documents built from it kept the field, and
+  Word fetched the address once their fields were updated — telling whoever
+  controls it that the document was opened. Fixing it turned up eight more ways
+  to make the text the check read differ from the text Word runs. Rather than
+  learn to read each of them the way Word would, a template is now refused if a
+  field in it is written in any way Word does not write one itself. Templates
+  saved by Word are unaffected: 288 Word-saved files, including Word's own
+  bundled templates, pass as before. Present in every release from 1.6.0 to
+  1.10.1; disclosed as
+  [GHSA-xj29-h3wq-6h2w](https://github.com/jacobla1/sovatela/security/advisories/GHSA-xj29-h3wq-6h2w).
+  If you have sent documents built from a template someone else gave you, Word
+  shows their fields with View ▸ Field Codes.
+- **rustls 0.23.45.** The TLS library every HTTPS connection goes through
+  accepted some TLS 1.3 handshake messages it should have rejected
+  (RUSTSEC-2026-0285), fixed in this version.
+- **DOMPurify 3.4.16.** The library that cleans every reply before it is shown
+  had two advisories against 3.4.14 (GHSA-p98j-92pf-mc4p, GHSA-6688-9rhm-gjv2).
+  Both affect only its in-place mode, which Sovatela does not use, so earlier
+  versions were not exposed; updated rather than explained.
+
+## Corrected
+
+- The README described installers being drafted in the private repository and
+  copied to the public one. They have been built in the public repository, with
+  build attestations, since 1.7.0.
+- The download page now says macOS was tested on Apple silicon and in a virtual
+  machine, not on Intel Macs or a clean machine.
+- [QA-1.10.1.md](QA-1.10.1.md) said the application process still read a
+  template's numbering definitions. It does not: since 1.10.1 a document is
+  built from a template only inside the sandboxed helper.
+
+[QA-1.10.2.md](QA-1.10.2.md) records verification. Windows and Linux installers
+remain unsigned and experimental, with no clean-machine lifecycle test and no
+measured real-photo OCR accuracy. Existing
+[accessibility limitations](https://sovatela.eu/accessibility) remain disclosed.
+
+---
+
 # Release notes — Sovatela 1.10.1
 
 Release date: 2026-09-27 · [All releases](https://github.com/jacobla1/sovatela/releases)

@@ -99,10 +99,15 @@ AppContainer, not an LPAC; the macOS recogniser's services outside the policy;
 Apple silicon and a virtual machine, not Intel or a clean machine; Windows and
 Linux unsigned and experimental.
 
-The main process still reads attribute values from a template's numbering
-definitions — extracted and vetted by the helper — so the IDs of generated
-lists do not collide with the template's own. That is a string search, not a
-parser.
+*Corrected 2026-09-28.* This section said the main process still read
+attribute values from a template's numbering definitions, so that generated
+lists did not collide with the template's own IDs. It does not, in this
+release: the application only ever builds a document without a template
+(`generate_document(…, None)`), and a document built from a template —
+numbering included — is built inside the helper by the `template-build` job.
+The independent re-review of 1.10.1 found the mismatch. No part of a template
+is parsed outside the sandbox; what that review did find was a way past the
+template check itself, fixed in 1.10.2.
 
 ## Release verification
 
