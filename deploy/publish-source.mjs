@@ -54,8 +54,6 @@ const WITHHELD = [
   "docs/UX-SPEC.md",
   "docs/website-description.md",
   "docs/release/ANNOUNCEMENT.md",
-  // Until the advisory it drafts is published; then deleted.
-  "docs/release/ADVISORY-DRAFT-1.10.2.md",
   "docs/release/QA-CHECKLIST.md",
 ];
 

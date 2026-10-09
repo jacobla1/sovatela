@@ -67,24 +67,38 @@ Local, on macOS (Apple silicon), at the fix commit:
 - A document built by the fixed helper from that Word-saved template opened in
   Word without a repair prompt, with its body, list and header fields.
   **Not checked: whether updating its fields raised an external-content
-  warning.** The owner released on 2026-10-08 without recording it, so the
-  advisory's sentence that Word asks before updating a field that fetches
-  external content is not backed by a check in this record. What the review
-  observed is Word fetching the address *after* the field was updated.
+  warning.** The owner published without recording it. The advisory was
+  worded to match before publication: Word *normally* asks before updating a
+  field that fetches external content, and that prompt was not verified for
+  this finding. What the review observed is Word fetching the address *after*
+  the field was updated.
 - `cargo audit` reports RUSTSEC-2026-0285 on the 1.10.1 lockfile and no
   vulnerability on this one.
 
-On CI: *to be run.*
+On CI: run `37695403129` (ci) and `37695402958` (audit) at `c488d9d`, the
+pull request's last commit, all green on macOS, Linux and Windows; run
+`37696423425` at private `fc8965f`, the commit this release is generated from,
+green on all three.
 
 ## Installed-build checks
 
-A condition of publishing. Against the draft release's installers:
+A condition of publishing. Against the draft release's installers. **The
+Windows check was not done: the owner published without it, as for 1.10.1.**
 
-- [ ] **macOS**, installed notarized build: the reviewer's `shadowed-field.docx`
-      chosen in Settings is refused, naming the reason; an ordinary Word
-      template is accepted, a document is saved from it and opens in Word.
+- [x] **macOS**, the draft's notarized `.dmg` installed (its SHA-256 matching
+      the signed `SHA256SUMS.txt`), checked by the owner on 2026-10-09:
+  - `shadowed-field.docx` chosen in *Settings → Document templates* is refused,
+    naming the reason: *"that template's word/header1.xml contains a field
+    written in a way Word does not write it (an attribute of the same name from
+    another vocabulary), so Sovatela cannot tell what it would do."*
+  - `house-style.docx` is accepted and worked when used (the owner's report).
+  - The reviewer's own file was not on the test Mac. The template used is a
+    rebuild of its construction — `house-style.docx` with a header
+    `w:fldSimple` whose `x:instr` says `PAGE` and whose `w:instr` says
+    `INCLUDEPICTURE "http://127.0.0.1:8731/beacon.png"` — which the installed
+    1.10.1 helper accepts and 1.10.2 refuses, as the original did.
 - [ ] **Windows**, installed release build: the same two templates, with the
-      same results. Still outstanding from 1.10.1 as well.
+      same results — **not done.** Still outstanding from 1.10.1 as well.
 
 ## Before the announcement — the launch review's B4
 
@@ -101,6 +115,58 @@ release:
 - [ ] an ordinary success and an expected refusal;
 - [ ] an artifact with JavaScript, and a blocked network or IPC attempt from it;
 - [ ] a real request to each provider feature the announcement names.
+
+## Release verification
+
+Run after the tag, against the draft, before publishing it.
+
+- **Release** run `37698319509` at `v1.10.2` (public `32aa854`). The first
+  attempt's macOS job failed at notarization — Apple answered 403, *"A
+  required agreement is missing or has expired"* — after the owner approved the
+  `release` gate; the Linux and Windows builds succeeded. Once the owner had
+  accepted the agreement, the failed job was re-run and approved again, and
+  attempt 2 succeeded in all seven jobs, including `verify-macos-signature` and
+  `verify-release-assets`. 11 assets. tauri-action failed here rather than
+  degrading to an unsigned build, which is the behaviour the README warns
+  about.
+- **The published source's own suite, before tagging:** 701 tests across 37
+  files at the public commit, after `npm ci`.
+- `scripts/verify-release.sh v1.10.2`: **10 passed, 0 failed, 0 skipped** —
+  checksums over 7 files, the minisign signature, 6 build attestations, macOS
+  signed/notarized/stapled, the provenance record naming `v1.10.2` and public
+  commit `32aa854cc707`, and the publisher re-run at `fc8965f5fc6c`
+  reproducing the published tree exactly.
+- Against the **shipped binary** from the draft's `.dmg`, mounted read-only,
+  version 1.10.2, its helper run from inside the app bundle: the rebuilt
+  shadowed-field template is **refused**; `house-style.docx` and a page-number
+  field are accepted; a plain `INCLUDEPICTURE` is refused — the same results as
+  the fixed local build, and the reverse of the installed 1.10.1 on the first.
+- **Dated 2026-10-08, published 2026-10-09.** The release notes and changelog
+  carry the date the source was tagged and built; correcting it would have
+  meant a new source, tag and build, so it was left as built.
+
+This record replaced the pending copy attached to the draft while it was still
+a draft.
+
+Published at 2026-10-09T19:46:30Z, with the Windows installed check
+outstanding as recorded above. What follows was added afterwards, in the
+repository only; the attached copy ends above.
+
+- Advisory **GHSA-xj29-h3wq-6h2w** published at 2026-10-09T19:46:31Z, medium,
+  CVSS 6.1, CWE-436, affecting 1.6.0 through 1.10.1, patched in 1.10.2. Its
+  sentence about Word's prompt was softened before publication, as recorded
+  above.
+- The private repository is tagged `v1.10.2` at `fc8965f`, the commit the
+  public tag's provenance names.
+- Site built from the published artifacts, after their checksums and
+  signature verified: 8 release asset links resolve; release feed 16 entries,
+  newest 1.10.2.
+- All nine live pages and files are byte-identical to the built ones; the
+  security page links the advisory.
+- Live `version.json` reads **1.10.2**; all six installer links return
+  **200**; the `.dmg` fetched from the live link hashes to
+  `dc32f28be08b4b71cff6d818d22acd6b594c6af147c740fb62f5195a66ee557b`, which
+  is what the site publishes for it.
 
 ## Limits
 
