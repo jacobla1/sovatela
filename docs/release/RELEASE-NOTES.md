@@ -1,10 +1,63 @@
+# Release notes — Sovatela 1.10.3
+
+Release date: 2026-10-16 · [All releases](https://github.com/jacobla1/sovatela/releases)
+
+A third independent review, of 1.10.2 and before announcing it, found that
+1.10.2's template fix was incomplete. This release finishes it, and makes the
+Download button under a generated image work again.
+
+## Fixed
+
+- **A template could still hide a field that fetches a web address.** Word
+  treats every character between a field's start and its separator as the
+  field's instruction, ordinary text included. 1.10.2's check read only the
+  part marked as instruction text, so an `INCLUDEPICTURE "http://…"` written
+  as ordinary text in that place passed. The documents built from it kept the
+  field, and the review saw Word fetch the address once the recipient agreed
+  to update the document's fields. An instruction beginning with `""` was
+  skipped rather than judged. Both are now refused: while a field's
+  instruction is open, only what Word itself writes there is accepted. Word's
+  252 bundled templates get the same answer as on 1.10.2. Present in every
+  release from 1.6.0 to 1.10.2;
+  [GHSA-xj29-h3wq-6h2w](https://github.com/jacobla1/sovatela/security/advisories/GHSA-xj29-h3wq-6h2w)
+  is amended to say so.
+- **The Download button under a generated image hung the app**, with no dialog
+  and no error, in every release since 1.6.0. It saves again. Download Image in
+  the image's right-click menu still does nothing — WebKit offers the item but
+  gives the app no way to receive it — so a right-click now shows a line
+  saying to use the button. Share and Copy Image in that menu work as before.
+
+## Changed
+
+- **A new key signs the checksum list.** The signature on `SHA256SUMS.txt` is
+  what the download page tells you to trust, but the old key could be used by
+  any workflow in the public repository without the release approval. It is
+  replaced by one only the approved release job can use. Verify 1.10.3 and
+  later against `minisign.pub` (also on the download page); 1.7.0 to 1.10.2
+  against the earlier key, kept as `minisign-1.7.0-to-1.10.2.pub`.
+
+## Corrected
+
+- 1.10.2's changelog, release notes and security page called rustls "the TLS
+  library behind every HTTPS connection". It is not compiled into Sovatela:
+  HTTPS goes through the operating system's own TLS (Security.framework on
+  macOS, SChannel on Windows, OpenSSL on Linux), and rustls is only an unused
+  optional entry in `Cargo.lock`. Its advisories, including the four published
+  on 2026-10-14 for which it is now at 0.23.46, never applied to the app.
+
+[QA-1.10.3.md](QA-1.10.3.md) records verification. Windows and Linux installers
+remain unsigned and experimental, with no clean-machine lifecycle test and no
+measured real-photo OCR accuracy. Existing
+[accessibility limitations](https://sovatela.eu/accessibility) remain disclosed.
+
+---
+
 # Release notes — Sovatela 1.10.2
 
 Release date: 2026-10-08 · [All releases](https://github.com/jacobla1/sovatela/releases)
 
 A second independent review, of 1.10.1 and again before announcing it, found a
-way past the template check. This release closes it, and updates the library
-behind every HTTPS connection.
+way past the template check. This release closes it, and updates rustls.
 
 ## Fixed
 
@@ -26,9 +79,11 @@ behind every HTTPS connection.
   [GHSA-xj29-h3wq-6h2w](https://github.com/jacobla1/sovatela/security/advisories/GHSA-xj29-h3wq-6h2w).
   If you have sent documents built from a template someone else gave you, Word
   shows their fields with View ▸ Field Codes.
-- **rustls 0.23.45.** The TLS library every HTTPS connection goes through
-  accepted some TLS 1.3 handshake messages it should have rejected
-  (RUSTSEC-2026-0285), fixed in this version.
+- **rustls 0.23.45.** 0.23.41 accepted some TLS 1.3 handshake messages it
+  should have rejected (RUSTSEC-2026-0285), fixed in this version. These notes
+  first called rustls the TLS library every HTTPS connection goes through. It
+  is not compiled into Sovatela, whose HTTPS uses the operating system's TLS,
+  so no release was exposed.
 - **DOMPurify 3.4.16.** The library that cleans every reply before it is shown
   had two advisories against 3.4.14 (GHSA-p98j-92pf-mc4p, GHSA-6688-9rhm-gjv2).
   Both affect only its in-place mode, which Sovatela does not use, so earlier

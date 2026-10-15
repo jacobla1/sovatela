@@ -57,6 +57,42 @@ describe("third-party Actions are pinned to commit SHAs", () => {
   });
 });
 
+// Every workflow installed "stable", so a new Rust release could change what
+// CI accepted without a commit: on 2026-10-03 one deprecated a method the code
+// used, and clippy, which denies warnings, failed everywhere. rust-toolchain.toml
+// now names the version, and this keeps the three places that state it in step.
+describe("one Rust version, stated the same way everywhere", () => {
+  const channel = read("rust-toolchain.toml").match(/^channel\s*=\s*"([^"]+)"/m)?.[1];
+
+  it("is pinned to an exact release, not a moving name", () => {
+    expect(channel, "rust-toolchain.toml has no channel").toMatch(/^\d+\.\d+\.\d+$/);
+  });
+
+  it("is the version every workflow installs", () => {
+    const steps = readdirSync(join(repo, ".github/workflows"))
+      .filter((f) => f.endsWith(".yml"))
+      .flatMap((f) =>
+        [...read(join(".github/workflows", f)).matchAll(/^\s*toolchain:\s*"?([^"\s]+)"?/gm)].map(
+          (m) => [f, m[1]],
+        ),
+      );
+    expect(steps.length, "no workflow installs Rust — the pattern matched nothing").toBeGreaterThan(0);
+    for (const [file, version] of steps) expect(version, file).toBe(channel);
+  });
+
+  it("is the rust-version Cargo.toml declares", () => {
+    // Declared as major.minor, the form Cargo documents for it. A minimum
+    // that no build uses is a claim nothing checks: it said 1.77.2 while the
+    // dependencies needed 1.88.
+    const declared = read("src-tauri/Cargo.toml").match(/^rust-version\s*=\s*"([^"]+)"/m)?.[1];
+    expect(declared).toBe(channel.split(".").slice(0, 2).join("."));
+  });
+
+  it("ships with the published source, where releases are built", () => {
+    expect(read("deploy/publish-source.mjs")).toContain('"rust-toolchain.toml"');
+  });
+});
+
 // package-lock.json sat at 1.5.0 through four releases: npm only rewrites the
 // version there when it runs, and bumping package.json by hand does not.
 // Nothing used the stale number, but it is published, and it disagreed with
@@ -306,6 +342,31 @@ describe("the release builds where its provenance can be published", () => {
       withApple[0],
       "the signing job no longer sits behind an approval environment",
     ).toMatch(/environment: release/);
+  });
+
+  // The checksum signature is what a reader is told to trust. As a repository
+  // secret its key was readable by any workflow on any branch, with nobody
+  // asked; until 1.10.3 that was a recorded decision, to save an approval.
+  it("lets exactly one job see the checksum signing key, behind the approval", () => {
+    const jobs = release.split(/\n  (?=[a-z][a-z0-9-]*:\n)/);
+    const withKey = jobs.filter((j) => /MINISIGN_SECRET_KEY:/.test(j));
+    expect(withKey.length, "more than one job can read the checksum key").toBe(1);
+    expect(withKey[0], "the checksum key's job no longer waits for approval").toMatch(
+      /environment: release/,
+    );
+  });
+
+  it("verifies a signature against a key from the repository, chosen by version", () => {
+    const verify = read("scripts/verify-release.sh");
+    expect(verify, "the verifier takes a key from the download folder again").not.toMatch(
+      /\$PWD\/minisign/,
+    );
+    expect(existsSync(join(repo, "minisign.pub")), "the current key is missing").toBe(true);
+    expect(
+      existsSync(join(repo, "minisign-1.7.0-to-1.10.2.pub")),
+      "the key 1.7.0 to 1.10.2 were signed with is gone, so they no longer verify",
+    ).toBe(true);
+    expect(verify).toContain("minisign-1.7.0-to-1.10.2.pub");
   });
 
   // These are the triggers that hand secrets to code from a fork. Neither has

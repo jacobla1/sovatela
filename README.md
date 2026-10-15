@@ -209,8 +209,9 @@ deploy/flux-litellm/     LiteLLM proxy → BFL EU FLUX (legacy; native BFL is bu
 ## Development
 
 **Prerequisites:** Node 20 (see `.nvmrc`; 22+ ships an experimental
-global `localStorage` that collides with jsdom and fails the test suite), **Rust** (`curl --proto '=https' --tlsv1.2 -sSf
-https://sh.rustup.rs | sh`), and platform build tools (macOS:
+global `localStorage` that collides with jsdom and fails the test suite), **Rust** via rustup (`curl --proto '=https' --tlsv1.2 -sSf
+https://sh.rustup.rs | sh`; the version is pinned in `rust-toolchain.toml`, and
+rustup installs it on first use), and platform build tools (macOS:
 `xcode-select --install`; see <https://tauri.app/start/prerequisites/>).
 
 ```sh

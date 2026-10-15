@@ -39,7 +39,7 @@ the release procedure.
 # 0. ONE-TIME SETUP, if it has not been done. See "First-time setup" below.
 #    - the `release` environment on jacobla1/sovatela, with you as reviewer
 #    - the seven Apple secrets attached to that environment
-#    - MINISIGN_SECRET_KEY as a repository secret, minisign.pub committed
+#    - MINISIGN_SECRET_KEY in that same environment, minisign.pub committed
 
 # 1. Publish the SOURCE for this version into the public repo. This must happen
 #    before the tag, and now for a third reason on top of the two below: the
@@ -60,8 +60,11 @@ node deploy/publish-source.mjs ../sovatela
 git tag -a vX.Y.Z -m "Sovatela X.Y.Z" && git push origin vX.Y.Z
 (cd ../sovatela && git tag -a vX.Y.Z -m "Sovatela X.Y.Z" && git push origin vX.Y.Z)
 
-# 3. Approve the macOS job. GitHub will show the `release` environment waiting.
-#    Nothing is signed until you do, which is the point of the gate.
+# 3. Approve the macOS job, and later the checksum job. GitHub shows the
+#    `release` environment waiting twice: once for `build-macos`, which signs
+#    and notarizes the app, and once for `verify-release-assets`, which signs
+#    SHA256SUMS.txt. Nothing is signed until you approve, which is the point of
+#    the gate.
 gh run watch --repo jacobla1/sovatela
 
 #    The workflow then produces, on a DRAFT release: six installers, the terms
@@ -146,16 +149,20 @@ Once, on `jacobla1/sovatela`:
 # secret, and a password CI cannot type protects nothing.
 minisign -G -W -p minisign.pub -s minisign.key
 
-# The private half becomes a REPOSITORY secret. It is deliberately not in the
-# `release` environment: that would mean a second approval per release, and
-# this key is replaceable by publishing a new public one, where the Apple
-# certificate is tied to an identity and a fee.
-gh secret set MINISIGN_SECRET_KEY --repo jacobla1/sovatela < minisign.key
-shred -u minisign.key   # GitHub has it now; a second copy is a second thing to lose
+# The private half becomes a secret of the `release` environment, so only a
+# job that names it — and waits for your approval — can sign. Until 1.10.3 it
+# was a repository secret, to save a second approval per release; but then any
+# workflow on any branch could sign a list nobody approved, and that signature
+# is what readers are told to trust. Moving it meant a new key: a secret cannot
+# be read back out of GitHub, and the old one had been deleted locally, as below.
+gh secret set MINISIGN_SECRET_KEY --env release --repo jacobla1/sovatela < minisign.key
+rm minisign.key   # GitHub has it now; a second copy is a second thing to lose
 
 # The public half is committed, published on the site, and is what readers
 # verify against. Losing it is not a secret leak; losing the private half means
-# publishing a new public key and saying so.
+# publishing a new public key and saying so — as 1.10.3 did. A retired key
+# stays in the repository (minisign-1.7.0-to-1.10.2.pub) so the releases it
+# signed still verify; scripts/verify-release.sh picks the key by version.
 ```
 
 

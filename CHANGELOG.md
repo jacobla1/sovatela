@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.10.3 — 2026-10-16
+
+Fixes for what an independent review of 1.10.2 found before its public
+announcement, and a Download button that had not worked since 1.6.0.
+
+- 1.10.2's fix for GHSA-xj29-h3wq-6h2w was incomplete. Word treats every
+  character between a field's start and its separator as the instruction,
+  ordinary text included, but the check read only the part marked as
+  instruction text — so a fetching field written as ordinary text there still
+  passed, and stayed in every document built from the template. An
+  instruction beginning with `""` was skipped rather than judged. Both are now
+  refused. Found by an independent review of 1.10.2 before its announcement;
+  no exploitation is known. Word's bundled templates pass as before.
+- Corrected: 1.10.2's records called rustls "the TLS library behind every
+  HTTPS connection". It is not compiled into Sovatela at all; HTTPS goes
+  through the operating system's TLS (Security.framework on macOS, SChannel on
+  Windows, OpenSSL on Linux). rustls appears only as an unused optional entry
+  in `Cargo.lock`, which is what the dependency audit flagged.
+- rustls in `Cargo.lock` is updated to 0.23.46 for four advisories published
+  on 2026-10-14 (RUSTSEC-2026-0346 to 0349), so the dependency audit passes.
+  As above, it is not compiled into Sovatela, which was not exposed.
+- The Download button under a generated image works again. From 1.6.0 on it
+  hung the app with no dialog and no error: the save waited on the main
+  thread for a dialog that only the main thread could show. Download Image
+  in the right-click menu still does nothing — WebKit offers the item but
+  gives the app no way to receive it — so a right-click on a generated image
+  now says to use the button.
+- The key that signs `SHA256SUMS.txt` is new, and only the approved release
+  job can use it. The previous key was a repository secret, readable by any
+  workflow in the public repository without approval; it could not be moved,
+  so it was replaced. 1.7.0 to 1.10.2 verify against the earlier key, kept as
+  `minisign-1.7.0-to-1.10.2.pub`; `scripts/verify-release.sh` picks the key
+  by version, and no longer takes a `minisign.pub` from the download folder.
+
 ## 1.10.2 — 2026-10-08
 
 Fixes for what an independent re-review of 1.10.1 found before its public
@@ -14,9 +48,10 @@ announcement.
   since templates arrived in 1.6.0; no exploitation is known. Advisory
   GHSA-xj29-h3wq-6h2w. A template is now refused if its fields are written in
   any way Word does not write them itself.
-- The TLS library behind every HTTPS connection is updated to rustls 0.23.45,
-  which fixes RUSTSEC-2026-0285: 0.23.41 accepted some TLS 1.3 handshake
-  messages it should have rejected.
+- rustls is updated to 0.23.45, which fixes RUSTSEC-2026-0285: 0.23.41
+  accepted some TLS 1.3 handshake messages it should have rejected. (This
+  entry first called it the TLS library behind every HTTPS connection; it is
+  not compiled into Sovatela — see Unreleased.)
 - DOMPurify, which cleans every reply before it is shown, is updated from
   3.4.14 to 3.4.16. Two advisories against 3.4.14 (GHSA-p98j-92pf-mc4p,
   GHSA-6688-9rhm-gjv2) affect only its in-place mode, which Sovatela does not

@@ -628,6 +628,19 @@
     }
   }
 
+  // The image's right-click menu is WebKit's, and its Download Image never
+  // reaches the app: WebKit hands that download to a delegate method the
+  // webview layer does not implement, and nothing can remove the item. The app
+  // cannot tell which item was picked, so a right-click on a generated image
+  // points at the button that works, for long enough to read.
+  let saveHintFor = $state(null); // index of the message showing the hint
+  let saveHintTimer;
+  function showSaveHint(mi) {
+    saveHintFor = mi;
+    clearTimeout(saveHintTimer);
+    saveHintTimer = setTimeout(() => (saveHintFor = null), 8000);
+  }
+
   // Follows the stream only while the user is already near the bottom, so
   // scrolling up to read earlier messages isn't fought token-by-token.
   // `force` (sending, opening a chat) always jumps.
@@ -2295,9 +2308,17 @@
             {/if}
           {/if}
           {#if m.image}
-            <img class="gen-image" src={m.image} alt={m.imagePrompt || "Illustration generated from your prompt"} />
+            <img
+              class="gen-image"
+              src={m.image}
+              alt={m.imagePrompt || "Illustration generated from your prompt"}
+              oncontextmenu={() => showSaveHint(mi)}
+            />
             <div class="gen-image-actions">
               <button class="mini" onclick={() => downloadImage(m.image)}>Download</button>
+              {#if saveHintFor === mi}
+                <span class="gen-image-hint">“Download Image” in the right-click menu doesn’t work in Sovatela. To save the image, use this Download button.</span>
+              {/if}
             </div>
           {/if}
           {#if m.model}

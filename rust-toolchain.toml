@@ -1,0 +1,14 @@
+# The one Rust version this project builds with — locally, in CI and for
+# releases. rustup reads this file and installs the version on first use.
+#
+# CI used to install whatever was "stable" that day. On 2026-10-03 a new stable
+# deprecated a method the code used, clippy runs with warnings denied, and every
+# build went red without a line of the project changing. A pinned version
+# changes only when someone changes it here; `tests/releaseHygiene.test.js`
+# keeps the workflows and Cargo.toml's rust-version in step with it.
+#
+# To move to a newer Rust: change `channel`, run the tests and clippy, and fix
+# what the new version reports in the same change.
+[toolchain]
+channel = "1.99.0"
+components = ["clippy", "rustfmt"]

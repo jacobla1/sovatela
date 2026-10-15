@@ -168,7 +168,7 @@ fn a_decompression_bomb_kills_only_the_helper() {
     // before this module existed. The upload limit does not help: it bounds
     // the file, and the problem is what the file expands to.
     let mut content = b"BT /F1 24 Tf 72 700 Td (x) Tj ET".to_vec();
-    content.extend(std::iter::repeat(b' ').take(1024 * 1024 * 1024));
+    content.extend(std::iter::repeat_n(b' ', 1024 * 1024 * 1024));
 
     let pdf = build_pdf(&content);
     assert!(

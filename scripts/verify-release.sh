@@ -93,12 +93,21 @@ if [ ! -f SHA256SUMS.txt.minisig ]; then
 elif ! command -v minisign >/dev/null 2>&1; then
   meh "minisign is not installed here"
 else
+  # The key comes from the repository, never from the download directory: a
+  # minisign.pub lying beside the files it is meant to vouch for is exactly
+  # the key whoever replaced those files would bring. Releases up to 1.10.2
+  # were signed with the key retired when signing moved behind the release
+  # approval; it is kept in the repository so those signatures still verify.
+  keyfile="minisign.pub"
+  if [ "$(printf '%s\n%s\n' "$VERSION" "1.10.2" | sort -V | head -1)" = "$VERSION" ]; then
+    keyfile="minisign-1.7.0-to-1.10.2.pub"
+  fi
   pub=""
-  for candidate in "$PWD/minisign.pub" "$PRIVATE/minisign.pub" "$HERE/../minisign.pub"; do
+  for candidate in "$HERE/../$keyfile" ${PRIVATE:+"$PRIVATE/$keyfile"}; do
     [ -f "$candidate" ] && { pub="$candidate"; break; }
   done
   if [ -z "$pub" ]; then
-    meh "minisign.pub not found — the signature cannot be checked against a key"
+    meh "$keyfile not found in the repository — the signature cannot be checked against a key"
   elif minisign -Vm SHA256SUMS.txt -p "$pub" >"$work/sig.out" 2>&1; then
     ok "minisign -Vm  ($(grep -i 'trusted comment' "$work/sig.out" | head -1 | sed 's/.*: //'))"
   else

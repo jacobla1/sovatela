@@ -445,6 +445,14 @@ sitting beside the installers it vouches for, because replacing it now requires
 the signing key rather than write access to the release. The public key is
 `minisign.pub` in the repository and is published on the download page.
 
+**The key changed with 1.10.3.** Until then the private half was available to
+any workflow in the public repository, not only to the approved release job,
+so it was replaced when signing moved behind the release approval. Releases
+1.7.0 through 1.10.2 verify against the earlier key, kept in the repository as
+`minisign-1.7.0-to-1.10.2.pub`
+(`RWScASFw3nNXud4ei+79moVeRYRyxX3v5wcB92PI7jSSGOyGduhuuI5V`); 1.10.3 and later
+against `minisign.pub`.
+
 The attestation answers a question none of the others can, including
 notarization. Notarization says Apple scanned this binary and found no malware;
 it says nothing about which source produced it. An attestation binds the file to
@@ -595,15 +603,31 @@ than filed away:
     every release with templates, and disclosed as
     [GHSA-xj29-h3wq-6h2w](https://github.com/jacobla1/sovatela/security/advisories/GHSA-xj29-h3wq-6h2w).
     A template is now refused if its fields are written in any way Word does
-    not write them. A document already built from a template received from
-    someone else can be checked in Word with View ▸ Field Codes.
-  - **The TLS library** (rustls 0.23.41) accepted some TLS 1.3 handshake
-    messages it should have rejected, RUSTSEC-2026-0285; updated to 0.23.45.
-    Found by the project's weekly dependency audit rather than the review.
+    not write them — a claim the next review showed was not yet true (below).
+    A document already built from a template received from someone else can
+    be checked in Word with View ▸ Field Codes.
+  - **rustls 0.23.41** accepted some TLS 1.3 handshake messages it should have
+    rejected, RUSTSEC-2026-0285; updated to 0.23.45. Found by the project's
+    weekly dependency audit rather than the review. This entry first called it
+    the TLS library behind every HTTPS connection, which it is not: it is an
+    unused optional entry in `Cargo.lock` and is not compiled into the app,
+    whose HTTPS goes through the operating system's TLS. Sovatela was not
+    exposed.
   - **The HTML sanitizer** (DOMPurify 3.4.14) carried two advisories,
     GHSA-p98j-92pf-mc4p and GHSA-6688-9rhm-gjv2, both in its `IN_PLACE` mode.
     Sovatela sanitizes a string with neither that mode nor hooks, so it was not
     exposed; updated to 3.4.16 regardless.
+- **Found by the 1.10.2 launch review and fixed in 1.10.3** — a third
+  independent review, before 1.10.2's announcement:
+  - **The template fix in 1.10.2 was incomplete.** Word treats everything
+    between a field's start and its separator as the instruction, ordinary
+    text included; the check read only the part marked as instruction text.
+    A fetching field written as ordinary text there passed, and the reviewer
+    confirmed Word fetched its address once the recipient let it update the
+    fields. An instruction beginning with `""` was skipped rather than judged.
+    Both are now refused. Present in **1.6.0 through 1.10.2**; the advisory
+    [GHSA-xj29-h3wq-6h2w](https://github.com/jacobla1/sovatela/security/advisories/GHSA-xj29-h3wq-6h2w)
+    is amended to name 1.10.3 as the fixed version.
 - **Accessibility defects**, stated rather than glossed —
   [Accessibility statement](docs/ACCESSIBILITY.md)
 - **Security and robustness reviews** (July 2026) and the mitigation plan that

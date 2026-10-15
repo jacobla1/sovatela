@@ -3067,14 +3067,34 @@ async fn generate_image(
     })
 }
 
+/// Set while an image save dialog is open, so a double click on Download is
+/// dropped rather than queuing a second dialog behind the first.
+static IMAGE_SAVE_OPEN: AtomicBool = AtomicBool::new(false);
+
 /// Decode a `data:` image URL and write it to `path` (chosen by the user via a
 /// save dialog). App-side because the webview can't reliably download a data URL.
+//
+// `async` so it runs on the threadpool. A sync command runs on the main
+// thread, and `ask_where_to_save` waits for a dialog that only the main thread
+// can show: from 1.6.0 to 1.10.2 the Download button hung the app every time,
+// with no dialog and no error.
 #[tauri::command]
-fn save_image(
+async fn save_image(
     app: tauri::AppHandle,
     data_url: String,
     suggested_name: String,
 ) -> Result<(), String> {
+    if IMAGE_SAVE_OPEN.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
+    struct Open;
+    impl Drop for Open {
+        fn drop(&mut self) {
+            IMAGE_SAVE_OPEN.store(false, Ordering::SeqCst);
+        }
+    }
+    let _open = Open;
+
     let b64 = data_url
         .split_once(',')
         .map(|(_, d)| d)
@@ -9980,6 +10000,40 @@ mod tests {
         assert_eq!(image_extension(b"MZ\x90\x00 an executable"), None);
         assert_eq!(image_extension(b"#!/bin/sh\nrm -rf /"), None);
         assert_eq!(image_extension(b""), None);
+    }
+
+    /// A sync command runs on the main thread, and a dialog waits for the main
+    /// thread to show it: the app hangs with no dialog and no error. That is
+    /// how the Download button was broken for a dozen releases unnoticed.
+    #[test]
+    fn a_command_that_opens_a_dialog_is_async() {
+        let src = lib_source();
+        // Assembled so that this test's own text is not a match.
+        let opens_a_dialog = [
+            concat!(".blocking", "_"),
+            concat!("ask_where_to_save", "("),
+            concat!("confirm_write", "("),
+            concat!("confirm_destructive", "("),
+        ];
+        let mut checked = 0;
+        for name in registered_commands(&src) {
+            let needle = format!("fn {name}(");
+            let Some(at) = src.find(&needle) else {
+                continue;
+            };
+            let body = &src[at..at + src[at..].find("\n}\n").unwrap_or(src.len() - at)];
+            if opens_a_dialog.iter().any(|d| body.contains(d)) {
+                checked += 1;
+                assert!(
+                    src[..at].ends_with("async "),
+                    "{name} opens a dialog but is not async, so it hangs the app"
+                );
+            }
+        }
+        assert!(
+            checked >= 5,
+            "found only {checked} commands that open a dialog"
+        );
     }
 
     #[test]

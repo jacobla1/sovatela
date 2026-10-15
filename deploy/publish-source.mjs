@@ -113,8 +113,14 @@ const PUBLIC = [
   "app-icon.svg",
   "index.html",
   "minisign.pub",
+  // Signed 1.7.0 through 1.10.2; kept so those signatures still verify.
+  "minisign-1.7.0-to-1.10.2.pub",
   "package-lock.json",
   "package.json",
+  // The Rust version releases build with. It must ship: the release workflow
+  // runs in the public repository, and without it the build there would use
+  // whatever the runner calls stable.
+  "rust-toolchain.toml",
   "svelte.config.js",
   "vite.config.js",
   "vitest.config.js",
@@ -156,6 +162,7 @@ const PUBLIC = [
   "docs/release/QA-1.10.0.md",
   "docs/release/QA-1.10.1.md",
   "docs/release/QA-1.10.2.md",
+  "docs/release/QA-1.10.3.md",
   "docs/release/QA-PDF-CORPUS-PILOT-2026-09-13.md",
   "docs/release/QA-PDF-CORPUS-2026-09-13.md",
   "docs/release/QA-PDF-DUAL-EXTRACTION-2026-09-15.md",

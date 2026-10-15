@@ -2566,6 +2566,17 @@ button.mini.primary:disabled {
 
 .gen-image-actions {
   margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+/* Shown after a right-click on a generated image: the context menu's
+   Download Image does nothing in this app, and the button beside it does. */
+.gen-image-hint {
+  font-size: var(--fs-xs);
+  color: var(--muted);
 }
 
 /* ---------- Artifacts ---------- */

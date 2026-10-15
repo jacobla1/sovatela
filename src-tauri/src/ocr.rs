@@ -691,7 +691,7 @@ fn windows_read(engine: &windows::Media::Ocr::OcrEngine, page: &Page) -> Result<
 
     // Windows wants BGRA; the page is RGB.
     let mut bgra = Vec::with_capacity(page.rgb.len() / 3 * 4);
-    for px in page.rgb.chunks_exact(3) {
+    for px in page.rgb.as_chunks::<3>().0 {
         bgra.extend_from_slice(&[px[2], px[1], px[0], 255]);
     }
     let buffer = CryptographicBuffer::CreateFromByteArray(&bgra)
@@ -2476,7 +2476,9 @@ mod tests {
         // Greyscale widened to RGB: every pixel's three channels are equal.
         assert!(page
             .rgb
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .all(|p| p[0] == p[1] && p[1] == p[2]));
     }
 

@@ -1175,6 +1175,13 @@ struct OpenField {
     instructed: bool,
 }
 
+/// Whether the reader is inside some field's code — after its `begin`, before
+/// its `separate` or `end` — and not inside a field marker, whose `w:fldData`
+/// is opaque data rather than code.
+fn in_field_code(path: &[(usize, bool, bool)], fields: &[OpenField]) -> bool {
+    fields.iter().any(|f| !f.instructed) && !path.last().is_some_and(|p| p.2)
+}
+
 /// Refuse a copied part that carries a field instruction able to reach outside
 /// the document — or one written in a way that makes its instruction
 /// uncertain.
@@ -1198,7 +1205,11 @@ struct OpenField {
 ///   an allowed word in front of the real one for this reader alone;
 /// - a `separate` followed by an `end` popping two fields instead of one, so
 ///   the outer field's instruction arrived after it had been closed and was
-///   dropped.
+///   dropped;
+/// - ordinary text (`w:t`, or anything else that is a character) between a
+///   field's `begin` and `separate`, which Word reads as field code and this
+///   ignored;
+/// - an instruction with no type word to judge, which was skipped.
 ///
 /// None of those is how Word writes a field. So rather than learn to read each
 /// of them the way Word would, this refuses them: a field's markers and
@@ -1219,9 +1230,10 @@ fn fields_are_self_contained(name: &str, data: &[u8]) -> Result<(), String> {
 
     let text = String::from_utf8_lossy(data);
     let mut reader = quick_xml::NsReader::from_str(&text);
-    // The elements open around the reader: an id for each, and whether it is
-    // one of Word's runs.
-    let mut path: Vec<(usize, bool)> = Vec::new();
+    // The elements open around the reader: an id for each, whether it is one
+    // of Word's runs, and whether it is a field marker or inside one — where
+    // `w:fldData` keeps opaque data that is not field code.
+    let mut path: Vec<(usize, bool, bool)> = Vec::new();
     let mut next_id = 0usize;
     // One per open complex field, because fields nest.
     let mut fields: Vec<OpenField> = Vec::new();
@@ -1253,6 +1265,27 @@ fn fields_are_self_contained(name: &str, data: &[u8]) -> Result<(), String> {
                 }
                 let in_run = path.last().is_some_and(|p| p.1);
                 let container = path.len().checked_sub(2).map(|i| path[i].0);
+                // Word reads *every* character between a field's `begin` and
+                // its `separate` as field code — ordinary `w:t` text included,
+                // not only `w:instrText`. This reader judged only the latter,
+                // so `INCLUDEPICTURE "http://…"` written as `w:t` in the code
+                // region passed as an empty instruction, and Word fetched the
+                // address once the field was updated. Word itself writes a
+                // field's code as instruction text and nothing else, so any
+                // other run content there is refused rather than interpreted.
+                if in_run && fields.iter().any(|f| !f.instructed) {
+                    let instruction_run_part = word
+                        && matches!(
+                            local,
+                            b"rPr" | b"fldChar" | b"instrText" | b"lastRenderedPageBreak"
+                        );
+                    if !instruction_run_part {
+                        return Err(unclear(
+                            "text or a character inside a field instruction that is not \
+                             instruction text",
+                        ));
+                    }
+                }
                 match (field_markup, local) {
                     // The one-element spelling carries the whole instruction
                     // as an attribute.
@@ -1340,7 +1373,9 @@ fn fields_are_self_contained(name: &str, data: &[u8]) -> Result<(), String> {
                     _ => {}
                 }
                 if started {
-                    path.push((next_id, word && local == b"r"));
+                    let in_marker =
+                        path.last().is_some_and(|p| p.2) || (word && local == b"fldChar");
+                    path.push((next_id, word && local == b"r", in_marker));
                     next_id += 1;
                 }
             }
@@ -1350,7 +1385,24 @@ fn fields_are_self_contained(name: &str, data: &[u8]) -> Result<(), String> {
                         .xml10_content()
                         .map_err(|_| unclear("text that cannot be decoded"))?;
                     s.push_str(&t);
+                } else if in_field_code(&path, &fields) && !t.iter().all(u8::is_ascii_whitespace) {
+                    // The same rule for text that is not in a run at all —
+                    // math, or anything else that puts characters into the
+                    // paragraph while a field's code is being read.
+                    return Err(unclear(
+                        "text inside a field instruction that is not instruction text",
+                    ));
                 }
+            }
+            Event::GeneralRef(_) if reading.is_none() && in_field_code(&path, &fields) => {
+                return Err(unclear(
+                    "text inside a field instruction that is not instruction text",
+                ));
+            }
+            Event::CData(_) if reading.is_none() && in_field_code(&path, &fields) => {
+                return Err(unclear(
+                    "text inside a field instruction that is not instruction text",
+                ));
             }
             Event::GeneralRef(r) => {
                 if let Some((s, _)) = reading.as_mut() {
@@ -1388,8 +1440,11 @@ fn fields_are_self_contained(name: &str, data: &[u8]) -> Result<(), String> {
     }
 
     for instruction in instructions {
+        // A field Word wrote names its type first. One with nothing to judge —
+        // empty, or opening with `""` or a lone quote — used to be skipped,
+        // which made "nothing the checker could read" a way past the checker.
         let Some(kind) = field_type(&instruction) else {
-            continue;
+            return Err(unclear("a field instruction that names no field type"));
         };
         if !ALLOWED_FIELDS.contains(&kind.as_str()) {
             return Err(format!(
@@ -2717,6 +2772,7 @@ mod tests {
         let url = "&quot;http://127.0.0.1:8731/beacon.png&quot;";
         let run = |text: &str| format!("<w:r><w:instrText>{text}</w:instrText></w:r>");
         let chr = |t: &str| format!(r#"<w:r><w:fldChar w:fldCharType="{t}"/></w:r>"#);
+        let text = |t: &str| format!(r#"<w:r><w:t xml:space="preserve">{t}</w:t></w:r>"#);
         // `INCLUDEPICTURE "http://…" ` spelled entirely as character
         // references, which the reader hands over separately from text.
         let referenced: String = r#"INCLUDEPICTURE "http://127.0.0.1:8731/beacon.png" "#
@@ -2807,6 +2863,71 @@ mod tests {
                 chr("separate"),
                 chr("end")
             ),
+            // The 1.10.2 second-pass review. Word reads every character
+            // between `begin` and `separate` as field code, `w:t` included;
+            // this read `w:instrText` only. Both of these were accepted by
+            // the installed 1.10.2, kept in the documents it built, and
+            // fetched by Word 16.113.4 once the field was updated.
+            //
+            // The instruction as ordinary text, beside a blank instruction.
+            format!(
+                "{}{}{}{}",
+                chr("begin"),
+                text(&format!(" INCLUDEPICTURE {url} \\d ")),
+                run(" "),
+                chr("end")
+            ),
+            // The instruction as ordinary text and nothing else.
+            format!(
+                "{}{}{}{}{}",
+                chr("begin"),
+                text(&format!(" INCLUDEPICTURE {url} \\d ")),
+                chr("separate"),
+                text("x"),
+                chr("end")
+            ),
+            // An instruction whose first word is `""`, so there was no type
+            // to judge and the field was skipped. Word did not fetch for this
+            // one, but nothing here was what stopped it.
+            format!(
+                "{}{}{}",
+                chr("begin"),
+                run(&format!(r#""" INCLUDEPICTURE {url} \d "#)),
+                chr("end")
+            ),
+            // A lone quote as the first word.
+            format!(
+                "{}{}{}",
+                chr("begin"),
+                run(&format!(r#"" INCLUDEPICTURE {url} \d "#)),
+                chr("end")
+            ),
+            // The same in the one-element spelling.
+            format!(r#"<w:fldSimple w:instr="&quot;&quot; INCLUDEPICTURE {url} \d "/>"#),
+            // Deleted ordinary text in the code region, which comes back as
+            // code when a recipient rejects the change.
+            format!(
+                r#"{}{}<w:del w:id="1" w:author="x" w:date="2026-01-01T00:00:00Z"><w:r><w:delText xml:space="preserve">INCLUDEPICTURE {url} \d </w:delText></w:r></w:del>{}"#,
+                chr("begin"),
+                run(" "),
+                chr("end")
+            ),
+            // A character Word writes as an element, not text, in the code
+            // region.
+            format!(
+                r#"{}{}<w:r><w:sym w:font="Symbol" w:char="0022"/></w:r>{}"#,
+                chr("begin"),
+                run(" PAGE "),
+                chr("end")
+            ),
+            // Text in the paragraph but outside any run while the code is
+            // being read.
+            format!(
+                r#"{}<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:r><m:t>INCLUDEPICTURE {url}</m:t></m:r></m:oMath>{}{}"#,
+                chr("begin"),
+                run(" "),
+                chr("end")
+            ),
         ];
         let mut wrong = Vec::new();
         for (n, body) in cases.iter().enumerate() {
@@ -2842,6 +2963,46 @@ mod tests {
         );
         if let Err(e) = load("house.docx", &template_with_header(&header)) {
             panic!("an ordinary Word header was refused: {e}");
+        }
+    }
+
+    #[test]
+    fn what_word_writes_inside_a_field_code_is_still_accepted() {
+        // The field code may hold nothing but instruction text, which is what
+        // Word writes there. These are the other things that legitimately
+        // sit around it and must not be mistaken for code: run properties, a
+        // form field's settings and opaque `w:fldData` inside the `begin`
+        // marker, a rendered page break, the indentation of a pretty-printed
+        // file, and ordinary text sharing a run with `separate` or `begin`.
+        let w = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
+        let header = format!(
+            r#"<w:hdr {w}>
+              <w:p>
+                <w:r><w:rPr><w:b/></w:rPr><w:t>Page </w:t><w:fldChar w:fldCharType="begin"/></w:r>
+                <w:r>
+                  <w:rPr><w:b/><w:noProof/></w:rPr>
+                  <w:lastRenderedPageBreak/>
+                  <w:instrText xml:space="preserve"> PAGE  \* MERGEFORMAT </w:instrText>
+                </w:r>
+                <w:r><w:fldChar w:fldCharType="separate"/><w:t>1</w:t></w:r>
+                <w:r><w:fldChar w:fldCharType="end"/></w:r>
+              </w:p>
+              <w:p>
+                <w:r><w:fldChar w:fldCharType="begin"><w:ffData><w:name w:val="Text1"/><w:enabled/><w:calcOnExit w:val="0"/><w:textInput/></w:ffData></w:fldChar></w:r>
+                <w:r><w:instrText xml:space="preserve"> FORMTEXT </w:instrText></w:r>
+                <w:r><w:fldChar w:fldCharType="separate"/></w:r>
+                <w:r><w:t>name</w:t></w:r>
+                <w:r><w:fldChar w:fldCharType="end"/></w:r>
+              </w:p>
+              <w:p>
+                <w:r><w:fldChar w:fldCharType="begin"><w:fldData xml:space="preserve">AAECAwQFBgc=</w:fldData></w:fldChar></w:r>
+                <w:r><w:instrText xml:space="preserve"> DATE \@ "d MMMM yyyy" </w:instrText></w:r>
+                <w:r><w:fldChar w:fldCharType="end"/></w:r>
+              </w:p>
+            </w:hdr>"#
+        );
+        if let Err(e) = load("house.docx", &template_with_header(&header)) {
+            panic!("a field code written the way Word writes it was refused: {e}");
         }
     }
 
