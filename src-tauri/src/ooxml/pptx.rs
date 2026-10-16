@@ -124,7 +124,8 @@ pub fn slides_from(md: &str) -> Vec<Slide> {
             // convention there is. It reached the last deck as a bullet
             // reading "---" on nearly every slide.
             Block::Rule => {}
-            Block::Para(spans) | Block::Bullet(spans) => {
+            // A quotation on a slide is its words, without the `>`.
+            Block::Para(spans) | Block::Bullet(spans) | Block::Quote(spans) => {
                 let line = flatten(&spans);
                 if line.is_empty() {
                     continue;

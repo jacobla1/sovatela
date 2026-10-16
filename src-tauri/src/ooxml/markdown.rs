@@ -2,9 +2,14 @@
 //!
 //! Not a CommonMark implementation and not trying to be. The model is told
 //! which constructs carry over, and this parses exactly those: headings,
-//! paragraphs, bullet and numbered lists, tables, and inline bold, italic and
-//! code. Everything else — reference links, HTML blocks, nested lists, block
-//! quotes — becomes ordinary text.
+//! paragraphs, bullet and numbered lists, tables, block quotes, and inline
+//! bold, italic and code. Everything else — reference links, HTML blocks,
+//! nested lists — becomes ordinary text.
+//!
+//! Block quotes were on the second list until 1.10.3. A quotation came out of
+//! Word as `> The board noted the risk.`, the marker included: the words
+//! survived, as designed, but a reader takes a stray `>` in a finished
+//! document for a fault, not for a quotation.
 //!
 //! That degradation is the design, not a shortfall. A document that renders an
 //! unsupported construct as the words the model wrote is a document someone can
@@ -34,6 +39,9 @@ pub enum Block {
     Numbered(u32, Vec<Span>),
     /// First row is the header, as Markdown tables always have one.
     Table(Vec<Vec<Vec<Span>>>),
+    /// Consecutive `>` lines, joined as a paragraph is, with the markers
+    /// removed. A `>` line with nothing after it separates two quotations.
+    Quote(Vec<Span>),
     /// A thematic break — `---`, `***`, `___` alone on a line. It reached a
     /// generated deck as a bullet reading "---" on nearly every slide, because
     /// nothing recognised it and everything unrecognised becomes a paragraph.
@@ -71,6 +79,30 @@ pub fn parse(src: &str) -> Vec<Block> {
             flush!();
             out.push(Block::Rule);
             i += 1;
+            continue;
+        }
+
+        if trimmed.starts_with('>') {
+            flush!();
+            let mut quoted: Vec<&str> = Vec::new();
+            while i < lines.len() {
+                let Some(rest) = lines[i].trim().strip_prefix('>') else {
+                    break;
+                };
+                let rest = rest.strip_prefix(' ').unwrap_or(rest).trim();
+                if rest.is_empty() {
+                    if !quoted.is_empty() {
+                        out.push(Block::Quote(inline(&quoted.join(" "))));
+                        quoted.clear();
+                    }
+                } else {
+                    quoted.push(rest);
+                }
+                i += 1;
+            }
+            if !quoted.is_empty() {
+                out.push(Block::Quote(inline(&quoted.join(" "))));
+            }
             continue;
         }
 
@@ -349,6 +381,31 @@ mod tests {
     }
 
     #[test]
+    fn a_block_quote_is_a_quotation_without_its_markers() {
+        assert_eq!(
+            parse("> The board noted\n> the risk.\n>\n>Second quote.\n\nAfter."),
+            vec![
+                Block::Quote(text("The board noted the risk.")),
+                Block::Quote(text("Second quote.")),
+                Block::Para(text("After.")),
+            ]
+        );
+        // Inline formatting survives inside it.
+        assert_eq!(
+            parse("> It is **urgent**."),
+            vec![Block::Quote(vec![
+                Span::Text("It is ".into()),
+                Span::Bold("urgent".into()),
+                Span::Text(".".into()),
+            ])]
+        );
+        // A `>` inside a sentence is a comparison, not a quotation.
+        assert_eq!(parse("5 > 3"), vec![Block::Para(text("5 > 3"))]);
+        // Nothing quoted at all is nothing.
+        assert_eq!(parse(">\n>"), vec![]);
+    }
+
+    #[test]
     fn a_heading_reports_its_real_depth() {
         // The parser reports the depth as written. `docx` clamps it to the
         // three heading styles it defines; `pptx` needs the true depth to work
@@ -607,10 +664,10 @@ mod tests {
 
     #[test]
     fn unsupported_constructs_degrade_to_their_words() {
-        // A block quote, a nested list and an HTML block are not supported.
-        // What matters is that the words survive — a document missing the
-        // model's sentence is worse than one that renders it plainly.
-        for src in ["> quoted wisdom", "  - nested item", "<div>markup</div>"] {
+        // A nested list and an HTML block are not supported. What matters is
+        // that the words survive — a document missing the model's sentence is
+        // worse than one that renders it plainly.
+        for src in ["  - nested item", "<div>markup</div>"] {
             let blocks = parse(src);
             let words: String = blocks
                 .iter()
@@ -618,7 +675,8 @@ mod tests {
                     Block::Para(s)
                     | Block::Heading(_, s)
                     | Block::Bullet(s)
-                    | Block::Numbered(_, s) => flatten(s),
+                    | Block::Numbered(_, s)
+                    | Block::Quote(s) => flatten(s),
                     Block::Table(_) | Block::Rule => String::new(),
                 })
                 .collect();

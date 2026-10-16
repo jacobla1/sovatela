@@ -1,5 +1,6 @@
 <script>
   import { invoke } from "@tauri-apps/api/core";
+  import { listen } from "@tauri-apps/api/event";
   import { ask } from "@tauri-apps/plugin-dialog";
   import KeyPage from "./lib/KeyPage.svelte";
   import Splash from "./lib/Splash.svelte";
@@ -45,6 +46,24 @@
   // network call they did not choose — and leaving it off silently, which is
   // what shipped before, means a security fix has no route to them at all.
   let askUpdateCheck = $state(false);
+
+  // While macOS downloads a file someone chose and agreed to fetch from the
+  // cloud (see `cloud.rs`). The picker that asked is still waiting, wherever
+  // it was opened from, so the notice lives here rather than in one screen.
+  let cloudDownload = $state(null); // { names } | null
+  $effect(() => {
+    let stop;
+    let gone = false;
+    listen("cloud-download", (e) => {
+      cloudDownload = e.payload?.state === "downloading" ? e.payload : null;
+    })
+      .then((unlisten) => (gone ? unlisten() : (stop = unlisten)))
+      .catch(() => {});
+    return () => {
+      gone = true;
+      stop?.();
+    };
+  });
 
   async function maybeAskAboutUpdates() {
     try {
@@ -290,6 +309,20 @@
   </section>
 {/if}
 
+{#if cloudDownload}
+  <!-- Polite, not an alert: the person asked for this a moment ago. Cancel
+       stops the wait; the picker that asked then says the file was not
+       downloaded. -->
+  <div class="cloud-download" role="status">
+    <span>
+      Downloading {cloudDownload.names.map((n) => `“${n}”`).join(", ")} from the
+      cloud. macOS is fetching {cloudDownload.names.length === 1 ? "it" : "them"};
+      this can take a minute.
+    </span>
+    <button class="ghost" onclick={() => invoke("cancel_cloud_download")}>Cancel</button>
+  </div>
+{/if}
+
 {#if keyRemovalError}
   <!-- Not dismissible on a timer and not a console line: removing a key is a
        security action, and being wrong about whether it happened is the whole
@@ -354,6 +387,19 @@
   }
   .update-banner span {
     flex: 1;
+  }
+  .cloud-download {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    padding: var(--sp-3) var(--sp-4);
+    background: color-mix(in srgb, var(--accent) 8%, var(--bg));
+    border-bottom: 1px solid var(--border);
+    font-size: var(--fs-base);
+  }
+  .cloud-download span {
+    flex: 1;
+    min-width: 0;
   }
   .update-banner-link {
     background: none;

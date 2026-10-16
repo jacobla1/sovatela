@@ -23,6 +23,7 @@
     isTemplateDocument,
     templateDocumentHint,
     extractDocument,
+    pickedToFiles,
   } from "./files.js";
 
   let { onOpenSettings, onOpenGuide, onQuickStart, updateAvailable = null } = $props();
@@ -121,7 +122,6 @@
   let searchConfigured = $state(false);
   let activeIndex = $state(null); // index into `artifacts` shown in the panel (null = closed)
   let listEl;
-  let fileInput;
 
   // The app is explorable without a key; replies just won't work. Assume a key
   // until told otherwise so the banner doesn't flash for connected users.
@@ -926,10 +926,29 @@
           pending.push({ kind: "text", name: file.name, content });
         }
       } catch (e) {
-        pending.push({ kind: "error", name: `${file.name} — could not read` });
+        // A string is a sentence written for the person (`READ_TIMED_OUT`);
+        // a DOMException from the reader is not.
+        const why = typeof e === "string" ? e : "could not read";
+        pending.push({ kind: "error", name: `${file.name} — ${why}` });
       }
     }
-    if (fileInput) fileInput.value = ""; // allow re-selecting the same file
+  }
+
+  // The paperclip. The picker opens in Rust (`pick_attachments`), which reads
+  // the files, asks before downloading one whose contents are in the cloud,
+  // and hands back bytes rather than paths; they then go through `onFiles`
+  // like a dropped file.
+  async function attachFromPicker() {
+    let entries;
+    try {
+      entries = await invoke("pick_attachments");
+    } catch (e) {
+      pending.push({ kind: "error", name: String(e) });
+      return;
+    }
+    const { files, errors } = pickedToFiles(entries);
+    for (const name of errors) pending.push({ kind: "error", name });
+    if (files.length) await onFiles(files);
   }
 
   function removePending(i) {
@@ -2452,13 +2471,6 @@
         {/each}
       </div>
     {/if}
-    <input
-      type="file"
-      multiple
-      bind:this={fileInput}
-      onchange={(e) => onFiles(e.currentTarget.files)}
-      style="display:none"
-    />
     <div class="composer-input">
       <textarea
         bind:this={inputEl}
@@ -2477,7 +2489,7 @@
         <div class="composer-tools-left">
           <button
             class="tool"
-            onclick={() => fileInput.click()}
+            onclick={attachFromPicker}
             title={imageMode && imageProvider === "bfl"
               ? "Attach an image for FLUX to generate from"
               : "Attach files or images"}

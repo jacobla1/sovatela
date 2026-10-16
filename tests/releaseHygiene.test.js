@@ -344,6 +344,55 @@ describe("the release builds where its provenance can be published", () => {
     ).toMatch(/environment: release/);
   });
 
+  // S6 of the 1.10.2 launch review. The job holding the Apple certificate also
+  // compiled everything, so every dependency's install and build scripts ran
+  // beside it, and the approval could not help: what is approved is a job, not
+  // the code inside it. The compiling now happens in a job with no secrets.
+  it("signs in a job that compiles nothing", () => {
+    const jobs = release.split(/\n  (?=[a-z][a-z0-9-]*:\n)/);
+    const signer = jobs.find((j) => /APPLE_CERTIFICATE:/.test(j));
+    const steps = signer.slice(signer.indexOf("steps:"));
+    for (const [pattern, what] of [
+      [/^\s*run:\s*npm ci\s*$/m, "an npm ci in the project, with its install scripts"],
+      [/tauri-apps\/tauri-action/, "tauri-action, which compiles"],
+      [/tauri build/, "tauri build"],
+      [/cargo (build|test|install)/, "a Cargo build"],
+      [/rust-cache/, "a restored build cache"],
+    ]) {
+      expect(steps, `the signing job runs ${what}`).not.toMatch(pattern);
+    }
+    expect(steps).toMatch(/tauri bundle/);
+    expect(steps, "the CLI is installed with its scripts").toMatch(
+      /working-directory: \.github\/tauri-cli\s+run: npm ci --ignore-scripts/,
+    );
+    expect(steps, "nothing stops a beforeBundleCommand").toMatch(/beforeBundleCommand/);
+    expect(signer).toMatch(/needs: \[build-macos-unsigned/);
+
+    // Up to the comment that introduces the next job, which the split leaves
+    // at the end of this one.
+    const builder = jobs
+      .find((j) => /^\s*build-macos-unsigned:/m.test(j))
+      ?.split(/\n  #/)[0];
+    expect(builder, "the unsigned build job is gone").toBeTruthy();
+    expect(builder).not.toMatch(/environment:/);
+    expect(builder).not.toMatch(/secrets\./);
+    expect(builder).toMatch(/contents: read/);
+    expect(builder).toMatch(/--no-bundle/);
+  });
+
+  it("installs the same Tauri CLI to sign with as the project builds with", () => {
+    const pin = (file) =>
+      JSON.parse(read(file)).packages["node_modules/@tauri-apps/cli"];
+    const project = pin("package-lock.json");
+    const signing = pin(".github/tauri-cli/package-lock.json");
+    expect(signing.version).toBe(project.version);
+    expect(signing.integrity).toBe(project.integrity);
+    // The CLI and its native binaries, and nothing else.
+    const names = Object.keys(JSON.parse(read(".github/tauri-cli/package-lock.json")).packages)
+      .filter(Boolean);
+    expect(names.every((n) => n.startsWith("node_modules/@tauri-apps/cli"))).toBe(true);
+  });
+
   // The checksum signature is what a reader is told to trust. As a repository
   // secret its key was readable by any workflow on any branch, with nobody
   // asked; until 1.10.3 that was a recorded decision, to save an approval.
@@ -354,6 +403,26 @@ describe("the release builds where its provenance can be published", () => {
     expect(withKey[0], "the checksum key's job no longer waits for approval").toMatch(
       /environment: release/,
     );
+  });
+
+  // R5 of the 1.10.2 launch review: the verifier checked less than it said.
+  it("verifies every file in the list, and nothing outside it", () => {
+    const verify = read("scripts/verify-release.sh");
+    const code = verify.split("\n").filter((l) => !l.trim().startsWith("#")).join("\n");
+    expect(code, "a listed file may be missing again").not.toMatch(/shasum[^\n]*--ignore-missing/);
+    expect(code, "nothing compares the files with the list").toMatch(/is on the release but not in the signed list/);
+    expect(code, "the list may omit an installer").toMatch(/the list does not name/);
+    for (const kind of ["universal.dmg", "x64-setup.exe", "x64_en-US.msi", "amd64.AppImage", "amd64.deb", "x86_64.rpm"]) {
+      expect(code, `the expected set no longer names the ${kind}`).toContain(kind);
+    }
+  });
+
+  it("accepts an attestation only from the release workflow at the tag", () => {
+    const verify = read("scripts/verify-release.sh");
+    const call = verify.slice(verify.indexOf("gh attestation verify \"$f\""));
+    expect(call).toMatch(/--signer-workflow "\$REPO\/\.github\/workflows\/release\.yml"/);
+    expect(call).toMatch(/--source-ref "refs\/tags\/\$TAG"/);
+    expect(call).toMatch(/--source-digest/);
   });
 
   it("verifies a signature against a key from the repository, chosen by version", () => {

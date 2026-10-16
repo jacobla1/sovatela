@@ -65,6 +65,13 @@ git tag -a vX.Y.Z -m "Sovatela X.Y.Z" && git push origin vX.Y.Z
 #    and notarizes the app, and once for `verify-release-assets`, which signs
 #    SHA256SUMS.txt. Nothing is signed until you approve, which is the point of
 #    the gate.
+#
+#    `build-macos` asks only after the Linux and Windows builds have created
+#    the draft, and it compiles nothing: `build-macos-unsigned` compiles the app
+#    with no secrets, and `build-macos` only signs, notarizes and packages that
+#    binary with the Tauri CLI from `.github/tauri-cli/`. Until the 1.10.2
+#    launch review (S6) one job did both, so every dependency's build code ran
+#    beside the Apple certificate.
 gh run watch --repo jacobla1/sovatela
 
 #    The workflow then produces, on a DRAFT release: six installers, the terms
@@ -72,8 +79,9 @@ gh run watch --repo jacobla1/sovatela
 #    and a build attestation over every one of those files.
 
 # 4. Verify notarization on the artifact, not on the workflow's exit code.
-#    tauri-action degrades to an unsigned build rather than failing when the
-#    Apple secrets are missing or expired, and nothing in the log flags it.
+#    The bundler skips signing rather than failing when the Apple secrets are
+#    missing, and nothing in the log flags it. `verify-macos-signature` checks
+#    this in the workflow too; this is the check that does not depend on it.
 mkdir -p /tmp/sovatela-release && cd /tmp/sovatela-release
 gh release download vX.Y.Z --repo jacobla1/sovatela
 ../../scripts/verify-notarization.sh Sovatela_X.Y.Z_universal.dmg X.Y.Z
@@ -88,7 +96,17 @@ gh release download vX.Y.Z --repo jacobla1/sovatela
 # 5. Check the signature and the provenance the way a reader would, before
 #    telling readers to. A verification command nobody has run is a claim.
 minisign -Vm SHA256SUMS.txt -p ../../minisign.pub
-gh attestation verify Sovatela_X.Y.Z_universal.dmg --repo jacobla1/sovatela
+#    With the workflow and the tag named: `--repo` alone accepts an attestation
+#    from any workflow in the repository, built from any branch or tag.
+gh attestation verify Sovatela_X.Y.Z_universal.dmg --repo jacobla1/sovatela \
+  --signer-workflow jacobla1/sovatela/.github/workflows/release.yml \
+  --source-ref refs/tags/vX.Y.Z
+
+# 5b. Replace the QA record on the draft with the finished one, BEFORE step 6.
+#     Releases on jacobla1/sovatela are immutable once published: 1.10.3 went
+#     out with the record as it stood at the tag, checklists unticked, because
+#     this was left until after publishing and GitHub then refused it.
+gh release upload vX.Y.Z docs/release/QA-X.Y.Z.md --repo jacobla1/sovatela --clobber
 
 # 6. Publish the draft.
 gh release edit vX.Y.Z --repo jacobla1/sovatela --draft=false --latest

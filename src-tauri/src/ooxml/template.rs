@@ -58,12 +58,23 @@ impl Kind {
     fn allowed(self) -> &'static [&'static str] {
         match self {
             // Styles, numbering, fonts and the theme are what make a generated
-            // document look like the user's own. `settings.xml` carries page
-            // defaults. Headers and footers come with the section properties.
+            // document look like the user's own. Headers and footers come with
+            // the section properties.
+            //
+            // `word/settings.xml` was on this list, said to carry page
+            // defaults. It never did: the generated document's relationships
+            // name styles, theme, numbering and the headers and footers, never
+            // settings, and Word reads only the parts a relationship names. So
+            // it rode into every document unread, carrying whatever the
+            // template put there: an attached template, mail-merge settings,
+            // update-fields-on-open, enforced read-only protection, the
+            // template's own document id (1.10.2 launch review, S7). It goes,
+            // and with it `settings.xml.rels`, where Word keeps the path of the
+            // template a file was attached to; three of Word's own bundled
+            // templates were refused over that link alone.
             Kind::Docx => &[
                 "word/styles.xml",
                 "word/numbering.xml",
-                "word/settings.xml",
                 "word/fontTable.xml",
                 "word/theme/",
                 "word/header",
@@ -388,8 +399,13 @@ pub fn load(name: &str, bytes: &[u8]) -> Result<Template, String> {
         }
         // `word/_rels/` is allowed as a prefix so the copied parts keep their
         // relationships, but the document's own rels describe content that is
-        // being replaced.
-        if name == "word/_rels/document.xml.rels" {
+        // being replaced. More generally, a relationship file goes only with
+        // the part it describes: copied for a header, not for `settings.xml`
+        // or the main document, which are not taken.
+        if name.ends_with(".rels")
+            && !rels_source(name)
+                .is_some_and(|source| kind.allowed().iter().any(|p| source.starts_with(p)))
+        {
             continue;
         }
 
@@ -402,15 +418,36 @@ pub fn load(name: &str, bytes: &[u8]) -> Result<Template, String> {
         // stopping early is how a check is walked past.
         if !name.contains("/media/") {
             fields_are_self_contained(name, &data)?;
+            no_addresses_in_attributes(name, &data)?;
         }
         budget = budget.saturating_sub(data.len() as u64);
 
         if name.ends_with(".rels") {
             let text = String::from_utf8_lossy(&data);
-            if parse_relationships(&text)?.iter().any(|r| r.external) {
+            let rels = parse_relationships(&text)?;
+            if rels.iter().any(|r| r.external) {
                 return Err(format!(
                     "that template links to something outside itself ({name}). A document built \
                      from it would reach out when someone else opened it, so it cannot be used."
+                ));
+            }
+            // An internal relationship has to lead to a part of this file.
+            // Only `TargetMode="External"` counted as outside, so an internal
+            // one whose target was `http://…` passed as if it were a picture
+            // in the package, and was copied into every document built from
+            // the template (1.10.2 launch review, S7). Word did not fetch for
+            // the two such cases tried, but nothing here was what stopped it.
+            let base = name.rsplit_once("/_rels/").map_or("", |(dir, _)| dir);
+            if let Some(r) = rels
+                .iter()
+                .find(|r| !names.contains(&super::resolve(base, &r.target)))
+            {
+                return Err(format!(
+                    "that template points at something it does not contain ({name}: {}). A link \
+                     that does not lead into the file can lead out of it when a document is \
+                     opened, so it cannot be used. Opening it in Word and re-saving it may fix \
+                     this.",
+                    r.target
                 ));
             }
             parts.push((name.clone(), data, None));
@@ -621,6 +658,57 @@ fn style_ids(styles: &str) -> Vec<String> {
     out
 }
 
+/// Refuse a copied part that names a location in an attribute.
+///
+/// Word and PowerPoint point at a picture through a relationship (`r:id`,
+/// `r:embed`, `o:relid`), which the check on relationship files above judges.
+/// VML can also name one directly: `v:imagedata src="http://…"`, `o:href`,
+/// `v:fill src`. Those never pass through a relationship, so nothing looked at
+/// them, and a template carrying one was accepted and copied (1.10.2 launch
+/// review, S7, probes n1 to n3). Word offered to repair the hand-written
+/// probes rather than fetching, which says more about the probes than about
+/// Word, so the attributes are refused rather than trusted to be harmless.
+/// Word's own templates do not use them: none of the 252 bundled with Word
+/// is refused by this check.
+fn no_addresses_in_attributes(name: &str, data: &[u8]) -> Result<(), String> {
+    use quick_xml::events::Event;
+    let mut reader = quick_xml::Reader::from_reader(data);
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                for attr in e.attributes().with_checks(false).flatten() {
+                    let key = attr.key.local_name();
+                    if matches!(key.as_ref(), b"src" | b"href" | b"althref")
+                        && !attr.value.iter().all(u8::is_ascii_whitespace)
+                    {
+                        return Err(format!(
+                            "that template's {name} names a location for a picture or link \
+                             directly ({}), rather than through the file's own list of what it \
+                             uses. A document built from it could reach out when someone else \
+                             opened it, so it cannot be used.",
+                            String::from_utf8_lossy(attr.key.as_ref())
+                        ));
+                    }
+                }
+            }
+            Ok(Event::Eof) => return Ok(()),
+            // Already parsed whole by `well_formed`; a reader error here would
+            // be this check's own fault, and the safe answer is the same.
+            Err(e) => return Err(format!("that template's {name} cannot be read: {e}")),
+            _ => {}
+        }
+        buf.clear();
+    }
+}
+
+/// The part a relationship file describes: `word/_rels/header1.xml.rels`
+/// describes `word/header1.xml`.
+fn rels_source(rels_name: &str) -> Option<String> {
+    let (dir, file) = rels_name.rsplit_once("_rels/")?;
+    Some(format!("{dir}{}", file.strip_suffix(".rels")?))
+}
+
 /// One relationship, parsed rather than pattern-matched.
 pub struct Relationship {
     pub id: String,
@@ -796,7 +884,7 @@ fn attrs_of(ph: &Element) -> String {
     parts.join(" ")
 }
 
-fn parse_relationships(xml: &str) -> Result<Vec<Relationship>, String> {
+pub(crate) fn parse_relationships(xml: &str) -> Result<Vec<Relationship>, String> {
     use quick_xml::events::Event;
 
     // Namespace-aware, because the previous two attempts at this were not and
@@ -1308,9 +1396,23 @@ fn fields_are_self_contained(name: &str, data: &[u8]) -> Result<(), String> {
                                 // "INCLUDEPICTURE"} "http://…" }` — while the
                                 // cached result on file says something else.
                                 // Word writes the type word first.
+                                //
+                                // So what has to be settled is the type word:
+                                // present, and ended by whitespace, so that a
+                                // result spliced in cannot extend it (`INCLUDE
+                                // {…}` becoming INCLUDEPICTURE). Until R7 of
+                                // the 1.10.2 launch review this asked instead
+                                // that the instruction so far *end* in
+                                // whitespace, which also refused a nested
+                                // field right after a quote — `IF … "{
+                                // MERGEFIELD x }"`, an ordinary mail-merge
+                                // shape — while protecting nothing more.
                                 if let Some(outer) = fields.last().filter(|f| !f.instructed) {
                                     let typed = field_type(&outer.instruction).is_some()
-                                        && outer.instruction.ends_with(char::is_whitespace);
+                                        && outer
+                                            .instruction
+                                            .trim_start()
+                                            .contains(char::is_whitespace);
                                     if !typed {
                                         return Err(unclear(
                                             "a field nested where the type of another belongs",
@@ -1496,6 +1598,14 @@ struct Section {
 fn section_of(document: &str) -> Option<String> {
     use quick_xml::events::Event;
 
+    // The ranges below are the reader's byte positions, used to slice
+    // `document`. A UTF-8 byte-order mark is skipped by the reader without
+    // being counted, so with one present every position fell three bytes
+    // short and the section came out cut off mid-tag (`</w:sect`). The
+    // validator caught it and the template was refused, three of Word's own
+    // bundled ones among them (Newsprint, Thatch, Perspective; R8 of the
+    // 1.10.2 launch review).
+    let document = document.strip_prefix('\u{feff}').unwrap_or(document);
     let mut reader = quick_xml::Reader::from_str(document);
     reader.config_mut().check_end_names = true;
 
@@ -2718,6 +2828,168 @@ mod tests {
         ])
     }
 
+    /// S7. The settings part and its relationships stay behind, whatever
+    /// they hold: they were copied into every document and never read.
+    #[test]
+    fn a_templates_settings_are_left_behind() {
+        let ct = content_types(&[
+            ("word/styles.xml", STYLES_CT),
+            (
+                "word/settings.xml",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml",
+            ),
+        ]);
+        let settings = br#"<?xml version="1.0"?><w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:writeProtection w:recommended="1"/><w:documentProtection w:edit="readOnly" w:enforcement="1"/><w:attachedTemplate r:id="rId1"/><w:updateFields w:val="true"/><w:mailMerge><w:mainDocumentType w:val="formLetters"/><w:connectString w:val="Provider=x;Data Source=http://127.0.0.1:8731/mm"/><w:query w:val="SELECT * FROM x"/></w:mailMerge></w:settings>"#;
+        // Where Word keeps the template a file was attached to. External, so
+        // until now it refused the template outright, three of Word's own
+        // bundled ones among them.
+        let settings_rels = br#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/attachedTemplate" Target="file:///Users/someone/Library/Normal.dotm" TargetMode="External"/></Relationships>"#;
+        let bytes = zip_of(&[
+            ("[Content_Types].xml", ct.as_bytes()),
+            (
+                "word/styles.xml",
+                br#"<?xml version="1.0"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>"#,
+            ),
+            ("word/settings.xml", settings),
+            ("word/_rels/settings.xml.rels", settings_rels),
+        ]);
+        let t = load("house.docx", &bytes).expect("a template with settings was refused");
+        let names = t.part_names();
+        assert!(!names.iter().any(|n| n.contains("settings")), "{names:?}");
+        // And a built document carries none of it.
+        let doc = crate::ooxml::docx::from_markdown_with(Some(&t), "Hello").unwrap();
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(doc)).unwrap();
+        assert!(zip.by_name("word/settings.xml").is_err());
+        assert!(zip.by_name("word/_rels/settings.xml.rels").is_err());
+    }
+
+    /// S7, the review's n1 to n3: VML naming a location directly, which no
+    /// relationship check can see.
+    #[test]
+    fn a_picture_named_by_address_in_vml_is_refused() {
+        let w = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office""#;
+        for (what, shape) in [
+            (
+                "v:imagedata src",
+                r#"<v:shape><v:imagedata src="http://127.0.0.1:8731/n1.png"/></v:shape>"#,
+            ),
+            (
+                "o:href",
+                r#"<v:shape><v:imagedata o:href="http://127.0.0.1:8731/n2.png"/></v:shape>"#,
+            ),
+            (
+                "v:fill src",
+                r#"<v:shape><v:fill src="http://127.0.0.1:8731/n3.png" type="frame"/></v:shape>"#,
+            ),
+            (
+                "a relative src",
+                r#"<v:shape><v:imagedata src="beacon.png"/></v:shape>"#,
+            ),
+        ] {
+            let header =
+                format!(r#"<w:hdr {w}><w:p><w:r><w:pict>{shape}</w:pict></w:r></w:p></w:hdr>"#);
+            let err = load("house.docx", &template_with_header(&header))
+                .err()
+                .unwrap_or_else(|| panic!("{what} was accepted"));
+            assert!(err.contains("names a location"), "{what}: {err}");
+        }
+        // The way Word writes a VML picture: through a relationship.
+        let header = format!(
+            r#"<w:hdr {w}><w:p><w:r><w:pict><v:shape><v:imagedata o:relid="rId1" o:title=""/></v:shape></w:pict></w:r></w:p></w:hdr>"#
+        );
+        assert!(no_addresses_in_attributes("word/header1.xml", header.as_bytes()).is_ok());
+    }
+
+    /// A template with no quotation style still gets a quotation that reads
+    /// as one: indented, with a rule down its left edge, and no `>`.
+    #[test]
+    fn a_quotation_in_a_template_without_a_quote_style_is_indented_and_ruled() {
+        let t = load("house.docx", &docx_template()).expect("template");
+        let bytes = crate::ooxml::docx::from_markdown_with(Some(&t), "> The board noted the risk.")
+            .unwrap();
+        crate::ooxml::validate(&bytes).expect("valid");
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut doc = String::new();
+        std::io::Read::read_to_string(&mut zip.by_name("word/document.xml").unwrap(), &mut doc)
+            .unwrap();
+        assert!(
+            !doc.contains(r#"w:val="Quote""#),
+            "names a style the template lacks: {doc}"
+        );
+        assert!(
+            doc.contains(r#"<w:left w:val="single""#) && doc.contains(r#"w:ind w:left="720""#),
+            "{doc}"
+        );
+        assert!(!doc.contains("&gt;"), "{doc}");
+    }
+
+    /// R8. A main part that starts with a byte-order mark, as four of Word's
+    /// bundled templates do, gave a page setup cut off three bytes early.
+    #[test]
+    fn a_byte_order_mark_does_not_cut_the_page_setup_short() {
+        let sect =
+            r#"<w:sectPr><w:pgSz w:w="12240" w:h="15840" /><w:cols w:space="720" /></w:sectPr>"#;
+        let doc = format!(
+            "\u{feff}<?xml version=\"1.0\"?><w:document xmlns:w=\"x\"><w:body><w:p/>{sect}</w:body></w:document>"
+        );
+        assert_eq!(section_of(&doc).as_deref(), Some(sect));
+        assert_eq!(section_of(&doc[3..]).as_deref(), Some(sect));
+    }
+
+    /// S7. An internal relationship has to lead to a part of the template.
+    #[test]
+    fn an_internal_relationship_must_lead_into_the_file() {
+        let header = r#"<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p/></w:hdr>"#;
+        let ct = content_types(&[
+            ("word/styles.xml", STYLES_CT),
+            (
+                "word/header1.xml",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml",
+            ),
+        ])
+        .replace(
+            "</Types>",
+            r#"<Default Extension="png" ContentType="image/png"/></Types>"#,
+        );
+        let with_target = |target: &str| {
+            let rels = format!(
+                r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="{target}"/></Relationships>"#
+            );
+            zip_of(&[
+                ("[Content_Types].xml", ct.as_bytes()),
+                (
+                    "word/styles.xml",
+                    br#"<?xml version="1.0"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>"#,
+                ),
+                ("word/header1.xml", header.as_bytes()),
+                ("word/_rels/header1.xml.rels", rels.as_bytes()),
+                ("word/media/image1.png", b"\x89PNG logo"),
+                ("word/document.xml", b"<w:document/>"),
+            ])
+        };
+        // The review's n4: no TargetMode, so it counted as internal.
+        for target in [
+            "http://127.0.0.1:8731/n4.png",
+            "https://tracker.example/p.png",
+            "media/missing.png",
+            "//tracker.example/p.png",
+        ] {
+            let err = load("house.docx", &with_target(target))
+                .err()
+                .unwrap_or_else(|| panic!("{target} was accepted as a part of the file"));
+            assert!(err.contains("does not contain"), "{target}: {err}");
+        }
+        for target in [
+            "media/image1.png",
+            "/word/media/image1.png",
+            "./media/image1.png",
+        ] {
+            if let Err(e) = load("house.docx", &with_target(target)) {
+                panic!("{target}, which is in the file, was refused: {e}");
+            }
+        }
+    }
+
     #[test]
     fn a_field_that_fetches_is_refused_however_it_is_spelled() {
         // A field is an instruction, not text, and the external-relationship
@@ -2928,6 +3200,37 @@ mod tests {
                 run(" "),
                 chr("end")
             ),
+            // R7 loosened the rule for where a nested field may begin, so it
+            // is checked from both sides here. A nested field straight after
+            // a type word that has not ended could complete it: INCLUDE plus
+            // a result of PICTURE.
+            format!(
+                "{}{}{}{}{}{}{}{}{}{}",
+                chr("begin"),
+                run(" INCLUDE"),
+                chr("begin"),
+                run(r#"QUOTE "PICTURE""#),
+                chr("separate"),
+                run("PICTURE"),
+                chr("end"),
+                run(&format!(" {url}")),
+                chr("separate"),
+                chr("end")
+            ),
+            // And the review's f6: a fetching field nested in an IF branch
+            // right after a quote, where the rule now lets a field begin. It
+            // is refused for what it is: its own instruction is judged.
+            format!(
+                "{}{}{}{}{}{}{}{}",
+                chr("begin"),
+                run(r#" IF 1 = 1 ""#),
+                chr("begin"),
+                run(&format!(" INCLUDEPICTURE {url} ")),
+                chr("end"),
+                run(r#"" "" "#),
+                chr("separate"),
+                chr("end")
+            ),
         ];
         let mut wrong = Vec::new();
         for (n, body) in cases.iter().enumerate() {
@@ -2943,6 +3246,54 @@ mod tests {
         assert!(wrong.is_empty(), "{}", wrong.join("\n"));
     }
 
+    /// R7, from the side that must still refuse, and for the right reason: a
+    /// type word not yet ended is refused for where the nested field sits,
+    /// and a fetching field nested where one may sit is refused for its type.
+    #[test]
+    fn a_nested_field_is_judged_by_where_it_sits_and_what_it_is() {
+        let w = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
+        let run = |text: &str| format!("<w:r><w:instrText>{text}</w:instrText></w:r>");
+        let chr = |t: &str| format!(r#"<w:r><w:fldChar w:fldCharType="{t}"/></w:r>"#);
+        let url = "&quot;http://127.0.0.1:8731/beacon.png&quot;";
+        let refused = |body: String| {
+            let header = format!(r#"<w:hdr {w}><w:p>{body}</w:p></w:hdr>"#);
+            load("house.docx", &template_with_header(&header))
+                .err()
+                .unwrap_or_else(|| panic!("accepted: {body}"))
+        };
+        let completes_the_type = refused(
+            [
+                chr("begin"),
+                run(" INCLUDE"),
+                chr("begin"),
+                run(r#"QUOTE "PICTURE""#),
+                chr("separate"),
+                run("PICTURE"),
+                chr("end"),
+                run(&format!(" {url}")),
+                chr("end"),
+            ]
+            .concat(),
+        );
+        assert!(
+            completes_the_type.contains("nested where the type of another belongs"),
+            "{completes_the_type}"
+        );
+        let f6 = refused(
+            [
+                chr("begin"),
+                run(r#" IF 1 = 1 ""#),
+                chr("begin"),
+                run(&format!(" INCLUDEPICTURE {url} ")),
+                chr("end"),
+                run(r#"" "" "#),
+                chr("end"),
+            ]
+            .concat(),
+        );
+        assert!(f6.contains("a field of type INCLUDEPICTURE"), "{f6}");
+    }
+
     #[test]
     fn a_header_written_the_way_word_writes_it_is_still_accepted() {
         // The field check refuses anything Word does not write, so it has to
@@ -2951,13 +3302,16 @@ mod tests {
         // readers — each with a whole field inside its own paragraph; a
         // field nested in another's instruction, with its cached result
         // stored as instruction text, which is what Word 16 wrote when asked
-        // to re-save exactly this; quotes escaped in an
+        // to re-save exactly this; a mail-merge IF whose branch holds a
+        // nested field right after its opening quote, which the checker
+        // refused until R7 of the 1.10.2 launch review; quotes escaped in an
         // attribute; and an instruction split across runs mid-argument.
         let w = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" xmlns:v="urn:schemas-microsoft-com:vml" mc:Ignorable="wps""#;
         let page = r#"<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> PAGE </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>1</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>"#;
         let header = format!(
             r#"<w:hdr {w}><w:p><w:r><mc:AlternateContent><mc:Choice Requires="wps"><w:drawing><wps:wsp><wps:txbx><w:txbxContent>{page}</w:txbxContent></wps:txbx></wps:wsp></w:drawing></mc:Choice><mc:Fallback><w:pict><v:rect><v:textbox><w:txbxContent>{page}</w:txbxContent></v:textbox></v:rect></w:pict></mc:Fallback></mc:AlternateContent></w:r></w:p>
             <w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> IF </w:instrText></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> PAGE </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:instrText>1</w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r><w:r><w:instrText xml:space="preserve"> = 1 "First" "" </w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>
+            <w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> IF </w:instrText></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> MERGEFIELD Gender </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:instrText>F</w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r><w:r><w:instrText xml:space="preserve"> = "F" "</w:instrText></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> MERGEFIELD Title </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:instrText>Ms</w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r><w:r><w:instrText xml:space="preserve">" "Mr" </w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>
             <w:p><w:fldSimple w:instr=" STYLEREF &quot;Heading 1&quot; \* MERGEFORMAT "><w:r><w:t>Chapter</w:t></w:r></w:fldSimple>
             <w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> DATE \@ "d </w:instrText></w:r><w:r><w:instrText>MMMM yyyy" &amp; </w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p></w:hdr>"#
         );

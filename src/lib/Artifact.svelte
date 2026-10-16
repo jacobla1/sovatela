@@ -244,7 +244,7 @@
         {#if preview?.type !== "table"}
           <p class="artifact-note">
             The document's text as it will be written. Markdown this format
-            cannot carry — links, images, quotes, code blocks — appears as the
+            cannot carry — links, images, code blocks — appears as the
             characters you see here.
           </p>
         {/if}

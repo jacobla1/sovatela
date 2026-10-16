@@ -67,14 +67,19 @@ Everything the app can contact, and when:
 | **At launch, only if you switch it on** | `https://sovatela.eu/version.json` | The same, and the same caveat. *Settings → About → Check for a new version when Sovatela starts* is off by default; enabling it makes this the second automatic call, and it is the only setting that adds one |
 | *Settings → Usage →* **Check for updated prices** | `raw.githubusercontent.com/jacobla1/sovatela/…/pricing.json` | The same — a static file, only on a press |
 | With **web search on**, during a search | Any public page the model decides to read | The request for that page. The address is chosen by the model, not by you — see below |
+| **Only when you agree**, after choosing a file whose contents are in the cloud | Your cloud service — iCloud Drive, or another service through macOS — via macOS | The request for that file. Sovatela asks first, naming the file, and macOS does the fetching; nothing from your conversations is sent, and the service learns that the file was downloaded to this Mac. Offered only for a file you just chose as an attachment, a template or a chat to import. A file the app reaches on its own (a workspace file the model asked for, or your history folder in iCloud Drive) is never fetched; it is treated as not there yet |
 
 **The page reader deserves stating plainly.** When web search is on, the model
 can decide to open a page it found, and that address is its choice. Injected
 text on a search result is therefore an instruction the model may act on. What
 constrains it: private and loopback addresses are refused, the resolved address
 is pinned so a name cannot be re-pointed mid-request, and every redirect is
-re-checked (`vetted_ip` in `src-tauri/src/lib.rs`). What is *not* constrained
-is which public site it reads. Turning web search off removes this entirely.
+re-checked (`vetted_ip` in `src-tauri/src/lib.rs`). In 1.10.3 and earlier a
+few IPv6 forms were not recognised as private: the deprecated site-local range
+`fec0::/10`, and the 6to4 (`2002::/16`) and Teredo (`2001::/32`) forms that
+carry an IPv4 address inside them; 1.10.4 refuses them, and gives a
+page 45 seconds in all, where before only each read had a limit. What is *not* constrained is which public site it reads. Turning
+web search off removes this entirely.
 
 **A third correction, on the same table.** Both update rows said the check
 sends "nothing". No *application* data is sent — no identifier, no version, no
@@ -281,8 +286,31 @@ confinement.
 
 Artifacts — charts, diagrams, small applications the model writes — render in an
 `<iframe sandbox="allow-scripts">` without `allow-same-origin`, under a strict
-Content-Security-Policy. Generated code therefore cannot reach the Tauri IPC
-bridge, the credential store, your filesystem, or the network. The effective
+Content-Security-Policy. That is designed to keep generated code away from the
+Tauri IPC bridge, the credential store, your filesystem and the network.
+
+**Checked against the installed 1.10.3 on macOS, on 2026-10-16**, with the
+probe in `qa/artifact-ipc/` (a chat to import whose artifact tries every route
+there is and asks the app to open a local address for each, so that a local
+listener proves any route that worked). No route reached a command, and the
+listener received nothing. In detail:
+
+- None of Tauri's objects exists in the frame, and the window around it cannot
+  be read (`SecurityError`).
+- The app's own route, a request to `ipc://localhost`, is blocked by the
+  frame's policy, and so is the network.
+- **One route is open, and a single barrier closes it.** WebKit makes the
+  app's native message handler available to every frame, the artifact's
+  included, so the probe's message was delivered. Tauri treats the app's own
+  `artifact://` address as local, so its origin check passes it. What refused
+  it is the *invoke key*: a random 128-bit value Tauri generates at each
+  launch and gives only to the main window's script, which the frame cannot
+  read. That is a strong barrier, but it is one, not two.
+
+Windows, where the handler works differently, has not been checked yet. The
+automated tests check the frame's attributes and policy; this check is the one
+that shows what a script inside it can reach, and it is on the release
+checklist. The effective
 policy is in `src-tauri/tauri.conf.json` and summarised in the
 [technical specification](docs/TECHNICAL-SPEC.md#2-security); the design notes
 recording which bypasses were tested are held internally and available on
@@ -311,11 +339,26 @@ that you can trust what it shows you. A plausible "your key has expired" and a
 link, and the phishing page is the app. A poisoned search result or an
 uploaded document is enough to ask the model for that markup.
 
-Rendered replies are now filtered against an allowlist of tags and attributes
-rather than a list of forbidden ones: `style`, `class` and `id` cannot survive
-sanitisation, so the CSP's permission for inline style no longer has anything
-in an assistant reply to apply to. The review's exact payload is a test
+Rendered replies are filtered so that `style`, `class` and `id` cannot survive
+sanitisation, so the CSP's permission for inline style has nothing in an
+assistant reply to apply to. The review's exact payload is a test
 (`tests/text.test.js`), along with the spellings that evade a naive filter.
+
+**This paragraph is corrected.** It said replies were filtered against an
+allowlist of tags and attributes rather than a list of forbidden ones. The code
+names an allowlist, but it also switches on DOMPurify's HTML profile, and the
+profile replaces the allowlist, so only the forbidden list takes effect. Other
+HTML therefore survives, among it `<dialog open>`, `popover`, `<details>`,
+`<font>`, `<marquee>`, autoplaying `<video>`, `tabindex`, `download` and `ftp:`
+links. Script, event handlers, `javascript:` links and forms are still
+removed, and the window's policy still blocks inline script and images or
+media from other hosts, so nothing executes and nothing is fetched. What is
+left is a smaller form of the spoofing described above: a reply can place a
+non-modal dialog over the conversation, with large text and a link. Found by
+the 1.10.2 launch review. **Fixed in 1.10.4:** the
+profile is gone, so the allowlist is the only list in force, and link schemes
+are limited to `http` and `https`. Every element and attribute above is a
+test (`tests/text.test.js`). 1.10.3 and earlier still let them through.
 
 ### A custom image endpoint you host yourself
 
@@ -367,6 +410,17 @@ what the claim should have had from the start.
 
 When you grant a folder, writes are confined to it, the model asks before every
 write, and it never deletes. Path traversal out of the granted root is blocked.
+
+**In 1.10.3 and earlier** the question named the file and its size, not its
+contents; any path inside the folder was accepted, hidden folders such as
+`.git` or `.vscode` included; names carrying characters that change how text
+is displayed, such as a right-to-left override, were not refused; and
+replacing a file kept its permissions, so overwriting a hook or script that
+already ran left it able to run. **From 1.10.4** the question shows
+how the content begins, and these are refused before anyone is asked: a name
+with such characters, a write into a hidden folder (a dotfile such as
+`.gitignore` in an ordinary folder is still allowed), and replacing a file
+that can be run. A new file is created without permission to run, as before.
 
 ### Third-party code
 
@@ -438,7 +492,15 @@ if it has a `SHA256SUMS.txt.minisig` attached.
 | --- | --- | --- |
 | Checksum | the file is the file that was published | `shasum -a 256 -c SHA256SUMS.txt --ignore-missing` |
 | Signature | the publisher vouches for that list | `minisign -Vm SHA256SUMS.txt -P <public key>` |
-| Attestation | this commit and workflow produced the file | `gh attestation verify <file> --repo jacobla1/sovatela` |
+| Attestation | the release workflow, at this release's tag, produced the file | `gh attestation verify <file> --repo jacobla1/sovatela --signer-workflow jacobla1/sovatela/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z` |
+
+*The attestation command is corrected.* It was given with `--repo` alone,
+which accepts an attestation from any workflow in the repository, built from
+any branch or tag. That shows this repository built the file, not that the
+release workflow built it from the tag. `scripts/verify-release.sh` made the
+looser check too; from 1.10.4's version of the script it names the
+workflow, the tag and the commit, requires every file the signed list names,
+and fails on any file on the release that the list does not cover.
 
 The signature closes the gap named above: the list is no longer just a file
 sitting beside the installers it vouches for, because replacing it now requires
@@ -485,14 +547,16 @@ would carry real weight is a signed package repository or a signed
 `SHA256SUMS.txt`. The second is done, from the first release built in the public
 repository; a signed repository is not, and is not planned.
 
-**Why we tell you to check rather than trust.** The macOS build degrades to
-*unsigned* rather than failing if the signing certificate expires or its secrets
-go missing, and nothing in the build log flags it. A release could therefore
-ship unsigned while this page still claimed otherwise. Running `spctl` yourself
-takes seconds and doesn't depend on us being right. We run it — plus
-`xcrun stapler validate`, which catches a notarization ticket that was never
-stapled to the app and would fail on a machine that is offline — against the
-published artifact before every release.
+**Why we tell you to check rather than trust.** The tool that builds the macOS
+app degrades to *unsigned* rather than failing if the signing certificate
+expires or its secrets go missing, and its own log does not flag it. Since
+1.7.1 the release workflow therefore checks the draft's `.dmg` itself: signed,
+notarized, the ticket stapled (`xcrun stapler validate`, which catches a ticket
+that would fail on a machine that is offline), and the version it claims. If
+any of that fails, the release stops before the checksum list is signed
+(`verify-macos-signature` in `.github/workflows/release.yml`). That is our
+check, though. Running `spctl` yourself takes seconds and doesn't depend on us
+being right.
 
 ## What this does not protect against
 
@@ -508,6 +572,33 @@ Stated plainly, because a security page that only lists strengths is not useful:
   their jurisdiction.
 - **Model output.** Generated text and code are unverified. Artifacts are
   sandboxed against the *app*, not audited for correctness.
+- **Everything in a template someone else gives you.** Sovatela refuses a
+  template whose fields fetch, or that links to something marked as outside
+  the file. **In 1.10.3 and earlier, other parts it copies were not all
+  examined:** a template's settings (attached template, mail merge, update
+  fields on opening, read-only protection) were copied into every document,
+  though never read by Word, because nothing in the document pointed at them;
+  an internal link could name a web address; and VML could name a picture by
+  address. Word fetched nothing for the cases tested. **1.10.4**
+  leaves the settings behind, and refuses an internal link that does not lead
+  to a part of the file and a picture named by address. Of the 252 templates
+  bundled with Word, it accepts all 252. What remains is whatever Word might
+  do with a copied part that no review has thought of. A template you made
+  yourself is not affected.
+- **A compromised dependency at build time.** Any build runs its
+  dependencies' build code, and a dependency compromised upstream could change
+  what is built; pinning by lockfile, actions by commit and a weekly audit make
+  that harder without removing it. **Until 1.10.3, that code also ran beside
+  the Apple signing certificate:** the macOS release job compiled everything in
+  the same job that signed, so it could have taken the signing identity, and
+  the approval in front of that job could not help, because what is approved
+  is the job, not the code inside it. **From 1.10.4** the app is
+  compiled in a job with no secrets, and the job that signs runs no project or
+  dependency code: only the pinned actions, the Tauri CLI that signs
+  (installed alone, from its own lockfile, with install scripts off) and
+  Apple's tools. A compromised dependency can still tamper with what it
+  builds, which is what notarization and the attestation are checked against;
+  it can no longer reach the identity that vouches for it.
 - **Terminal access (`claude-glm`).** Optional, off until you install it, under
   Settings → Advanced. It runs Claude Code — an agent that executes commands,
   installs packages, and fetches pages, any of which can reach hosts outside
@@ -598,8 +689,9 @@ than filed away:
     The reviewer's template passed, every document built from it kept the
     field, and Word fetched the address once the fields were updated — telling
     whoever controls it that the document had been opened, on the recipient's
-    machine. Eight other ways to make the checked text differ from the text
-    Word runs were found while fixing it. Present in **1.6.0 through 1.10.1**,
+    machine. Nine other ways to make the checked text differ from the text
+    Word runs were found while fixing it (*this said eight; the test that
+    holds them has the review's case and nine more*). Present in **1.6.0 through 1.10.1**,
     every release with templates, and disclosed as
     [GHSA-xj29-h3wq-6h2w](https://github.com/jacobla1/sovatela/security/advisories/GHSA-xj29-h3wq-6h2w).
     A template is now refused if its fields are written in any way Word does
@@ -627,7 +719,45 @@ than filed away:
     fields. An instruction beginning with `""` was skipped rather than judged.
     Both are now refused. Present in **1.6.0 through 1.10.2**; the advisory
     [GHSA-xj29-h3wq-6h2w](https://github.com/jacobla1/sovatela/security/advisories/GHSA-xj29-h3wq-6h2w)
-    is amended to name 1.10.3 as the fixed version.
+    was amended on 2026-10-16 to name 1.10.3 as the fixed version.
+  - **The checksum signing key was available to any workflow** in the public
+    repository, not only to the approved release job. It is now held only for
+    that job, and was replaced when it moved — see *Release integrity*.
+  - **`scripts/verify-release.sh` preferred a `minisign.pub` from the download
+    folder** over the one in the repository, so a release that carried its own
+    key would have verified against it. No release did. It now uses only the
+    repository's key, chosen by version.
+  - **rustls** in `Cargo.lock` updated to 0.23.46 for RUSTSEC-2026-0346 to
+    0349. As above, it is not compiled into Sovatela, which was not exposed.
+  - Not fixed in 1.10.3, and stated in the sections above: the sanitiser's
+    allowlist not being in force, unexamined template parts other than
+    fields, and the build-time exposure of the Apple signing identity.
+- **Found by the 1.10.2 launch review and fixed in 1.10.4:**
+  - **The reply sanitiser's allowlist was not in force** — see *Generated
+    code*. Low: a reply could place a dialog over the conversation; nothing
+    ran and nothing was fetched.
+  - **An imported chat could name a file outside the app's image folder.**
+    Images in saved chats are stored as files and referred to as
+    `asset://<name>`, and the name was checked only for `/`, `\` and `..`.
+    On Windows a name like `C:secret.txt` is relative to a drive, and joining
+    it replaced the folder entirely, so a crafted chat file could have read a
+    text file from the drive's current folder into the conversation, and on
+    to the model with the next message. Suspected rather than reproduced,
+    since it was not run on Windows; the same check also let one chat name
+    another chat's images on any platform. Now only names of the shape the
+    app itself writes, belonging to the chat being opened, are read.
+  - **A template's parts other than its fields were not all examined** — see
+    *What this does not protect against*. Low; Word fetched nothing for the
+    cases tried. Its settings now stay behind, and an internal link that
+    does not lead into the file, or a picture named by address, refuses it.
+  - **Dependency build code ran beside the Apple signing certificate** — see
+    *What this does not protect against*. The app is now compiled in a job
+    with no secrets, and the job that signs compiles nothing.
+  - Hardening, each rated informational: workspace writes (see *Workspace*);
+    the page reader's private-address check and an overall time limit (see
+    *Network*); and a link is now opened exactly as it was checked, since the
+    address parser and the system's opener read tabs, newlines and
+    backslashes differently.
 - **Accessibility defects**, stated rather than glossed —
   [Accessibility statement](docs/ACCESSIBILITY.md)
 - **Security and robustness reviews** (July 2026) and the mitigation plan that
@@ -670,7 +800,8 @@ providers you configured, and saying otherwise was wrong here until 1.8.9.
 Expect the Scaleway key check at launch, the providers while you use them, the
 delivery address an image provider hands back, `version.json` if you asked for
 an update check or switched on the launch one, the price file if you asked for
-prices, and — with web search on — the public pages the model chose to read.
+prices, your cloud service if you agreed to download a file you chose from it,
+and — with web search on — the public pages the model chose to read.
 Those last addresses are the model's choice and can be anywhere in the world.
 Private and loopback addresses are refused, which guards your own network; it is
 not a geographic limit, and nothing in this app confines page reading to Europe.

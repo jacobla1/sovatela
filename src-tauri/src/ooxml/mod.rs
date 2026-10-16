@@ -329,14 +329,25 @@ pub fn validate(bytes: &[u8]) -> Result<(), Vec<String>> {
             .rsplit_once("/_rels/")
             .map(|(dir, _)| dir.to_string())
             .unwrap_or_default();
-        for target in capture_all(&body, r#" Target=""#, '"') {
-            if target.starts_with("http") || body.contains(r#"TargetMode="External""#) {
+        // Each relationship on its own terms. This skipped every target
+        // starting with `http`, and every target in a file where
+        // `TargetMode="External"` appeared anywhere, so an internal
+        // relationship to a web address passed as if it led into the package
+        // (1.10.2 launch review, S7). An external one is a link and is left
+        // alone; an internal one has to resolve, and a web address cannot.
+        let rels = match template::parse_relationships(&body) {
+            Ok(rels) => rels,
+            Err(e) => {
+                problems.push(format!("{name} cannot be read: {e}"));
                 continue;
             }
-            let resolved = resolve(&base, &target);
+        };
+        for r in rels.iter().filter(|r| !r.external) {
+            let resolved = resolve(&base, &r.target);
             if !names.contains(&resolved) {
                 problems.push(format!(
-                    "{name}: target {target} resolves to {resolved}, which is not in the package"
+                    "{name}: target {} resolves to {resolved}, which is not in the package",
+                    r.target
                 ));
             }
         }
@@ -638,6 +649,29 @@ mod tests {
             problems.iter().any(|p| p.contains("theme1.xml")),
             "the missing part was not reported: {problems:?}"
         );
+    }
+
+    /// S7. An internal relationship to a web address does not resolve to a
+    /// part, so it is a problem; the same address as an external link is not.
+    #[test]
+    fn an_internal_relationship_to_the_web_is_caught() {
+        let rels = |mode: &str| {
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="{REL_BASE}/styles" Target="styles.xml"/><Relationship Id="rId2" Type="{REL_BASE}/hyperlink" Target="https://tracker.example/p"{mode}/></Relationships>"#
+            )
+        };
+        let build = |mode: &str| {
+            let mut pkg = minimal();
+            pkg.add("word/styles.xml", MAIN, format!(r#"<w:styles {W_NS}/>"#));
+            pkg.add_rels("word/_rels/document.xml.rels", rels(mode));
+            validate(&pkg.finish().unwrap())
+        };
+        let problems = build("").unwrap_err();
+        assert!(
+            problems.iter().any(|p| p.contains("tracker.example")),
+            "an internal web address passed as a part: {problems:?}"
+        );
+        assert_eq!(build(r#" TargetMode="External""#), Ok(()));
     }
 
     #[test]

@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { cleanText, hasVisibleText, parseParts, renderMd } from "../src/lib/text.js";
 
 describe("cleanText", () => {
@@ -199,5 +201,73 @@ describe("renderMd sanitization", () => {
   it("drops form/input phishing surfaces beyond the html profile defaults", () => {
     const html = renderMd('<math><mi xlink:href="data:x">m</mi></math>');
     expect(html).not.toContain("<math"); // MathML profile is off
+  });
+});
+
+// The 1.10.2 launch review's S3. `USE_PROFILES` replaced the allowlists with
+// DOMPurify's full HTML profile, so everything below survived although none of
+// it is on the lists. Each one is here so that a profile, or a widened list,
+// cannot quietly readmit it.
+describe("the allowlist is the only list in force", () => {
+  const survivedBefore = [
+    ["<dialog open>x</dialog>", /<dialog/],
+    ['<div popover="manual">x</div>', /popover/],
+    ["<details open><summary>s</summary>x</details>", /<details|<summary/],
+    ['<font size="7" color="red">x</font>', /<font/],
+    ["<marquee>x</marquee>", /<marquee/],
+    ["<center>x</center>", /<center/],
+    ["<big>x</big>", /<big/],
+    ['<video autoplay poster="p.png"></video>', /<video|autoplay/],
+    ["<audio autoplay></audio>", /<audio/],
+    ['<picture><source srcset="a.png"></picture>', /<picture|<source|srcset/],
+    ['<table background="b.png" border="9" cellpadding="9"><tr><td>x</td></tr></table>', /background|border|cellpadding/],
+    ['<p tabindex="1" draggable="true" inert hidden>x</p>', /tabindex|draggable|inert|hidden/],
+    ['<a href="https://e.example" download rel="opener">x</a>', /download|rel=/],
+    ['<img src="data:image/png;base64,AA" usemap="#m">', /usemap/],
+  ];
+  for (const [input, gone] of survivedBefore) {
+    it(`removes ${input.slice(0, 40)}`, () => {
+      expect(renderMd(input)).not.toMatch(gone);
+    });
+  }
+
+  it("keeps only web links and in-page anchors", () => {
+    expect(renderMd("[f](ftp://e.example/x)")).not.toContain("ftp:");
+    expect(renderMd("[m](mailto:a@e.example)")).not.toContain("mailto:");
+    expect(renderMd("[w](https://e.example)")).toContain('href="https://e.example"');
+    expect(renderMd("[h](http://e.example)")).toContain('href="http://e.example"');
+  });
+
+  it("still renders what prose needs", () => {
+    const html = renderMd(
+      "# Title\n\n3. three\n4. four\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n> quote\n\n`code` ~~gone~~",
+    );
+    for (const tag of ["<h1", "<ol", "<li", "<table", "<td", "<blockquote", "<code", "<del"]) {
+      expect(html, `${tag} was removed`).toContain(tag);
+    }
+    expect(html, "a numbered list lost where it starts").toContain('start="3"');
+  });
+
+  it("keeps an inline image", () => {
+    expect(renderMd("![chart](data:image/png;base64,AA)")).toContain(
+      'src="data:image/png;base64,AA"',
+    );
+  });
+
+  it("does not switch a profile on again", () => {
+    const src = readFileSync(join(import.meta.dirname, "../src/lib/text.js"), "utf8");
+    const call = src.slice(src.indexOf("export function renderMd"));
+    expect(call.slice(0, call.indexOf("\n}\n"))).not.toMatch(/USE_PROFILES/);
+  });
+});
+
+describe("the link-scheme pattern", () => {
+  it("does not strip ordinary attribute values", () => {
+    const html = renderMd(
+      '<table><tr><td colspan="2" rowspan="1" lang="da" dir="rtl">x</td></tr></table>',
+    );
+    for (const a of ['colspan="2"', 'rowspan="1"', 'lang="da"', 'dir="rtl"']) {
+      expect(html, `${a} was stripped`).toContain(a);
+    }
   });
 });

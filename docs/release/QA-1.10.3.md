@@ -199,7 +199,11 @@ Windows installed check outstanding as recorded above.
   are unchanged from 1.10.2 and not covered by this release.
 - f6, a nested field directly after a `"`, is refused although Word writes it.
 - One of Word's bundled templates (zh_TW `Headers.dotx`) builds a malformed
-  document; predates 1.10.2.
+  document; predates 1.10.2. *Corrected after release: four do, all for one
+  reason. zh_TW `Headers.dotx`, Newsprint, Thatch and Perspective start their
+  main part with a byte-order mark, which cut the copied page setup three
+  bytes short; the last three were also refused for their attached-template
+  link, which hid the first fault. Fixed after 1.10.3 (R8).*
 - **A file whose contents are still in iCloud hangs the template picker.**
   Choosing a template whose contents macOS has evicted to iCloud blocks the
   read until the system fetches it, and when it does not, the command never

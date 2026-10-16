@@ -402,8 +402,9 @@
       <p class="sums-note">
         And every installer carries a <strong>build attestation</strong> binding
         it to the public commit and workflow that produced it — the claim a
-        checksum cannot make:
-        <code>gh attestation verify &lt;file&gt; --repo jacobla1/sovatela</code>.
+        checksum cannot make. Name the release workflow and the release's tag,
+        or the check accepts any workflow in the repository:
+        <code>gh attestation verify &lt;file&gt; --repo jacobla1/sovatela --signer-workflow jacobla1/sovatela/.github/workflows/release.yml --source-ref refs/tags/v&lt;version&gt;</code>.
       </p>
     </details>
 

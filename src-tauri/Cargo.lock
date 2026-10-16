@@ -524,9 +524,9 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
 name = "chacha20"
-version = "0.10.1"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d524456ba66e72eb8b115ff89e01e497f8e6d11d78b70b1aa13c0fbd97540a81"
+checksum = "65c35e4b699c7e15ccbe7ee35c005e4fc0a278d22238a2857e6ce2dadeda1b06"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.3.0",
@@ -3738,7 +3738,7 @@ dependencies = [
 
 [[package]]
 name = "scale"
-version = "1.10.3"
+version = "1.10.4"
 dependencies = [
  "base64 0.22.1",
  "flate2",
@@ -6460,18 +6460,16 @@ dependencies = [
 
 [[package]]
 name = "zip"
-version = "2.4.2"
+version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fabe6324e908f85a1c52063ce7aa26b68dcb7eb6dbc83a2d148403c9bc3eba50"
+checksum = "1dcb24d0152526ae49b9b96c1dcf71850ca1e0b882e4e28ed898a93c41334744"
 dependencies = [
  "arbitrary",
  "crc32fast",
  "crossbeam-utils",
- "displaydoc",
  "flate2",
  "indexmap 2.14.0",
  "memchr",
- "thiserror 2.0.18",
  "zopfli",
 ]
 

@@ -1,3 +1,67 @@
+# Release notes — Sovatela 1.10.4
+
+Release date: 2026-10-16 · [All releases](https://github.com/jacobla1/sovatela/releases)
+
+This release fixes the rest of what an independent review of 1.10.2 found,
+and stops files that a cloud service has moved off the Mac from leaving the
+app waiting. None of it was known to have been exploited.
+
+## Fixed
+
+- **Files in iCloud, or another cloud service, no longer hang the app.**
+  Choosing a template, importing a chat or attaching a file whose contents
+  macOS had moved to the cloud left the app waiting with no message, since
+  1.6.0. Sovatela now asks whether to download it, shows a notice with Cancel
+  while macOS fetches it, and gives up after two minutes with a reason. It
+  never starts a download you did not agree to. A history or workspace folder
+  in iCloud Drive is covered too.
+- **Templates.** A template's settings are no longer copied into the
+  documents built from it, and a template is refused if it links to something
+  outside the file, even without saying so, or names a picture by address.
+  A mail-merge field nested right after a quote is accepted again. Four of
+  Word's own bundled templates, refused for a fault in reading their page
+  setup, now work: all 252 are accepted.
+- **A quotation in a generated Word document is a quotation**, not the text
+  with a `>` in front of it. It uses your template's quotation style when it
+  has one.
+- **Replies** are filtered against the list of allowed formatting that the
+  security page has long described; a setting had been replacing it with a
+  much longer one. A reply could place a box over the conversation. Nothing
+  could run and nothing was fetched.
+- **Workspace writes** show how the content begins when you are asked, and
+  are refused for a name that hides what it is called, a hidden folder such as
+  `.git`, or a file that can be run.
+- **Smaller fixes:** a chat's images are read only by the names the app gives
+  them; a link is opened exactly as it was checked; the page reader treats a
+  few more network addresses as private and gives a page 45 seconds in all.
+
+## Changed
+
+- **The paperclip opens its file picker in Sovatela rather than in the
+  window**, as every other picker in the app does. It looks the same; it is
+  what lets the app offer the download above.
+- **The macOS app is signed in a release job that compiles nothing**, so no
+  dependency's build code runs beside the signing certificate.
+- **`scripts/verify-release.sh`** checks that each installer was built by the
+  release workflow from this release's tag, that every file the signed list
+  names is present, and that nothing else is.
+
+## Corrected
+
+- The 1.10.2 notes said fixing the template check turned up eight more hidden
+  forms; there were nine. They and the 1.10.3 changelog also said Word's
+  templates "pass as before", which read as all of them; four were refused
+  before and after.
+- The third-party manifest in every installer listed rustls and 121 other
+  crates that no release compiles. It now lists what each release builds.
+
+[QA-1.10.4.md](QA-1.10.4.md) records verification. Windows and Linux installers
+remain unsigned and experimental, with no clean-machine lifecycle test and no
+measured real-photo OCR accuracy. Existing
+[accessibility limitations](https://sovatela.eu/accessibility) remain disclosed.
+
+---
+
 # Release notes — Sovatela 1.10.3
 
 Release date: 2026-10-16 · [All releases](https://github.com/jacobla1/sovatela/releases)
@@ -69,12 +133,15 @@ way past the template check. This release closes it, and updates rustls.
   unrelated one placed in front of the real instruction was what it judged. The
   reviewer's template passed, the documents built from it kept the field, and
   Word fetched the address once their fields were updated — telling whoever
-  controls it that the document was opened. Fixing it turned up eight more ways
+  controls it that the document was opened. Fixing it turned up nine more ways
   to make the text the check read differ from the text Word runs. Rather than
   learn to read each of them the way Word would, a template is now refused if a
   field in it is written in any way Word does not write one itself. Templates
-  saved by Word are unaffected: 288 Word-saved files, including Word's own
-  bundled templates, pass as before. Present in every release from 1.6.0 to
+  saved by Word are unaffected: none of 288 Word-saved files, Word's own
+  bundled templates among them, is newly refused. *Corrected after release:
+  this said "eight more ways", and that the 288 files "pass as before", which
+  read as all of them; eight, four of Word's own templates among them, were
+  refused before and after, for other reasons.* Present in every release from 1.6.0 to
   1.10.1; disclosed as
   [GHSA-xj29-h3wq-6h2w](https://github.com/jacobla1/sovatela/security/advisories/GHSA-xj29-h3wq-6h2w).
   If you have sent documents built from a template someone else gave you, Word

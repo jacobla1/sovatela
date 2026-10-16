@@ -20,22 +20,54 @@ const OUT = join(repo, "src-tauri", "THIRD-PARTY-MANIFEST.md");
 
 const pkg = JSON.parse(readFileSync(join(repo, "package.json"), "utf8"));
 
+// The targets releases are built for. The manifest is the union of what each
+// of them compiles.
+const RELEASE_TARGETS = [
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+  "x86_64-unknown-linux-gnu",
+];
+
+// What a release build compiles, not everything Cargo.lock can resolve.
+//
+// This used `cargo metadata --all-features` and listed every package, which
+// includes optional dependencies no feature this app uses turns on. rustls was
+// one: listed here, so records called it the TLS library behind every HTTPS
+// connection, though it is not compiled into Sovatela at all (1.10.2 launch
+// review). `cargo metadata` without that flag is no answer either: its resolve
+// graph does not apply Cargo's per-target feature resolution, so it still
+// reached rustls and missed crates a target does use. `cargo tree` applies it,
+// as a build does: default features, one release target at a time, normal and
+// build edges. Dev-only edges build the tests, not the app.
 function rustPackages() {
-  const raw = execFileSync(
-    "cargo",
-    ["metadata", "--format-version", "1", "--all-features", "--manifest-path", "src-tauri/Cargo.toml"],
-    { cwd: repo, maxBuffer: 64 * 1024 * 1024, encoding: "utf8" },
-  );
-  const meta = JSON.parse(raw);
-  // Everything resolved for the build, minus this crate itself.
-  return meta.packages
-    .filter((p) => p.name !== "scale")
-    .map((p) => ({
-      name: p.name,
-      version: p.version,
-      license: p.license || (p.license_file ? `see ${p.license_file}` : "UNKNOWN"),
-      repository: p.repository || "",
-    }));
+  const found = new Map();
+  for (const target of RELEASE_TARGETS) {
+    const raw = execFileSync(
+      "cargo",
+      [
+        "tree", "--locked", "--target", target, "-e", "normal,build",
+        "--prefix", "none", "--format", "{p}|{l}|{r}",
+        "--manifest-path", "src-tauri/Cargo.toml",
+      ],
+      { cwd: repo, maxBuffer: 64 * 1024 * 1024, encoding: "utf8" },
+    );
+    for (const line of raw.split("\n")) {
+      // `name vX.Y.Z`, then any `(…)` annotations (a path, `proc-macro`),
+      // then the fields; `(*)` marks a repeat.
+      const m = /^(\S+) v(\S+)(?: \([^|]*\))?\|([^|]*)\|(.*?)(?: \(\*\))?$/.exec(line.trim());
+      if (!m) continue;
+      const [, name, version, license, repository] = m;
+      if (name === "scale") continue;
+      found.set(`${name}@${version}`, {
+        name,
+        version,
+        license: license || "UNKNOWN",
+        repository,
+      });
+    }
+  }
+  return [...found.values()];
 }
 
 // Walk node_modules rather than the lockfile: the lockfile lists what could be
@@ -110,7 +142,7 @@ reasoning about the awkward cases; this one carries the complete inventory.
 It ships inside every installer as an application resource, so a copy travels
 with the binary rather than only with the source.
 
-- **Rust crates resolved for the build:** ${rust.length}
+- **Rust crates compiled into a release build** (on any of the ${RELEASE_TARGETS.length} release targets): ${rust.length}
 - **JavaScript packages in the installed tree:** ${js.length}
 ${unknown.length ? `- **Packages whose license could not be read: ${unknown.length}** — ${unknown.map((u) => `\`${u.name}\``).join(", ")}\n` : "- Every package declares a license.\n"}
 ## Rust

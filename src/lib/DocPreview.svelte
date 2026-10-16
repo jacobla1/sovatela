@@ -60,6 +60,8 @@
             </tbody>
           </table>
         </div>
+      {:else if b.kind === "quote"}
+        <blockquote>{@render runs(b.spans)}</blockquote>
       {:else if b.kind === "rule"}
         <hr />
       {/if}
@@ -146,6 +148,20 @@
     display: inline-block;
     min-width: 1.6em;
     text-indent: 0;
+  }
+  /* As the writer draws one: indented, ruled down the left, in italics. */
+  blockquote {
+    margin: 0 2em 0.8em 2em;
+    padding-left: 0.8em;
+    border-left: 3px solid var(--border-control, #ccc);
+    font-style: italic;
+  }
+  /* Word joins the same border on consecutive paragraphs, so two quotations
+     in a row sit under one rule in the file. The preview does the same: the
+     gap moves inside the rule instead of breaking it. */
+  blockquote + blockquote {
+    margin-top: -0.8em;
+    padding-top: 0.8em;
   }
   hr {
     border: 0;

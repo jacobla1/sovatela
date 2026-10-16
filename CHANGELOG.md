@@ -1,5 +1,122 @@
 # Changelog
 
+## 1.10.4 — 2026-10-16
+
+The rest of what an independent review of 1.10.2 found, and files that a cloud
+service has moved off the Mac. Nothing here was known to have been exploited.
+
+- `zip` is updated from 2.4.2 to 2.6.1 and `chacha20` from 0.10.1 to 0.10.2;
+  both versions had been yanked by their publishers. No advisory applied to
+  either. Word's 252 bundled templates and the review's fixtures give the same
+  results with the update, and its documents open in Word as before.
+- A quotation in a generated Word document is a quotation. Markdown's
+  `> quoted text` came out as that text with the `>` in front, which reads as
+  a fault in a finished document. It now uses the template's own *Quote*
+  style when it has one, the built-in style when there is no template, and an
+  indented paragraph ruled down its left edge otherwise. In a deck it is the
+  quoted words, without the marker; the preview shows it as the file will.
+- Workspace writes are refused, before you are asked, when the file name
+  contains characters that disguise it (a right-to-left override, for
+  example), when the file is in a hidden folder such as `.git` or `.vscode`,
+  or when it would replace a file that can be run. The question now shows how
+  the content begins. Found by an independent review of 1.10.2.
+- The page reader treats a few more IPv6 forms as private (site-local, 6to4,
+  Teredo, documentation and local-use NAT64), and stops a page after 45
+  seconds in all; only each read had a limit, so a page trickling bytes could
+  hold a turn open for minutes. Found by the same review.
+- A link is opened exactly as it was checked. The address was checked after
+  parsing and opened as typed, and the two can differ on tabs, newlines and
+  backslashes. No way to exploit it was found. Found by the same review.
+- `scripts/verify-release.sh` checks what its headings say. It accepted an
+  attestation from any workflow in the repository, at any branch or tag, and
+  now names the release workflow, the tag and the commit. A file the signed
+  list names may no longer be missing, and a file on the release that the list
+  does not cover, such as an added installer, fails the check; before, both
+  passed. `SOVATELA_RELEASE_DIR` verifies files already downloaded. Found by an
+  independent review of 1.10.2.
+- The third-party manifest inside every installer lists what a release
+  compiles: 487 Rust crates rather than 609. It listed every crate the
+  lockfile could resolve, optional ones nothing turns on included, which is
+  how rustls came to be named in the records as the app's TLS library though
+  it is not compiled in. It is now generated from Cargo's own view of each
+  release target's build. Found by an independent review of 1.10.2.
+- The macOS app is signed in a job that compiles nothing. The release used to
+  compile and sign in one job, so every dependency's install and build
+  scripts ran beside the Apple certificate, and a dependency compromised
+  upstream could have taken the signing identity. Now the app is compiled
+  with no secrets in reach, and the signing job runs only the Tauri CLI,
+  installed alone from its own lockfile, on that binary. Found by an
+  independent review of 1.10.2.
+- `qa/artifact-ipc/` builds a chat to import whose artifact tries every route
+  to the app's internal bridge and reports each one, with a local listener as
+  proof. It is the release check the same review asked for: whether code in
+  an artifact can reach the app was last tested in a running app for 1.6.0.
+- A template's other parts are examined, not only its fields. Its settings
+  are no longer copied: they rode into every document built from it, holding
+  whatever the template put there (an attached template, mail merge, update
+  fields on opening, read-only protection), though Word never read them,
+  because nothing in the document pointed at them. A link inside the
+  template that does not lead to a part of the file, such as one to a web
+  address that was not marked as external, refuses it, and so does a picture
+  named by address in older-style drawing markup. Found by an independent
+  review of 1.10.2; Word fetched nothing for the cases tried, but nothing in
+  Sovatela was what stopped it.
+- A mail-merge template with a field nested right after a quote, as in
+  `IF … "{ MERGEFIELD Title }"`, is accepted. 1.10.2's field check refused it
+  while protecting nothing more; it now checks that the outer field's type is
+  settled instead. Found by the same review.
+- Four of Word's own bundled templates (Newsprint, Thatch, Perspective, and
+  the Traditional Chinese "Headers") are accepted. Their main part starts with
+  a byte-order mark, which made the page setup Sovatela copies come out cut
+  off, and the template was refused as malformed. Three were also refused for
+  the link to the template they were attached to, which now stays behind
+  with the settings. All 252 templates bundled with Word are now accepted.
+- Replies are filtered against the allowlist of tags and attributes that
+  SECURITY.md has long described. A setting beside it had been replacing that
+  list with the sanitiser's full HTML set, so markup such as `<dialog open>`,
+  `popover`, `<details>`, `<font>`, autoplaying `<video>`, `tabindex` and
+  `download` got through; a reply could place a dialog over the conversation.
+  Nothing could run and nothing was fetched. Links are now limited to `http`
+  and `https`, the only kinds the app opens. Found by an independent review of
+  1.10.2.
+- A saved chat's images are read only by the names the app gives them, for
+  that chat. The check refused `/`, `\` and `..`, which on Windows left names
+  like `C:secret.txt`: those are relative to a drive, and could have read a
+  file from outside the image folder into an imported chat. Suspected, not
+  reproduced. Found by the same review.
+- A file you choose whose contents are in the cloud can be downloaded on the
+  spot. When you choose an attachment, a template or a chat to import, and
+  its contents are not on the Mac, Sovatela asks, naming the file, whether to
+  download it. If you agree, macOS fetches it while a notice says so, with
+  Cancel, and Sovatela gives up after two minutes, saying why
+  the download may not finish (a full disk, or a folder no longer connected
+  to the service). Nothing is fetched without that answer, and the request
+  is listed in SECURITY.md with everything else the app contacts.
+- The paperclip and a project's *Add files* now open their picker in
+  Sovatela itself rather than in the window, as every other picker in the app
+  already did. The window's own picker hands over a file's contents but never
+  says where it is, so the app could not offer the download above. The
+  window still never names a path.
+- A file whose contents a cloud service has moved off the Mac no longer
+  leaves the app waiting. This covers iCloud Drive, and Dropbox, OneDrive or Google Drive
+  through macOS's File Provider. Reading such a file blocks until macOS
+  fetches it, and when the fetch never came, choosing it as a template, or
+  importing it as a chat, left Settings or the import waiting with no message
+  and no way out short of quitting. Since 1.6.0. A file you choose is now
+  offered for download, as above. A history or workspace folder in iCloud
+  Drive is covered as well:
+  - an evicted chat is left out of the sidebar until it is downloaded;
+  - an evicted image in a chat shows as missing;
+  - the assistant is told an evicted workspace file cannot be read yet.
+
+  For those, Sovatela never starts a download, because nobody asked for one.
+
+  A file dropped onto the window is still read by the window, which cannot
+  see whether a file is in the cloud. Dropping an evicted file did nothing at
+  all. Now a file that hasn't finished reading after 15 seconds is given up
+  on, with a message that names cloud storage as the likely reason and says
+  how to download the file.
+
 ## 1.10.3 — 2026-10-16
 
 Fixes for what an independent review of 1.10.2 found before its public
@@ -12,7 +129,10 @@ announcement, and a Download button that had not worked since 1.6.0.
   passed, and stayed in every document built from the template. An
   instruction beginning with `""` was skipped rather than judged. Both are now
   refused. Found by an independent review of 1.10.2 before its announcement;
-  no exploitation is known. Word's bundled templates pass as before.
+  no exploitation is known. Word's 252 bundled templates get the same
+  verdicts as with 1.10.2: 248 accepted and 4 refused, the four for a fault
+  in reading their page setup that is fixed after 1.10.3. *Corrected: this
+  said they "pass as before", which read as all of them.*
 - Corrected: 1.10.2's records called rustls "the TLS library behind every
   HTTPS connection". It is not compiled into Sovatela at all; HTTPS goes
   through the operating system's TLS (Security.framework on macOS, SChannel on

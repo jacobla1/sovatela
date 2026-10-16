@@ -110,3 +110,35 @@ describe("no file path crosses into the backend from the interface", () => {
     }
   });
 });
+
+// The manifest is what a release compiles. It came from `cargo metadata
+// --all-features`, which listed optional dependencies nothing turns on: rustls
+// was listed, and records went on to call it the TLS library behind every HTTPS
+// connection, though it is not compiled into Sovatela (1.10.2 launch review).
+describe("the third-party manifest lists what a release compiles", () => {
+  const manifest = read("src-tauri/THIRD-PARTY-MANIFEST.md");
+  const generator = read("scripts/gen-third-party-manifest.mjs");
+
+  it("does not list rustls or its TLS stack", () => {
+    for (const name of ["rustls", "tokio-rustls", "hyper-rustls", "rustls-webpki", "ring"]) {
+      expect(manifest, `${name} is listed but not compiled`).not.toContain(`| \`${name}\` |`);
+    }
+  });
+
+  it("lists the TLS the app does use", () => {
+    expect(manifest).toContain("| `native-tls` |");
+    expect(manifest, "macOS's TLS and keychain binding is missing").toContain(
+      "| `security-framework` |",
+    );
+    expect(manifest, "Linux's TLS is missing").toContain("| `openssl` |");
+  });
+
+  it("is generated from the compiled graph, per release target", () => {
+    // As an argument; the comment explaining the change may name it.
+    expect(generator).not.toMatch(/"--all-features"/);
+    expect(generator).toMatch(/"tree"/);
+    for (const t of ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]) {
+      expect(generator).toContain(t);
+    }
+  });
+});

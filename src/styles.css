@@ -1080,10 +1080,6 @@ button.primary:disabled {
   color: var(--error);
 }
 
-.file-input-hidden {
-  display: none;
-}
-
 /* ---------- Auto-memory ---------- */
 .mem-toast {
   position: fixed;

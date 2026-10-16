@@ -163,8 +163,8 @@ export function parseParts(text) {
 // ---------- Markdown rendering (assistant text only) ----------
 // Fenced code blocks never reach this — parseParts extracts them as
 // artifacts first — so this handles prose: headings, lists, inline code,
-// links, tables. Output is sanitized (HTML profile only, no SVG/MathML)
-// before {@html}; the strict window CSP is the second line of defense.
+// links, tables. Output is sanitized against the two lists below before
+// {@html}; the strict window CSP is the second line of defense.
 //
 // **The `style` attribute is forbidden, and that is the point of this list.**
 // Forbidding the <style> element alone was not enough: the attribute survived,
@@ -194,16 +194,35 @@ const ALLOWED_TAGS = [
   "a", "img",
 ];
 
-// Deliberately short. `href`/`src` are still filtered by DOMPurify's own URI
-// scheme checks, and the renderer cannot open a non-http(s) URL anyway —
-// `open_external` in Rust refuses anything else.
-const ALLOWED_ATTR = ["href", "title", "alt", "src", "colspan", "rowspan", "lang", "dir"];
+// Deliberately short. `start` is what Markdown writes for a numbered list
+// that does not begin at 1.
+const ALLOWED_ATTR = [
+  "href", "title", "alt", "src", "colspan", "rowspan", "lang", "dir", "start",
+];
 
+// Schemes: http(s) only. `open_external` in Rust refuses anything else, so an
+// `ftp:` or `mailto:` link was a link that did nothing when clicked. This is
+// DOMPurify's own default pattern with its scheme list cut down, not a
+// pattern of whole URLs: DOMPurify tests *every* allowed attribute outside its
+// URI-safe set against it, so a narrower pattern also strips `start="3"`,
+// `lang` and `colspan`. Plain values and scheme-less references pass, as they
+// do by default. Images may also be `data:` URIs, which DOMPurify allows for
+// `img` separately from this pattern.
+const ALLOWED_URI_REGEXP = /^(?:https?:|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i;
+
+// **These lists are the only ones in force.** Until the 1.10.2 launch review
+// found it, this call also passed `USE_PROFILES: { html: true }`, and in
+// DOMPurify a profile *replaces* ALLOWED_TAGS and ALLOWED_ATTR with its own
+// full list. Only FORBID_TAGS and FORBID_ATTR were taking effect, so
+// `<dialog open>`, `popover`, `<details>`, `<font>`, `<marquee>`, autoplaying
+// `<video>`, `tabindex`, `download` and `ftp:` links all survived. A reply
+// could put a dialog over the conversation. No script ran and nothing was
+// fetched, but it was the spoofing the paragraph above exists to prevent.
 export function renderMd(text) {
   return DOMPurify.sanitize(marked.parse(text, { async: false }), {
-    USE_PROFILES: { html: true },
     ALLOWED_TAGS,
     ALLOWED_ATTR,
+    ALLOWED_URI_REGEXP,
     // Belt and braces: these are already absent from the allowlist, but naming
     // them means a future widening of ALLOWED_TAGS cannot quietly readmit them.
     FORBID_TAGS: ["style", "form", "input", "button", "select", "textarea", "iframe"],

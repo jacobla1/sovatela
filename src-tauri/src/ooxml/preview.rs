@@ -82,6 +82,12 @@ pub enum PreviewBlock {
     Table {
         rows: Vec<Vec<Vec<PreviewSpan>>>,
     },
+    /// A block quote. `style` is the template's quotation style, or `None`
+    /// when it has none and the writer indents the paragraph itself.
+    Quote {
+        style: Option<String>,
+        spans: Vec<PreviewSpan>,
+    },
     Rule,
 }
 
@@ -221,6 +227,10 @@ pub fn docx_blocks(defined: Option<&[String]>, md: &str) -> Vec<PreviewBlock> {
                     .map(|r| r.iter().map(|c| spans(c)).collect())
                     .collect(),
             },
+            Block::Quote(s) => PreviewBlock::Quote {
+                style: super::docx::quote_style(defined),
+                spans: spans(s),
+            },
             Block::Rule => PreviewBlock::Rule,
         })
         .collect()
@@ -319,9 +329,9 @@ mod tests {
         let mut lines: Vec<String> = Vec::new();
         for b in blocks {
             match b {
-                PreviewBlock::Heading { spans, .. } | PreviewBlock::Para { spans } => {
-                    lines.push(text(spans))
-                }
+                PreviewBlock::Heading { spans, .. }
+                | PreviewBlock::Para { spans }
+                | PreviewBlock::Quote { spans, .. } => lines.push(text(spans)),
                 // The marker is deliberately left out. From 1.8.4 a list item
                 // is in a real numbering definition, so Word draws the bullet
                 // or the number itself and it is not text in the file — it

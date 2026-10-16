@@ -193,8 +193,10 @@ jobs:
                 # 2. the publisher vouches for that list
                 minisign -Vm SHA256SUMS.txt -P <the key published at sovatela.eu>
 
-                # 3. this commit and workflow produced the file
-                gh attestation verify <file> --repo jacobla1/sovatela
+                # 3. the release workflow built the file from this tag
+                gh attestation verify <file> --repo jacobla1/sovatela \
+                  --signer-workflow jacobla1/sovatela/.github/workflows/release.yml \
+                  --source-ref refs/tags/<this tag>
 
             Signing status is not asserted in this template. tauri-action
             degrades to an unsigned build rather than failing when the Apple
@@ -214,24 +216,29 @@ jobs:
           prerelease: false
           args: ${{ matrix.args }}
 
-  # The only job that ever sees the Apple certificate.
+  # The macOS app, compiled with nothing secret in reach.
   #
-  # `environment: release` is what makes that statement enforceable rather than
-  # aspirational. The Apple secrets are attached to that environment, not to the
-  # repository, so no other job in this workflow — and no workflow added later —
-  # can read them without also naming the environment, which pauses for a
-  # maintainer's approval before the job starts. In a public repository that is
-  # the difference between "a merged workflow change could spend the signing
-  # key" and "a merged workflow change produces an approval request".
-  build-macos:
+  # Until the 1.10.2 launch review (S6) the compiling happened in
+  # `build-macos`, the job that holds the Apple certificate: `npm ci` and its
+  # install scripts, every crate's build script and every proc macro ran in the
+  # same job as the certificate and its password. A dependency compromised
+  # upstream could have taken the signing identity, and the approval in front
+  # of that job could not stop it, because what is approved is a job, not the
+  # code inside it. So the compiling happens here, with read-only permissions,
+  # no environment and no secrets, and the job that signs receives only the
+  # binary. What this job runs can still change the binary, as any build's
+  # dependencies can; what it can no longer reach is the identity that vouches
+  # for it.
+  build-macos-unsigned:
     needs: [windows-terminal-access, tests]
     if: github.repository == 'jacobla1/sovatela'
-    environment: release
     permissions:
-      contents: write # needed to create the Release and upload assets
+      contents: read
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -252,15 +259,98 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build app and publish release
-        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
+      # Compiled and joined into one universal binary, but neither bundled nor
+      # signed: there is nothing here to sign with.
+      - name: Compile the universal binary
+        run: npx tauri build --target universal-apple-darwin --no-bundle
+
+      - name: Hand the binary to the signing job
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: macos-universal-binary
+          path: src-tauri/target/universal-apple-darwin/release/scale
+          if-no-files-found: error
+          retention-days: 1
+
+  # The only job that ever sees the Apple certificate, and it compiles nothing.
+  #
+  # `environment: release` is what makes the first half enforceable rather than
+  # aspirational. The Apple secrets are attached to that environment, not to the
+  # repository, so no other job in this workflow (and no workflow added later)
+  # can read them without also naming the environment, which pauses for a
+  # maintainer's approval before the job starts.
+  #
+  # The second half is what S6 of the 1.10.2 launch review asked for. This job
+  # runs no `npm ci` in the project, no Cargo build, no build cache and no
+  # tauri-action: it installs the Tauri CLI alone, from its own lockfile with
+  # install scripts off, and runs `tauri bundle` on the binary the job above
+  # compiled. `tauri bundle` signs, notarizes and packages; the only other thing
+  # it runs is `cargo metadata --no-deps`, which reads the project's own
+  # manifest and executes nothing. The code beside the secrets is the pinned
+  # actions, the CLI that signs, and Apple's tools.
+  #
+  # It needs `build` so that the draft release exists before this uploads to
+  # it: tauri-action creates the draft there, and two jobs creating it at once
+  # can leave two drafts.
+  build-macos:
+    needs: [build-macos-unsigned, build]
+    if: github.repository == 'jacobla1/sovatela'
+    environment: release
+    permissions:
+      contents: write # to upload the .dmg to the draft release
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+
+      # For `cargo metadata --no-deps`, which the bundler calls to find the
+      # project; no targets, because nothing is compiled.
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          toolchain: "1.99.0"
+
+      # `tauri bundle` runs `build.beforeBundleCommand` if the configuration
+      # has one, which would put project code back beside the secrets.
+      - name: Refuse a bundle step that would run project code
+        run: |
+          set -euo pipefail
+          for conf in src-tauri/tauri.conf.json src-tauri/tauri.macos.conf.json; do
+            [ -f "$conf" ] || continue
+            if node -e 'const c = require("./" + process.argv[1]); process.exit(c.build && c.build.beforeBundleCommand ? 1 : 0)' "$conf"; then
+              echo "$conf: no beforeBundleCommand"
+            else
+              echo "::error::$conf sets build.beforeBundleCommand, which would run beside the Apple secrets"
+              exit 1
+            fi
+          done
+
+      - name: Install the Tauri CLI, and nothing else
+        working-directory: .github/tauri-cli
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Take the binary the unsigned job compiled
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: macos-universal-binary
+          path: src-tauri/target/universal-apple-darwin/release
+
+      # An artifact does not keep file modes.
+      - name: Make it executable again
+        run: chmod +x src-tauri/target/universal-apple-darwin/release/scale
+
+      - name: Sign, notarize and package
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Code signing and notarization. tauri-action degrades to an unsigned
-          # build rather than failing when these are missing or expired, and
-          # nothing in the log flags it — which is why the release procedure
-          # verifies the artifact with scripts/verify-notarization.sh instead of
-          # trusting this step's exit code.
+          # Code signing and notarization. The bundler skips signing rather
+          # than failing when these are missing, and nothing in the log flags
+          # it, which is why `verify-macos-signature` checks the artifact
+          # instead of trusting this step's exit code.
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -269,12 +359,18 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "Sovatela v__VERSION__"
-          releaseDraft: true
-          prerelease: false
-          args: "--target universal-apple-darwin"
+        run: .github/tauri-cli/node_modules/.bin/tauri bundle --bundles app,dmg --target universal-apple-darwin --ci
+
+      - name: Upload the .dmg to the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          dmg="src-tauri/target/universal-apple-darwin/release/bundle/dmg/Sovatela_${version}_universal.dmg"
+          [ -f "$dmg" ] || { echo "::error::$dmg was not produced"; ls -R src-tauri/target/universal-apple-darwin/release/bundle || true; exit 1; }
+          gh release upload "$TAG" "$dmg" --repo "$GITHUB_REPOSITORY"
 
   # Every asset on the release must belong to the tag being released.
   #
@@ -650,8 +746,11 @@ jobs:
       # Binds every installer and the checksum list to this workflow, this run
       # and this commit. Free for public repositories; needs Enterprise Cloud
       # for private ones, which is why this could not exist before the build
-      # moved. Verified by a user with:
-      #   gh attestation verify <file> --repo jacobla1/sovatela
+      # moved. Verified by a user with the workflow and the tag named, since
+      # `--repo` alone accepts any workflow in the repository at any ref:
+      #   gh attestation verify <file> --repo jacobla1/sovatela \
+      #     --signer-workflow jacobla1/sovatela/.github/workflows/release.yml \
+      #     --source-ref refs/tags/vX.Y.Z
       - name: Attest what was built
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:

@@ -8,6 +8,8 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/svelte";
 
 let extractedScan = "";
 const savedConversations = new Map();
+// What the Rust-side picker hands back for the next click on the paperclip.
+let pickResult = [];
 
 function scanWithFailures(pages) {
   return "[This document is a scan — a picture of a page with no text in it. " +
@@ -35,6 +37,7 @@ vi.mock("@tauri-apps/api/core", () => ({
       return null;
     }
     if (cmd === "check_connection") return "ok";
+    if (cmd === "pick_attachments") return pickResult;
     if (cmd === "extract_document") {
       // A scan comes back carrying the preamble the extractor puts at the head
       // of every recognised document — which is the only thing distinguishing
@@ -90,6 +93,48 @@ beforeEach(() => {
   vi.clearAllMocks();
   extractedScan = "";
   savedConversations.clear();
+  pickResult = [];
+});
+
+// The paperclip's picker opens in Rust, which reads the files and asks before
+// downloading one whose contents are in the cloud. What comes back goes through
+// the same classification as a dropped file, and what could not be read says
+// why.
+describe("the paperclip", () => {
+  it("attaches what the picker read, and names what it could not", async () => {
+    pickResult = [
+      { name: "notes.txt", mime: "text/plain", dataBase64: btoa("hello"), error: null },
+      {
+        name: "cloud.docx",
+        mime: "",
+        dataBase64: null,
+        error: "not attached — it is stored in the cloud and was not downloaded",
+      },
+    ];
+    render(Chat, { props: {} });
+    await fireEvent.click(screen.getByLabelText("Attach files or images"));
+    await waitFor(() => expect(screen.getByTitle("notes.txt")).toBeTruthy());
+    expect(screen.getByText(/cloud\.docx — not attached — it is stored in the cloud/)).toBeTruthy();
+  });
+
+  it("is not the window's own file input any more", () => {
+    // That input hands over contents without a path, so the app could not tell
+    // a file whose contents were in the cloud from a slow one, and attaching
+    // one did nothing at all.
+    for (const f of ["src/lib/Chat.svelte", "src/lib/ProjectPanel.svelte"]) {
+      expect(read(f), `${f} has a file input again`).not.toMatch(/type="file"/);
+      expect(read(f)).toMatch(/invoke\("pick_attachments"\)/);
+    }
+  });
+
+  it("is limited in Rust exactly as the window limits a message", async () => {
+    const files = await import("../src/lib/files.js");
+    const rust = read("src-tauri/src/lib.rs");
+    const count = Number(rust.match(/const MAX_PICKED_ATTACHMENTS: usize = (\d+);/)[1]);
+    expect(count).toBe(files.MAX_ATTACHMENTS);
+    const [, mb] = rust.match(/const MAX_PICKED_ATTACHMENT_BYTES: u64 = (\d+) \* 1024 \* 1024;/);
+    expect(Number(mb) * 1024 * 1024).toBe(files.MAX_DOC_BYTES);
+  });
 });
 
 describe("dropping a file onto the window", () => {

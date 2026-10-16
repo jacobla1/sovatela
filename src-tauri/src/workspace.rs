@@ -186,6 +186,12 @@ pub fn read_bytes(root: &Path, rel: &str) -> Result<Vec<u8>, String> {
     if path.is_dir() {
         return Err("that path is a folder, not a file".into());
     }
+    // A workspace in iCloud Drive can hold files whose contents are not on the
+    // Mac, and reading one can block the turn for good. See
+    // `crate::is_cloud_placeholder`.
+    if crate::is_cloud_placeholder(&path) {
+        return Err(crate::cloud_placeholder_refusal("That file"));
+    }
     let meta = std::fs::metadata(&path).map_err(|e| format!("could not read the file: {e}"))?;
     if meta.len() as usize > WORKSPACE_MAX_WRITE_BYTES {
         return Err("that file is too large to read".into());
@@ -205,6 +211,9 @@ pub fn read_file(root: &Path, rel: &str) -> Result<String, String> {
     let path = safe_join(root, rel)?;
     if path.is_dir() {
         return Err("that path is a folder, not a file".into());
+    }
+    if crate::is_cloud_placeholder(&path) {
+        return Err(crate::cloud_placeholder_refusal("That file"));
     }
     // Read a bounded amount rather than the whole file and then truncating.
     // The model chooses this path — possibly steered by a page it was told to
@@ -247,7 +256,76 @@ pub fn read_file(root: &Path, rel: &str) -> Result<String, String> {
 /// needed (inside the workspace only). Returns whether the file already existed
 /// (an overwrite) so the caller can word its confirmation accordingly.
 pub fn will_overwrite(root: &Path, rel: &str) -> Result<bool, String> {
-    Ok(safe_join(root, rel)?.is_file())
+    let path = safe_join(root, rel)?;
+    may_write(rel, &path)?;
+    Ok(path.is_file())
+}
+
+/// Characters that change how a name is displayed without being visible: the
+/// bidirectional controls, the marks, and the zero-width characters. One in a
+/// file name can make the approval dialog show `report` + U+202E + `fdp.exe`
+/// as `reportexe.pdf`.
+pub(crate) fn is_disguising(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{061C}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2060}'..='\u{2069}'
+                | '\u{FEFF}'
+        )
+}
+
+/// What a write may not do, beyond leaving the folder (`safe_join`).
+///
+/// The 1.10.2 launch review (S10) found the approval dialog was the only
+/// check on everything else, and that it named a path the model chose
+/// without showing what was going in. So these are refused before anyone is
+/// asked:
+/// - a name carrying characters that disguise it in the dialog;
+/// - a hidden folder, such as `.git` or `.vscode`, where files are settings
+///   another program acts on; a dotfile such as `.gitignore` in an ordinary
+///   folder is still allowed, since asking for one is ordinary;
+/// - replacing a file that can be run. A new file is created without
+///   permission to run, but a replaced one keeps its own, so overwriting a git
+///   hook or a script that already runs would leave it running.
+fn may_write(rel: &str, path: &Path) -> Result<(), String> {
+    if rel.chars().any(is_disguising) {
+        return Err(
+            "that name contains characters that would hide what it is called, so it was not \
+             written"
+                .into(),
+        );
+    }
+    let components: Vec<&str> = rel
+        .split(['/', '\\'])
+        .filter(|c| !c.is_empty() && *c != ".")
+        .collect();
+    if let Some((_, folders)) = components.split_last() {
+        if let Some(hidden) = folders.iter().find(|c| c.starts_with('.')) {
+            return Err(format!(
+                "{hidden} is a hidden folder; files there are settings other programs act on, so \
+                 nothing is written into one from here"
+            ));
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        if let Ok(meta) = std::fs::symlink_metadata(path) {
+            if meta.is_file() && meta.permissions().mode() & 0o111 != 0 {
+                return Err(
+                    "that file can be run, and replacing it would leave the new content able to \
+                     run, so it was not replaced"
+                        .into(),
+                );
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
 }
 
 /// Write raw bytes — for a generated document, which is a zip archive rather
@@ -301,6 +379,9 @@ pub fn write_bytes(root: &Path, rel: &str, content: &[u8], replacing: bool) -> R
     if path.is_dir() {
         return Err("that path is a folder, not a file".into());
     }
+    // Again here, not only before the dialog: the file can change while the
+    // dialog is open.
+    may_write(rel, &path)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("could not create folder: {e}"))?;
     }
@@ -539,6 +620,83 @@ mod tests {
         write_file(&root, "out/report.md", "# Hello", false).unwrap();
         assert_eq!(read_file(&root, "out/report.md").unwrap(), "# Hello");
         assert!(will_overwrite(&root, "out/report.md").unwrap());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+/// S10 of the 1.10.2 launch review: what a write may not do, beyond leaving
+/// the folder.
+#[cfg(test)]
+mod write_limits {
+    use super::*;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("scale-writes-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_name_that_hides_what_it_is_called_is_refused() {
+        let root = scratch("names");
+        for name in [
+            "report\u{202E}fdp.exe",
+            "notes\u{200B}.md",
+            "a\u{2066}b.txt",
+            "line\nbreak.txt",
+            "tab\there.txt",
+        ] {
+            let err = will_overwrite(&root, name).unwrap_err();
+            assert!(err.contains("hide what it is called"), "{name:?}: {err}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_hidden_folder_is_refused_and_a_dotfile_is_not() {
+        let root = scratch("hidden");
+        for rel in [
+            ".git/hooks/pre-commit",
+            ".vscode/tasks.json",
+            "src/.config/x.json",
+        ] {
+            let err = will_overwrite(&root, rel).unwrap_err();
+            assert!(err.contains("hidden folder"), "{rel}: {err}");
+            assert!(
+                write_file(&root, rel, "x", false).is_err(),
+                "{rel} was written"
+            );
+        }
+        for rel in [".gitignore", "docs/.nojekyll", "./notes.md", "a/b/c.txt"] {
+            assert_eq!(will_overwrite(&root, rel), Ok(false), "{rel}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_that_can_be_run_is_not_replaced() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = scratch("exec");
+        let script = root.join("build.sh");
+        std::fs::write(&script, "#!/bin/sh\necho hi\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let err = will_overwrite(&root, "build.sh").unwrap_err();
+        assert!(err.contains("can be run"), "{err}");
+        assert!(write_file(&root, "build.sh", "rm -rf ~", true).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&script).unwrap(),
+            "#!/bin/sh\necho hi\n"
+        );
+        // An ordinary file is still replaced.
+        std::fs::write(root.join("notes.md"), "old").unwrap();
+        assert_eq!(will_overwrite(&root, "notes.md"), Ok(true));
+        write_file(&root, "notes.md", "new", true).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("notes.md")).unwrap(),
+            "new"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

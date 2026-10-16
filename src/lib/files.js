@@ -76,11 +76,63 @@ export function aggregateRefusal(items, candidate) {
   return null;
 }
 
-export function readAs(file, how) {
+/// How long a file may take to read before it is given up on.
+///
+/// A file of up to 20 MB on this computer reads in milliseconds. One whose
+/// contents iCloud Drive or another cloud service has moved off the Mac does
+/// not: the read waits for macOS to fetch them, and when the fetch never comes,
+/// neither `load` nor `error` ever fires. Attaching one used to do nothing at
+/// all, with no message. The window cannot see the file's flags the way the
+/// backend can (`is_cloud_placeholder`), so the sign it gets is time.
+export const READ_TIME_LIMIT_MS = 15_000;
+
+/// Rejects with a string, like the backend's own errors, so that callers
+/// showing `${e}` show the sentence and not `Error: …`.
+export const READ_TIMED_OUT =
+  `it did not finish reading within ${READ_TIME_LIMIT_MS / 1000} seconds. If it is ` +
+  `stored in iCloud or another cloud service, its contents may not be on this ` +
+  `computer yet: download it first (in Finder, Control-click it and choose ` +
+  `Download Now), then attach it again.`;
+
+/// Turn what `pick_attachments` returns into `File` objects, so a picked file
+/// goes through the same classification as a dropped one, plus the names of
+/// the files it could not read, each with its reason.
+export function pickedToFiles(entries) {
+  const files = [];
+  const errors = [];
+  for (const e of entries || []) {
+    if (e.error) {
+      errors.push(`${e.name} — ${e.error}`);
+      continue;
+    }
+    const raw = atob(e.dataBase64 ?? "");
+    const bytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+    files.push(new File([bytes], e.name, { type: e.mime || "" }));
+  }
+  return { files, errors };
+}
+
+export function readAs(file, how, limitMs = READ_TIME_LIMIT_MS) {
   return new Promise((resolve, reject) => {
     const r = new FileReader();
-    r.onload = () => resolve(r.result);
-    r.onerror = () => reject(r.error);
+    const timer = setTimeout(() => {
+      r.onload = r.onerror = null;
+      try {
+        r.abort();
+      } catch {
+        // Nothing to abort is fine; the answer is the same.
+      }
+      reject(READ_TIMED_OUT);
+    }, limitMs);
+    r.onload = () => {
+      clearTimeout(timer);
+      resolve(r.result);
+    };
+    r.onerror = () => {
+      clearTimeout(timer);
+      reject(r.error);
+    };
     if (how === "dataURL") r.readAsDataURL(file);
     else r.readAsText(file);
   });

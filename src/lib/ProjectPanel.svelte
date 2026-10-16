@@ -1,5 +1,6 @@
 <script>
   // Modal for editing a project: name, instructions, and file knowledge.
+  import { invoke } from "@tauri-apps/api/core";
   import { ask } from "@tauri-apps/plugin-dialog";
   import {
     MAX_TEXT_BYTES,
@@ -13,6 +14,7 @@
     isTemplateDocument,
     templateDocumentHint,
     extractDocument,
+    pickedToFiles,
   } from "./files.js";
 
   import { untrack } from "svelte";
@@ -31,7 +33,6 @@
   let instructions = $state(untrack(() => project.instructions || ""));
   let files = $state(untrack(() => [...(project.files || [])]));
   let error = $state("");
-  let fileInput;
 
   // ----- Focus -----
   //
@@ -95,7 +96,20 @@
         error = `Could not read ${f.name}: ${e}`;
       }
     }
-    if (fileInput) fileInput.value = ""; // allow re-selecting the same file
+  }
+
+  // Opened in Rust, like the chat's paperclip: see `attachFromPicker` there.
+  async function addFromPicker() {
+    let entries;
+    try {
+      entries = await invoke("pick_attachments");
+    } catch (e) {
+      error = String(e);
+      return;
+    }
+    const { files: picked, errors } = pickedToFiles(entries);
+    if (picked.length) await onFiles(picked);
+    if (errors.length) error = [error, ...errors].filter(Boolean).join(" · ");
   }
 
   function removeFile(i) {
@@ -185,14 +199,7 @@
             {/each}
           </ul>
         {/if}
-        <input
-          class="file-input-hidden"
-          type="file"
-          multiple
-          bind:this={fileInput}
-          onchange={(e) => onFiles(e.currentTarget.files)}
-        />
-        <button class="ghost" onclick={() => fileInput?.click()}>+ Add files</button>
+        <button class="ghost" onclick={addFromPicker}>+ Add files</button>
       </div>
 
       {#if error}<p class="error">{error}</p>{/if}

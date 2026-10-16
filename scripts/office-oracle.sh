@@ -108,6 +108,30 @@ run "PowerPoint — content that has to be split across slides" \
 and no text running off the bottom of a slide in the PDF" \
     overflow.pptx
 
+# Documents built from real templates, when templates are named:
+#
+#   SOVATELA_TEMPLATES="$(printf '%s\n' path/one.dotx path/two.dotx)" scripts/office-oracle.sh
+#
+# Validation proves such a document well formed; only Word shows whether it
+# opens and takes the template's design. Added when four of Word's own
+# templates became usable (R8 of the 1.10.2 launch review).
+if [ -n "${SOVATELA_TEMPLATES:-}" ]; then
+    rm -rf "$out/templates"
+    if SOVATELA_TEMPLATES="$SOVATELA_TEMPLATES" cargo test --manifest-path src-tauri/Cargo.toml \
+        --lib word_template_fixtures -- --ignored >/dev/null 2>&1; then
+        for doc in "$out"/templates/*.docx; do
+            run "Word — built from template $(basename "$doc" .docx)" \
+                word.applescript \
+                "tables=1, paragraphs=19, pages=1, and no repair prompt. In the PDF, \
+the headings and body text in the template's own design" \
+                "templates/$(basename "$doc")"
+        done
+    else
+        echo "FAILED to build documents from the named templates" >&2
+        fail=1
+    fi
+fi
+
 echo
 if [ "$fail" -eq 0 ]; then
     echo "Every file opened. Read the numbers above"

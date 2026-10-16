@@ -112,6 +112,14 @@ describe("the preview shows what the file will say", () => {
     expect(artifact).not.toMatch(/The preview shows more than the file will/);
   });
 
+  it("does not tell the reader quotations are left as characters", () => {
+    // They became real quotations after 1.10.3, and the note above the
+    // preview went on listing them among what the format cannot carry, right
+    // above a preview drawing them as quotations.
+    const note = artifact.slice(artifact.indexOf('class="artifact-note"'));
+    expect(note.slice(0, note.indexOf("</p>"))).not.toMatch(/quote/i);
+  });
+
   it("renders every value as markup rather than interpolating it", () => {
     // Svelte escapes `{cell}`. Hand-built HTML would have to escape its own,
     // which is a thing to get wrong rather than a thing the framework does.
@@ -321,5 +329,16 @@ describe("quoted text is shown, not filed as something to run", () => {
     const parts = parseParts("Here:\n\n```text\nhalf a line");
     expect(parts.some((p) => p.pending)).toBe(false);
     expect(parts.some((p) => p.content?.includes("half a line"))).toBe(true);
+  });
+});
+
+describe("quotations in the preview", () => {
+  // Word joins identical borders on consecutive paragraphs, so two quotations
+  // in a row sit under one rule in the file. The owner's check in a test
+  // build showed the preview drawing two.
+  it("joins consecutive quotations under one rule, as Word does", () => {
+    const preview = readFileSync(resolve(import.meta.dirname, "../src/lib/DocPreview.svelte"), "utf8");
+    const rule = preview.slice(preview.indexOf("blockquote + blockquote"));
+    expect(rule, "consecutive quotations are drawn apart again").toMatch(/margin-top:\s*-0\.8em/);
   });
 });

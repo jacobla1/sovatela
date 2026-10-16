@@ -228,9 +228,15 @@ Run this before tagging a release, and commit the result:
 node scripts/gen-third-party-manifest.mjs
 ```
 
-It writes `src-tauri/THIRD-PARTY-MANIFEST.md` from `cargo metadata` and the
+It writes `src-tauri/THIRD-PARTY-MANIFEST.md` from `cargo tree` and the
 installed `node_modules` tree — no extra tooling to install, so there is no
-step between deciding to release and having the manifest. The script reports
+step between deciding to release and having the manifest. The Rust list is
+what a release build compiles: default features, each of the four release
+targets in turn, normal and build dependencies, with Cargo's own feature
+resolution. Until the 1.10.2 launch review it was every package
+`cargo metadata --all-features` could resolve, which listed optional
+dependencies nothing turns on, rustls among them, and crates only other
+platforms compile. The script reports
 any package whose license it could not read; resolve those before tagging.
 
 The file is listed in `tauri.conf.json` under `bundle.resources`, so it is

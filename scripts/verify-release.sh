@@ -13,9 +13,11 @@
 #
 # What it establishes, in the order a stranger would ask:
 #
-#   1. the files are what the list says          shasum -a 256 -c
+#   1. the files are what the list says, and the   shasum -a 256 -c,
+#      list is every file there is                 and the set compared
 #   2. the list is what the publisher vouches for  minisign
-#   3. this workflow at this commit built them     gh attestation verify
+#   3. this workflow at this commit built them     gh attestation verify,
+#                                                  workflow, tag and commit named
 #   4. the .dmg is signed, notarized and stapled   verify-notarization.sh
 #   5. the provenance record names this tag        PROVENANCE.txt
 #   6. the public tree is what the private one emits  publisher re-run + diff
@@ -33,6 +35,24 @@ TAG="${1:?usage: verify-release.sh <tag> [private-repo-path]}"
 PRIVATE="${2:-}"
 VERSION="${TAG#v}"
 REPO="jacobla1/sovatela"
+# Verify files already downloaded instead of downloading them: the directory
+# is copied, not used in place, so nothing in it is changed.
+LOCAL="${SOVATELA_RELEASE_DIR:-}"
+[ -n "$LOCAL" ] && LOCAL="$(cd "$LOCAL" && pwd)"
+
+# What every release built in the public repository carries. Checked both
+# ways: each of these must be in the signed list, and nothing outside the list
+# may be on the release except the two documents attached beside it, which the
+# signature does not cover and which are not programs.
+INSTALLERS=(
+  "Sovatela_${VERSION}_universal.dmg"
+  "Sovatela_${VERSION}_x64-setup.exe"
+  "Sovatela_${VERSION}_x64_en-US.msi"
+  "Sovatela_${VERSION}_amd64.AppImage"
+  "Sovatela_${VERSION}_amd64.deb"
+  "Sovatela-${VERSION}-1.x86_64.rpm"
+)
+UNSIGNED_DOCUMENTS=("QA-${VERSION}.md" "TERMS-${VERSION}.md")
 
 # Resolved before anything changes directory. Written as `$(dirname "$0")` at
 # each use, it was evaluated from inside the download directory and every
@@ -58,29 +78,58 @@ echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') · $REPO"
 echo
 
 # ---------------------------------------------------------------------------
-echo "Downloading the assets as published"
-cd "$work" || exit 1
-if ! gh release download "$TAG" --repo "$REPO" >/dev/null 2>&1; then
-  echo "  could not download $TAG from $REPO — is it a draft you cannot see?"
-  exit 2
+# The assets in a folder of their own: the checks below write their output to
+# "$work", and step 1 now refuses any file here that the list does not name.
+mkdir -p "$work/assets" && cd "$work/assets" || exit 1
+if [ -n "$LOCAL" ]; then
+  echo "Copying the assets from $LOCAL"
+  cp -p "$LOCAL"/* . 2>/dev/null
+else
+  echo "Downloading the assets as published"
+  if ! gh release download "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+    echo "  could not download $TAG from $REPO — is it a draft you cannot see?"
+    exit 2
+  fi
 fi
 ls -1 | sed 's/^/  /'
 echo
 
 # ---------------------------------------------------------------------------
-echo "1. The files are what the list says"
+echo "1. The files are what the list says, and the list is every file there is"
 if [ -f SHA256SUMS.txt ]; then
-  # --ignore-missing is deliberate: the signature and the checksum list itself
-  # are not in the list, and a platform's assets may be absent from a draft.
-  if shasum -a 256 -c SHA256SUMS.txt --ignore-missing >"$work/sums.out" 2>&1; then
-    ok "shasum -a 256 -c ($(grep -c ': OK' "$work/sums.out") files)"
+  # Without --ignore-missing. With it, a file the list names could be absent
+  # and the check still passed, and the line below counted the list's lines
+  # rather than the files checked, so a list that covered nothing here read
+  # as covering seven (1.10.2 launch review, R5).
+  listed=$(awk 'NF >= 2 {sub(/^\*/, "", $2); print $2}' SHA256SUMS.txt | sort)
+  count=$(printf '%s\n' "$listed" | grep -c .)
+  if shasum -a 256 -c SHA256SUMS.txt >"$work/sums.out" 2>&1; then
+    matched=$(grep -c ': OK$' "$work/sums.out")
+    [ "$matched" -eq "$count" ] \
+      && ok "every file the list names is here and matches ($matched of $count)" \
+      || no "only $matched of the $count files the list names were checked"
   else
     no "shasum -a 256 -c"; sed 's/^/        /' "$work/sums.out"
   fi
-  # A list that covers nothing passes trivially, so the count is checked too.
-  listed=$(grep -c . SHA256SUMS.txt || echo 0)
-  [ "$listed" -ge 6 ] && ok "the list covers $listed files" \
-    || no "the list covers only $listed files — six installers and a provenance record were expected"
+  # The list names what a release carries.
+  for want in "${INSTALLERS[@]}" PROVENANCE.txt; do
+    printf '%s\n' "$listed" | grep -qxF "$want" \
+      || no "the list does not name $want"
+  done
+  # And nothing is on the release that the list does not vouch for. An
+  # installer beside the list but outside it is the shape a replaced or added
+  # binary takes; this used to pass.
+  stray=0
+  for f in *; do
+    [ -f "$f" ] || continue
+    case "$f" in SHA256SUMS.txt|SHA256SUMS.txt.minisig) continue ;; esac
+    printf '%s\n' "${UNSIGNED_DOCUMENTS[@]}" | grep -qxF "$f" && continue
+    if ! printf '%s\n' "$listed" | grep -qxF "$f"; then
+      no "$f is on the release but not in the signed list"
+      stray=$((stray + 1))
+    fi
+  done
+  [ "$stray" -eq 0 ] && ok "nothing on the release is outside the signed list"
 else
   no "SHA256SUMS.txt is missing, so nothing below it can be checked"
 fi
@@ -117,19 +166,31 @@ fi
 echo
 
 # ---------------------------------------------------------------------------
-echo "3. This workflow, at this commit, produced these files"
+echo "3. The release workflow, at this tag and commit, produced these files"
+# With the workflow, the tag and the commit named. `--repo` alone accepts an
+# attestation from any workflow in the repository, built from any branch or
+# tag, which is not what this heading says (1.10.2 launch review, R5).
+tagged=$(git ls-remote "https://github.com/$REPO" "refs/tags/$TAG^{}" 2>/dev/null | awk '{print $1}')
+[ -n "$tagged" ] || tagged=$(git ls-remote "https://github.com/$REPO" "refs/tags/$TAG" 2>/dev/null | awk '{print $1}')
 attested=0
-for f in Sovatela*; do
-  [ -f "$f" ] || continue
-  case "$f" in *.minisig|SHA256SUMS.txt) continue ;; esac
-  if gh attestation verify "$f" --repo "$REPO" >"$work/att.out" 2>&1; then
+for f in "${INSTALLERS[@]}" SHA256SUMS.txt; do
+  if [ ! -f "$f" ]; then
+    no "$f is not here to check its attestation"
+    continue
+  fi
+  if gh attestation verify "$f" --repo "$REPO" \
+      --signer-workflow "$REPO/.github/workflows/release.yml" \
+      --source-ref "refs/tags/$TAG" \
+      ${tagged:+--source-digest "$tagged"} >"$work/att.out" 2>&1; then
     attested=$((attested + 1))
   else
     no "gh attestation verify $f"; tail -3 "$work/att.out" | sed 's/^/        /'
   fi
 done
-[ "$attested" -gt 0 ] && ok "gh attestation verify ($attested files)" \
-  || no "no file carried a verifiable build attestation"
+want=$(( ${#INSTALLERS[@]} + 1 ))
+[ "$attested" -eq "$want" ] \
+  && ok "release.yml at $TAG (${tagged:0:12}) attested all $attested files" \
+  || no "$attested of $want files carried an attestation from release.yml at $TAG"
 echo
 
 # ---------------------------------------------------------------------------

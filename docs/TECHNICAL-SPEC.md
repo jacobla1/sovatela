@@ -1,6 +1,6 @@
 # Technical and security specification
 
-Sovatela v1.10.3 · Companion to Product spec ·
+Sovatela v1.10.4 · Companion to Product spec ·
 UX spec · [Security policy](../SECURITY.md)
 
 Fuller engineering rationale is kept internally in `ENGINEERING_NOTES.md`, which
@@ -147,10 +147,26 @@ possible while replies may contain links worth following; the honest statement
 is that outbound *requests* are blocked and outbound *navigation* is not.
 
 Artifacts render in `<iframe sandbox="allow-scripts">` **without**
-`allow-same-origin`, giving them an opaque origin: no access to the parent
-document, no Tauri IPC, no storage, no network. The reasoning and the bypasses
-tested are recorded in an internal design note
+`allow-same-origin`, giving them an opaque origin. The design intent is no
+access to the parent document, no Tauri IPC, no storage and no network. The
+reasoning and the bypasses tested are recorded in an internal design note
 (`CSP-EXPERIMENT-2026-07.md`), available on request.
+
+Checked in the installed 1.10.3 on macOS (2026-10-16) with
+`qa/artifact-ipc/`: no route reached a command. Tauri's globals are absent
+from the frame, `parent` and `top` throw `SecurityError`, and `fetch` to
+`ipc://localhost`, `http://ipc.localhost` and the network fail under the
+frame's CSP. **`window.webkit.messageHandlers.ipc` is present in the frame**,
+because WebKit exposes a script message handler to every frame, and a posted
+message reaches `tauri::ipc::protocol::handle_ipc_message`. wry passes the
+posting frame's URL (`artifact://localhost/…`), and `Webview::is_local_url`
+counts any registered custom protocol as local, so the origin check does not
+distinguish the artifact from the interface. The message is dropped only
+because its `__TAURI_INVOKE_KEY__` is wrong: the key is 16 random bytes per
+launch (`generate_invoke_key`), injected by a main-frame-only user script
+and held in a closure. One barrier, not two; Windows (WebView2) is not yet
+checked. `tests/artifactSandbox.test.js` checks the frame's attributes and
+policy, not what a script inside the frame can reach.
 
 > `dangerousDisableAssetCspModification` is set for `style-src` alone. The
 > name is alarming; it disables Tauri's automatic nonce injection for that

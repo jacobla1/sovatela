@@ -86,6 +86,11 @@ fn default_styles() -> String {
         <w:style w:type="paragraph" w:styleId="ListParagraph"><w:name w:val="List Paragraph"/>
             <w:basedOn w:val="Normal"/><w:qFormat/>
             <w:pPr><w:ind w:left="720"/><w:contextualSpacing/></w:pPr></w:style>
+        <w:style w:type="paragraph" w:styleId="Quote"><w:name w:val="Quote"/>
+            <w:basedOn w:val="Normal"/><w:qFormat/>
+            <w:pPr><w:pBdr><w:left w:val="single" w:sz="12" w:space="8" w:color="BFBFBF"/></w:pBdr>
+            <w:ind w:left="720" w:right="720"/></w:pPr>
+            <w:rPr><w:i/><w:color w:val="404040"/></w:rPr></w:style>
         <w:style w:type="character" w:styleId="CodeChar"><w:name w:val="Code Char"/>
             <w:rPr><w:rFonts w:ascii="Consolas" w:hAnsi="Consolas"/></w:rPr></w:style>
         </w:styles>"#,
@@ -208,6 +213,20 @@ fn numbering_part(template: Option<&str>, runs: &[super::preview::ListRun]) -> (
 }
 
 /// The style for a list item, or none if the template has nothing suitable.
+/// The style for a block quote: the built-in `Quote`, or the template's own
+/// quotation style if it defines one. `None` means the template has none, and
+/// the writer indents the paragraph and rules its left edge itself, so a
+/// quotation still reads as one rather than as body text.
+pub(super) fn quote_style(defined: Option<&[String]>) -> Option<String> {
+    let Some(defined) = defined else {
+        return Some("Quote".to_string());
+    };
+    ["Quote", "IntenseQuote"]
+        .iter()
+        .find(|id| defined.iter().any(|d| d == *id))
+        .map(|id| id.to_string())
+}
+
 pub(super) fn list_style(defined: Option<&[String]>) -> Option<String> {
     let Some(defined) = defined else {
         return Some("ListParagraph".to_string());
@@ -449,6 +468,13 @@ pub fn from_markdown_with(
                     .collect();
                 format!("{}<w:p/>", table(&rows))
             }
+            PreviewBlock::Quote { style, spans } => match style {
+                Some(style) => paragraph(Some(style), &to_spans(spans)),
+                None => format!(
+                    r#"<w:p><w:pPr><w:pBdr><w:left w:val="single" w:sz="12" w:space="8" w:color="BFBFBF"/></w:pBdr><w:ind w:left="720" w:right="720"/></w:pPr>{}</w:p>"#,
+                    self::runs(&to_spans(spans))
+                ),
+            },
             // An empty paragraph carrying a bottom border, which is how Word
             // itself draws a horizontal rule.
             PreviewBlock::Rule => r#"<w:p><w:pPr><w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="BFBFBF"/></w:pBdr></w:pPr></w:p>"#.to_string(),
@@ -552,6 +578,40 @@ mod tests {
 
     fn read_back(docx: &[u8]) -> String {
         crate::document_text("generated.docx", docx).expect("the reader refused the document")
+    }
+
+    /// A Markdown quotation came out of Word as `> The board noted the
+    /// risk.`, marker included, until 1.10.3.
+    #[test]
+    fn a_quotation_is_a_quotation_in_word() {
+        let bytes = from_markdown("Before.\n\n> The board noted the **risk**.\n\nAfter.").unwrap();
+        validate(&bytes).expect("valid");
+        let doc = part(&bytes, "word/document.xml");
+        assert!(doc.contains(r#"<w:pStyle w:val="Quote"/>"#), "{doc}");
+        assert!(!doc.contains("&gt;"), "the marker survived: {doc}");
+        let styles = part(&bytes, "word/styles.xml");
+        assert!(
+            styles.contains(r#"w:styleId="Quote""#),
+            "the built-in styles have no Quote"
+        );
+        let text = read_back(&bytes);
+        assert!(text.contains("The board noted the risk."), "{text}");
+        assert!(!text.contains('>'), "{text}");
+    }
+
+    #[test]
+    fn a_quotation_uses_the_templates_own_style_when_it_has_one() {
+        assert_eq!(quote_style(None).as_deref(), Some("Quote"));
+        let defined = |ids: &[&str]| ids.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            quote_style(Some(&defined(&["Normal", "Quote"]))).as_deref(),
+            Some("Quote")
+        );
+        assert_eq!(
+            quote_style(Some(&defined(&["Normal", "IntenseQuote"]))).as_deref(),
+            Some("IntenseQuote")
+        );
+        assert_eq!(quote_style(Some(&defined(&["Normal"]))), None);
     }
 
     #[test]
