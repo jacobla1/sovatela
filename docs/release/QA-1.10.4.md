@@ -111,17 +111,27 @@ Local, on macOS (Apple silicon), at the release commit:
 
 ## Installed-build checks
 
-A condition of publishing. Against the draft release's installers.
+A condition of publishing. Against the draft release's installers. **The
+Windows check was not done: as for 1.10.1 to 1.10.3, the owner published
+without it.**
 
-- [ ] **macOS**, the draft's notarized `.dmg` installed, its SHA-256 matching
-      the signed `SHA256SUMS.txt`:
-  - f1 refused and `house-style.docx` accepted as templates;
-  - a local file attaches with the paperclip;
-  - `qa/artifact-ipc/` probe: no listener request;
-  - **an evicted file in iCloud Drive** (Finder ▸ Remove Download) downloads
-    and attaches after Download. Not yet seen anywhere: the test Mac's
-    Desktop is disconnected from iCloud, so its evicted files cannot be
-    fetched by anything.
+- [x] **macOS**, the draft's notarized `.dmg` (its SHA-256 matching the
+      signed `SHA256SUMS.txt`), run by the owner on 2026-10-17 from the
+      mounted image rather than copied into Applications; the app reports
+      1.10.4:
+  - `house-style.docx` accepted and f1 refused as templates, from the
+    regenerated fixtures on a local disk;
+  - the `qa/artifact-ipc/` probe: **no request at the listener**. Every line
+    unreachable except the WebKit message handler (SENT: delivered, refused
+    for its invoke key) and `parent.postMessage` (sent, ignored); frame
+    origin `null`. The same as on the installed 1.10.3.
+  - A local file attaching through the new paperclip picker was confirmed on
+    a test build of this code, not repeated on the release build.
+  - **Not done: an evicted file in iCloud Drive that downloads and attaches.**
+    The owner's iCloud was not syncing, and the test Mac's Desktop is
+    disconnected from iCloud, so no evicted file there can be fetched by
+    anything. The refusal, the question, the notice, Cancel and the
+    two-minute limit were all seen on test builds.
 - [ ] **Windows**, installed release build: the same, and the S4 probe.
       Outstanding since 1.10.1.
 
@@ -144,23 +154,53 @@ installed release:
 
 Run after the tag, against the draft, before publishing it.
 
-- [ ] The first run of the split signing jobs: `build-macos-unsigned` with no
-      environment, then `build-macos` behind the approval, compiling nothing;
-      `verify-macos-signature` green.
-- [ ] The published source's own suite at the public commit, after `npm ci`.
-- [ ] `scripts/verify-release.sh v1.10.4`, now strict: the release workflow at
-      the tag and commit, every listed file, nothing unlisted.
-- [ ] Against the shipped binary from the draft's `.dmg`: the probes above
-      give the 1.10.4 column.
-- [ ] **Replace this record on the draft with the finished one before
+- **Release** run `38972149225` at `v1.10.4` (public `24514fa`, from private
+  `44a77f4`): all eight jobs succeeded at the first attempt, with both
+  `release`-environment approvals. Tagged at 23:51 on 2026-10-16, so the
+  record's date holds. The draft carried exactly eleven files: six
+  installers, `PROVENANCE.txt`, `SHA256SUMS.txt` and its signature, and the QA
+  and terms copies. No updater archive was produced this time.
+- [x] **The first run of the split signing jobs.** `build-macos-unsigned`
+      compiled the universal binary with no environment and handed it on as
+      `macos-universal-binary` (15 MB). `build-macos` then, behind the
+      approval: installed two packages (the Tauri CLI and its native binary)
+      with install scripts off; its 530-line log has no `Compiling` line and
+      no install script; it signed the app, Apple notarized it (*Accepted*),
+      and it built and signed the `.dmg`. `verify-macos-signature` green.
+- [x] The published source's own suite at the public commit, after `npm ci`:
+      748 tests across 39 files, all passing, before it was committed.
+- [x] `scripts/verify-release.sh v1.10.4`, now strict: **10 passed, 0 failed,
+      0 skipped.** Seven files checksummed, of seven listed; nothing on the
+      release outside the list; the signature against the new key;
+      `release.yml` at `v1.10.4` (`24514fa13844`) attested all seven files;
+      macOS signed, notarized and stapled; the provenance names `v1.10.4` and
+      is itself signed; the publisher re-run at `44a77f4f0a40` reproduces the
+      published tree exactly.
+- [x] Against the **shipped binary** from the draft's `.dmg`, mounted
+      read-only, version 1.10.4: all 19 probes give the same verdicts as the
+      local 1.10.4 build (the 1.10.4 column above), and Word's 252 bundled
+      templates are all accepted.
+- [x] **This record replaced the one attached to the draft, before
       publishing.** Releases are immutable once published; 1.10.3 went out
       with its record unticked because this was left until afterwards.
 
 ## After publishing
 
-- [ ] Tag the private repository at the commit the public provenance names.
-- [ ] Build and publish the site; check the live `version.json`, installer
-      links and checksums.
+Published at **2026-10-16T22:33:27Z** (00:33 on 2026-10-17 in Copenhagen;
+tagged at 23:51 on the 16th, the date the records carry). The copy of this
+record attached to the release ends with the section above; what follows
+exists in the repository only.
+
+- [x] The private repository is tagged `v1.10.4` at `44a77f4`, the commit the
+      public provenance names.
+- [x] Site built from the published assets after their checksums and
+      signature verified (8 release asset links resolve; release feed 18
+      entries, newest 1.10.4), committed as `sovatela-web@8535205`. All nine
+      live pages and files are byte-identical to the built ones. Live
+      `version.json` reads **1.10.4**; all eight release links on the page
+      return **200**; the `.dmg` fetched from the live link hashes to
+      `577e6c5da508e6a2d8d51a4df63aef9402f36293411971f4d76509061cc1579c`, which
+      is what the site publishes.
 - [ ] Decide whether any 1.10.4 fix warrants an advisory. Each was rated Low
       or informational; none was known to be exploited.
 

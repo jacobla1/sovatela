@@ -46,6 +46,7 @@ reported.
 | Date | Build | Platform | Result |
 | --- | --- | --- | --- |
 | 2026-10-16 | installed 1.10.3 | macOS (Apple silicon) | No listener request. Every line unreachable except the WebKit handler (SENT, delivered, refused for its invoke key) and `parent.postMessage` (sent, ignored). Frame origin `null`. |
+| 2026-10-17 | 1.10.4 draft `.dmg` | macOS (Apple silicon) | The same as 1.10.3: no listener request; the WebKit handler SENT and refused for its invoke key; `parent.postMessage` sent and ignored. |
 | — | — | Windows | not yet run |
 
 A browser window opening at `127.0.0.1:8733/s4-…` is the same signal as a
