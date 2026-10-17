@@ -1,9 +1,34 @@
 # Changelog
 
-## 1.10.5 — 2026-10-17
+## 1.10.6 — 2026-10-17
+
+The first published release with the fixes from an independent review of
+1.10.4, which are listed under 1.10.5 below, and one more found while checking
+them.
+
+- A refusal is shown, not only spoken. A chat file the importer refused, an
+  export that failed, a chat that could not be opened or deleted (such as one
+  whose file iCloud has moved off the Mac), and a failed link, image save,
+  copy or stop now put the reason in a bar at the top of the chat window,
+  which stays until dismissed. Import and export failures had gone only to
+  the screen-reader announcer and the rest only to the developer console, so
+  for most people the click seemed to do nothing. A project that could not be
+  saved or deleted says so in its panel, with the edits still there; a
+  document preview or artifact that could not be shown says why in its
+  place; and in Settings, the update-check switch, memories, *Show folder*
+  and *Reset tally* report a failure beside the control. Found by the
+  installed-build check of the 1.10.5 draft.
+
+## 1.10.5 — 2026-10-17 (tagged, not published)
 
 Fixes for what an independent review of 1.10.4 found before its announcement.
 Nothing here was known to have been exploited.
+
+Tagged and built, then held: checking the installed draft found that a
+refused import showed nothing on screen (the first entry under 1.10.6). The
+draft was deleted and the tag `v1.10.5` left in place, so its attestations
+still name the commit they were made for. These changes first reach users in
+1.10.6.
 
 - An imported chat can no longer make the window do unbounded work. The
   import check did not look at a reply's research steps, and the window drew

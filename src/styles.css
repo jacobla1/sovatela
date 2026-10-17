@@ -1186,7 +1186,8 @@ button.primary:disabled {
    is that data is at risk right now — not that something might go wrong. It has
    no dismiss: it clears when a retry succeeds, and nothing else should be able
    to make it stop saying so. */
-.unsaved-bar {
+.unsaved-bar,
+.notice-bar {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -1197,7 +1198,8 @@ button.primary:disabled {
   font-size: var(--fs-sm);
 }
 
-.unsaved-bar .unsaved-text {
+.unsaved-bar .unsaved-text,
+.notice-bar .notice-text {
   flex: 1;
   min-width: 0;
   overflow-wrap: anywhere;
@@ -1211,7 +1213,8 @@ button.primary:disabled {
   opacity: 0.85;
 }
 
-.unsaved-bar button {
+.unsaved-bar button,
+.notice-bar button {
   flex: none;
 }
 

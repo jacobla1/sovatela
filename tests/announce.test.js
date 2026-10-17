@@ -71,11 +71,11 @@ describe("streaming is announced once, not per token", () => {
       "replyAnnouncement(reply)",
       // Exporting is a deliberate act with a file at the end of it, and its
       // outcome is otherwise invisible: the save dialog closes and nothing on
-      // screen changes. Both branches are announced, and both are on their own
-      // line so this list can see them — the success one was first written
-      // after an `if` on the same line, where this guard could not.
+      // screen changes. On its own line so this list can see it — it was
+      // first written after an `if` on the same line, where this guard could
+      // not. A failure goes to the notice bar, whose role="alert" speaks it;
+      // announcing it as well would say it twice.
       "`Conversation exported to ${saved}`",
-      "`The conversation could not be exported: ${e?.message ?? e}`",
       // A rename confirms nothing on its own: the edit box closes and the row
       // redraws with a name that may not be the one that was typed, since Rust
       // trims and caps it. Saying the stored name is how someone not watching
@@ -83,10 +83,10 @@ describe("streaming is announced once, not per token", () => {
       // a failure keeps the box open with the reason beside it, which a live
       // region would only repeat.
       // Import lands somewhere other than where you were: a new chat opens and
-      // the list gains a row. Both branches, because a refused file is the
-      // likeliest outcome of picking the wrong one and its reason is the whole
-      // value — "that file has no messages in it" tells you what you clicked.
-      "`That chat could not be imported: ${e?.message ?? e}`",
+      // the list gains a row. A refusal is the likeliest outcome of picking
+      // the wrong file and its reason is the whole value, so it goes to the
+      // notice bar, which everyone sees and role="alert" speaks. Before
+      // 1.10.6 it was announced only, and sighted users saw nothing.
       "`Imported ${meta.title}`",
       "`Chat renamed to ${stored}`",
     ]);

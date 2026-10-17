@@ -116,14 +116,22 @@
     files.splice(i, 1);
   }
 
-  function save() {
-    onSave?.({
-      ...project,
-      name: name.trim() || "Untitled project",
-      instructions: instructions.trim(),
-      files: files.map((f) => ({ name: f.name, content: f.content })),
-      updated_at: new Date().toISOString(),
-    });
+  // Both of these close the panel on success, which is the parent's doing.
+  // A failure is thrown back here and shown under the form, where the edits
+  // that were not saved are still on screen.
+  async function save() {
+    error = "";
+    try {
+      await onSave?.({
+        ...project,
+        name: name.trim() || "Untitled project",
+        instructions: instructions.trim(),
+        files: files.map((f) => ({ name: f.name, content: f.content })),
+        updated_at: new Date().toISOString(),
+      });
+    } catch (e) {
+      error = `The project was not saved: ${e?.message ?? e}`;
+    }
   }
 
   async function confirmDelete() {
@@ -132,7 +140,13 @@
       title: `Delete the project “${project.name}”?`,
       kind: "warning",
     });
-    if (ok) onDelete?.(project.id);
+    if (!ok) return;
+    error = "";
+    try {
+      await onDelete?.(project.id);
+    } catch (e) {
+      error = `The project was not deleted: ${e?.message ?? e}`;
+    }
   }
 </script>
 
@@ -202,7 +216,7 @@
         <button class="ghost" onclick={addFromPicker}>+ Add files</button>
       </div>
 
-      {#if error}<p class="error">{error}</p>{/if}
+      {#if error}<p class="error" role="alert">{error}</p>{/if}
     </div>
 
     <div class="modal-foot">

@@ -766,7 +766,8 @@ than filed away:
     *Network*); and a link is now opened exactly as it was checked, since the
     address parser and the system's opener read tabs, newlines and
     backslashes differently.
-- **Found by an independent review of 1.10.4 and fixed in 1.10.5:**
+- **Found by an independent review of 1.10.4 and fixed in 1.10.6** (the fixes
+  were tagged as 1.10.5, which was not published; see the CHANGELOG):
   - **An imported chat could make the window do unbounded work.** The import
     check did not look at a reply's research steps, and the window drew
     whatever was there: a 100-byte file claiming a billion steps asked for a

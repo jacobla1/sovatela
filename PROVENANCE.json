@@ -1,8 +1,8 @@
 {
   "schema": 2,
-  "version": "1.10.5",
-  "private_commit": "189e23f8175f3945073dcc27609987b4341a9a5d",
-  "files": 311,
+  "version": "1.10.6",
+  "private_commit": "5adc9750e75afa9fd030fc8f601e4aaba01b4809",
+  "files": 313,
   "withheld": 9,
-  "payload_sha256": "b7bd22447131c59938d0725c3b5dfd5437ce785d3924bb0b1b183d49be73f08d"
+  "payload_sha256": "ba1bd05e96e1261a4bd8d5511c4c69cf2aaf7031c64564159b4c791d51178b82"
 }

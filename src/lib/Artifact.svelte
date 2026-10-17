@@ -49,7 +49,11 @@
   // to keep in step: a link the writer will not carry is shown as the
   // characters that will be in the file.
   let preview = $state(null);
+  // Shown in the preview's place. An empty panel reads as a document with
+  // nothing in it, which is a different thing from one that could not be read.
+  let previewError = $state("");
   $effect(() => {
+    previewError = "";
     if (!doc || !code) {
       preview = null;
       return;
@@ -61,8 +65,9 @@
         if (current) preview = p;
       })
       .catch((e) => {
-        console.error("Could not preview the document:", e);
-        if (current) preview = null;
+        if (!current) return;
+        preview = null;
+        previewError = String(e?.message ?? e);
       });
     return () => {
       current = false;
@@ -101,6 +106,7 @@
   }
   let showCode = $state(false);
   let copied = $state(false);
+  let copyFailed = $state(false);
   // $state because the effect below reads them, and the frame genuinely comes
   // and goes: toggling Code/Preview unmounts the iframe and mounts a new one.
   // The old plain `let` still worked, because the listener reads the variable
@@ -154,8 +160,10 @@
   // unchanged, so the frame is still an opaque origin that cannot reach the
   // parent window, `invoke()`, the keychain or the network.
   let frameSrc = $state("");
+  let frameError = $state("");
   $effect(() => {
     const html = document_;
+    frameError = "";
     if (!renderable || doc) {
       frameSrc = "";
       return;
@@ -166,8 +174,9 @@
         if (current) frameSrc = url;
       })
       .catch((e) => {
-        console.error("Could not stage the artifact:", e);
-        if (current) frameSrc = "";
+        if (!current) return;
+        frameSrc = "";
+        frameError = String(e?.message ?? e);
       });
     return () => {
       current = false;
@@ -200,8 +209,10 @@
       await navigator.clipboard.writeText(code);
       copied = true;
       setTimeout(() => (copied = false), 1500);
-    } catch (e) {
-      console.error("copy failed", e);
+    } catch {
+      // The clipboard refuses without saying why, so the button says it did.
+      copyFailed = true;
+      setTimeout(() => (copyFailed = false), 2500);
     }
   }
 </script>
@@ -224,7 +235,9 @@
           {saving ? "Saving…" : `Save .${doc.ext}`}
         </button>
       {/if}
-      <button class="mini" onclick={copy}>{copied ? "Copied" : "Copy"}</button>
+      <button class="mini" onclick={copy}
+        >{copied ? "Copied" : copyFailed ? "Could not copy" : "Copy"}</button
+      >
     </div>
   </div>
   {#if saveError}
@@ -253,7 +266,13 @@
             characters you see here.
           </p>
         {/if}
-        <DocPreview {preview} />
+        {#if previewError}
+          <p class="artifact-error" role="alert">
+            The preview could not be made: {previewError}
+          </p>
+        {:else}
+          <DocPreview {preview} />
+        {/if}
       </div>
     {:else if renderable && !showCode}
       {#if frameSrc}
@@ -265,6 +284,10 @@
           title="{lang} artifact"
           style="height: {frameHeight}px"
         ></iframe>
+      {:else if frameError}
+        <p class="artifact-error" role="alert">
+          This artifact could not be shown: {frameError}
+        </p>
       {/if}
     {:else}
       <pre class="artifact-code">{code}</pre>

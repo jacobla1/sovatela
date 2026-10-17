@@ -51,17 +51,20 @@
   // making a network call is not one a new user chose, which is the same rule
   // `auto_memory` follows.
   let checkOnLaunch = $state(false);
+  let checkOnLaunchError = $state("");
   invoke("get_update_check_on_launch")
     .then((v) => (checkOnLaunch = !!v))
     .catch(() => {});
 
   async function toggleCheckOnLaunch(enabled) {
     checkOnLaunch = enabled;
+    checkOnLaunchError = "";
     try {
       await invoke("set_update_check_on_launch", { enabled });
     } catch (e) {
       checkOnLaunch = !enabled; // put the switch back where the setting is
-      console.error("Could not save the update preference:", e);
+      // Said, not only undone: a box that unticks itself looks like a misclick.
+      checkOnLaunchError = `The setting was not saved: ${e?.message ?? e}`;
     }
   }
 
@@ -455,19 +458,21 @@
   async function addMemory() {
     const t = newMemory.trim();
     if (!t) return;
+    memoryError = "";
     try {
       memories = await invoke("add_memories", { texts: [t] });
       newMemory = "";
     } catch (e) {
-      console.error("Could not add memory:", e);
+      memoryError = `The memory was not added: ${e?.message ?? e}`;
     }
   }
 
   async function removeMemory(id) {
+    memoryError = "";
     try {
       memories = await invoke("delete_memory", { id });
     } catch (e) {
-      console.error("Could not delete memory:", e);
+      memoryError = `The memory was not deleted: ${e?.message ?? e}`;
     }
   }
 
@@ -545,9 +550,9 @@
   }
 
   function showHistoryFolder() {
-    invoke("reveal_history_dir").catch((e) =>
-      console.error("Could not open the history folder:", e),
-    );
+    invoke("reveal_history_dir").catch((e) => {
+      historyError = `The history folder could not be shown: ${e?.message ?? e}`;
+    });
   }
 
   // ----- Workspace (a folder the agent may read/write) -----
@@ -604,9 +609,9 @@
   }
 
   function showWorkspaceFolder() {
-    invoke("reveal_workspace_dir").catch((e) =>
-      console.error("Could not open the workspace folder:", e),
-    );
+    invoke("reveal_workspace_dir").catch((e) => {
+      workspaceError = `The workspace folder could not be shown: ${e?.message ?? e}`;
+    });
   }
 
   // ----- Usage & cost (running tally, cost estimated from a local price table) -----
@@ -660,7 +665,7 @@
       await invoke("reset_usage");
       await refreshUsage();
     } catch (e) {
-      console.error("Could not reset usage:", e);
+      pricingMsg = { ok: false, text: `The tally was not reset: ${e?.message ?? e}` };
     }
   }
 
@@ -2010,7 +2015,9 @@
       <button class="link" onclick={resetUsage}>Reset tally</button>
     </div>
     {#if pricingMsg}
-      <p class={pricingMsg.ok ? "hint" : "error"}>{pricingMsg.text}</p>
+      <p class={pricingMsg.ok ? "hint" : "error"} role={pricingMsg.ok ? "status" : "alert"}>
+        {pricingMsg.text}
+      </p>
     {/if}
     <p class="fineprint">
       Updating prices only affects <strong>future</strong> usage — costs already
@@ -2269,6 +2276,9 @@
         />
         Check for a new version when Sovatela starts
       </label>
+      {#if checkOnLaunchError}
+        <p class="warn-text" role="alert">{checkOnLaunchError}</p>
+      {/if}
       <p class="hint">
         Off by default. It reads the same version number as the button above and
         sends no account, no sign-up, and nothing this app knows about you or

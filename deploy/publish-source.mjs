@@ -165,6 +165,7 @@ const PUBLIC = [
   "docs/release/QA-1.10.3.md",
   "docs/release/QA-1.10.4.md",
   "docs/release/QA-1.10.5.md",
+  "docs/release/QA-1.10.6.md",
   "docs/release/QA-PDF-CORPUS-PILOT-2026-09-13.md",
   "docs/release/QA-PDF-CORPUS-2026-09-13.md",
   "docs/release/QA-PDF-DUAL-EXTRACTION-2026-09-15.md",

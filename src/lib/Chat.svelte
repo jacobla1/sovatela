@@ -52,6 +52,27 @@
   // announcer carries the things worth saying — that a reply is coming, what
   // it is doing while it takes a while, and the answer itself, once, when it
   // is whole.
+  // A failure the person has to see. Before 1.10.6 most of these went to the
+  // console, and import and export only to the announcer above, which is
+  // off-screen: the installed-build check found a refused import that left no
+  // trace on screen, and opening a chat iCloud had evicted looked like a click
+  // that did nothing. This bar names the action and the reason, and stays
+  // until it is dismissed or replaced. `role="alert"` speaks it, so it is not
+  // announced as well.
+  //
+  // The id re-creates the bar, so the same failure twice is spoken twice: the
+  // second attempt deserves an answer too. `repeat: false` is for refreshes
+  // nobody asked for, which may fail the same way on every save and should
+  // not repeat themselves at someone already reading the message.
+  let notice = $state(null); // { text, id } | null
+  let noticeSeq = 0;
+  function showFailure(what, e, { repeat = true } = {}) {
+    const text = `${what}: ${String(e?.message ?? e)}`;
+    console.error(text);
+    if (!repeat && notice?.text === text) return;
+    notice = { text, id: ++noticeSeq };
+  }
+
   let announcement = $state("");
   function announce(text) {
     const next = (text || "").trim();
@@ -225,7 +246,7 @@
       projects = await invoke("list_projects");
       projectsLoaded = true;
     } catch (e) {
-      console.error("Could not list projects:", e);
+      showFailure("Projects could not be listed", e, { repeat: false });
     }
   }
   refreshProjects();
@@ -273,31 +294,25 @@
     try {
       editingProject = await invoke("get_project", { id });
     } catch (e) {
-      console.error("Could not open project:", e);
+      showFailure("That project could not be opened", e);
     }
   }
 
+  // Errors from these two are left to throw: the project panel is still open
+  // when they run, and shows the message under the form it belongs to.
   async function saveProject(updated) {
-    try {
-      await invoke("save_project", { project: updated });
-      editingProject = null;
-      await refreshProjects();
-    } catch (e) {
-      console.error("Could not save project:", e);
-    }
+    await invoke("save_project", { project: updated });
+    editingProject = null;
+    await refreshProjects();
   }
 
   async function deleteProject(id) {
-    try {
-      await invoke("delete_project", { id });
-      editingProject = null;
-      if (activeProjectId === id) activeProjectId = null;
-      if (chatProjectId === id) chatProjectId = null;
-      await refreshProjects();
-      refreshHistory();
-    } catch (e) {
-      console.error("Could not delete project:", e);
-    }
+    await invoke("delete_project", { id });
+    editingProject = null;
+    if (activeProjectId === id) activeProjectId = null;
+    if (chatProjectId === id) chatProjectId = null;
+    await refreshProjects();
+    refreshHistory();
   }
 
   // ---------- Auto-memory (propose facts to remember when a chat wraps up) ----------
@@ -343,6 +358,8 @@
         const fresh = facts.filter((f) => !seen.has(f.toLowerCase()));
         if (fresh.length) memoryFacts = [...memoryFacts, ...fresh];
       })
+      // Not shown: nobody asked for this scan, and it running out of luck
+      // changes nothing they did. The console is enough.
       .catch((e) => console.error("Memory extraction failed:", e));
   }
 
@@ -350,7 +367,7 @@
     try {
       if (selected.length) await invoke("add_memories", { texts: selected });
     } catch (e) {
-      console.error("Could not save memories:", e);
+      showFailure("The memories were not saved", e);
     }
     memoryFacts = [];
   }
@@ -370,7 +387,7 @@
     try {
       conversations = await invoke("list_conversations");
     } catch (e) {
-      console.error("Could not list conversations:", e);
+      showFailure("The chat list could not be read", e, { repeat: false });
     }
   }
   refreshHistory();
@@ -507,7 +524,7 @@
         const c = await invoke("load_conversation", { id });
         messages = c.messages || [];
       } catch (e) {
-        console.error("Could not open conversation:", e);
+        showFailure("That chat could not be opened", e);
         return;
       }
     }
@@ -539,7 +556,7 @@
     } catch (e) {
       // Declining the dialog is not a failure and has nothing to report.
       if (String(e?.message ?? e) !== "cancelled") {
-        console.error("Could not delete conversation:", e);
+        showFailure("That chat was not deleted", e);
       }
       return;
     }
@@ -568,7 +585,7 @@
     // hand the operating system a `file://` or a custom scheme.
     if (/^https?:\/\//i.test(href)) {
       invoke("open_external", { url: href }).catch((err) =>
-        console.error("Could not open URL:", err),
+        showFailure("That link was not opened", err),
       );
     }
   }
@@ -624,7 +641,7 @@
         suggestedName: `generated-image.${ext}`,
       });
     } catch (e) {
-      console.error("Could not save the image:", e);
+      showFailure("The image was not saved", e);
     }
   }
 
@@ -1580,7 +1597,7 @@
       if (!saved) return; // the dialog was declined
       announce(`Conversation exported to ${saved}`);
     } catch (e) {
-      announce(`The conversation could not be exported: ${e?.message ?? e}`);
+      showFailure("The conversation could not be exported", e);
     }
   }
 
@@ -1701,7 +1718,7 @@
     try {
       meta = await invoke("import_conversation");
     } catch (e) {
-      announce(`That chat could not be imported: ${e?.message ?? e}`);
+      showFailure("That chat could not be imported", e);
       return;
     }
     if (!meta) return; // the dialog was declined
@@ -1743,7 +1760,7 @@
         if (copiedIndex === mi) copiedIndex = null;
       }, 1500);
     } catch (e) {
-      console.error("Could not copy the response:", e);
+      showFailure("The reply could not be copied", e);
     }
   }
 
@@ -1752,7 +1769,7 @@
     if (!requestId) return;
     stoppedRequests.add(requestId);
     invoke("cancel_request", { requestId }).catch((e) =>
-      console.error("Could not stop the request:", e),
+      showFailure("The request could not be stopped", e),
     );
   }
 
@@ -2093,6 +2110,15 @@
         {retrying ? "Retrying…" : "Retry save"}
       </button>
     </div>
+  {/if}
+
+  {#if notice}
+    {#key notice.id}
+      <div class="notice-bar" role="alert">
+        <div class="notice-text">{notice.text}</div>
+        <button class="ghost" onclick={() => (notice = null)}>Dismiss</button>
+      </div>
+    {/key}
   {/if}
 
   <!-- One polite announcer for the whole chat. aria-atomic so a changed value

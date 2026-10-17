@@ -1,6 +1,6 @@
 # Accessibility statement
 
-Applies to: Sovatela v1.10.5 · Last reviewed: 2026-08-29
+Applies to: Sovatela v1.10.6 · Last reviewed: 2026-08-29
 
 ## Our position
 
@@ -79,6 +79,13 @@ an adverb ever was.
   in a chat you are not reading does not interrupt the one you are. Generated
   code is described — *"html artifact, shown in the panel"* — rather than
   spoken aloud.
+- **A refusal is shown as well as spoken.** Before 1.10.6 a refused import
+  or export went only to that announcer, which is off-screen, so someone not
+  using a screen reader saw nothing happen; a chat that could not be opened
+  or deleted, and several settings, failed silently for everyone. Each now
+  puts its reason on screen beside what was being done, in an alert a screen
+  reader reads once, and the chat window's notice stays until it is
+  dismissed.
 - **Structure a screen reader can move through.** Each view has one `main`.
   The chat list is named navigation holding real lists, so it announces "3 of
   12" rather than a run of buttons, and marks which chat is open. Settings is

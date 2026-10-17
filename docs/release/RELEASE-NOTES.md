@@ -1,12 +1,23 @@
-# Release notes — Sovatela 1.10.5
+# Release notes — Sovatela 1.10.6
 
 Release date: 2026-10-17 · [All releases](https://github.com/jacobla1/sovatela/releases)
 
 An independent review of 1.10.4, made before announcing it, found two faults
 and a privacy policy that said less than the app does. This release fixes
-them. None was known to have been exploited.
+them, and one more fault found while checking the fixes. None was known to
+have been exploited.
+
+There is no 1.10.5 to download. It was tagged and built, then held when its
+installed-build check found the last fault below; its changes are all here.
 
 ## Fixed
+
+- **A refusal is shown, not only spoken.** When the app refused to import a
+  chat file, nothing appeared on screen: the reason went only to screen
+  readers. Opening or deleting a chat that failed, such as one whose file
+  iCloud has moved off the Mac, looked like a click that did nothing. These,
+  and failed exports, links, image saves and a few settings, now say what
+  went wrong where you are looking.
 
 - **An imported chat could make the window do unbounded work.** A crafted
   chat file of about a hundred bytes could claim a billion research steps, and
@@ -38,7 +49,8 @@ them. None was known to have been exploited.
   by default. It said keys are used only inside the app; the optional
   terminal integration uses the Scaleway key too.
 
-[QA-1.10.5.md](QA-1.10.5.md) records verification. Windows and Linux installers
+[QA-1.10.6.md](QA-1.10.6.md) records verification, and
+[QA-1.10.5.md](QA-1.10.5.md) the held release. Windows and Linux installers
 remain unsigned and experimental, with no clean-machine lifecycle test and no
 measured real-photo OCR accuracy. Existing
 [accessibility limitations](https://sovatela.eu/accessibility) remain disclosed.
