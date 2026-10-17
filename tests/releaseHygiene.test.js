@@ -926,3 +926,39 @@ describe("the published tree says where it came from", () => {
     expect(body).toContain("PROVENANCE.json");
   });
 });
+
+// The project's only ignored advisories (owner's decision, 2026-10-17): three
+// in `zip`'s extract functions, which unpack an archive onto disk. They are
+// ignored because the app never calls them, so that has to stay true, and the
+// list must not grow without a decision of its own.
+describe("the ignored zip advisories", () => {
+  const audit = read(".github/workflows/audit.yml");
+
+  it("are exactly these three, and nothing else is ignored", () => {
+    const ignored = [...audit.matchAll(/--ignore (RUSTSEC-\d{4}-\d{4})/g)].map((m) => m[1]);
+    expect(ignored.sort()).toEqual(["RUSTSEC-2026-0367", "RUSTSEC-2026-0368", "RUSTSEC-2026-0369"]);
+  });
+
+  it("stay inapplicable: the app never extracts an archive to disk", () => {
+    const root = join(repo, "src-tauri/src");
+    const sources = [];
+    const walk = (dir) => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (e.name.endsWith(".rs")) sources.push(p);
+      }
+    };
+    walk(root);
+    expect(sources.length).toBeGreaterThan(10);
+    for (const file of sources) {
+      const code = readFileSync(file, "utf8")
+        .split("\n")
+        .filter((l) => !l.trim().startsWith("//"))
+        .join("\n");
+      for (const call of [/\.extract\(/, /extract_unwrapped_root_dir/, /ZipStreamReader/]) {
+        expect(code, `${file} calls a zip extract function: the ignored advisories apply`).not.toMatch(call);
+      }
+    }
+  });
+});

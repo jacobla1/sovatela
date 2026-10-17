@@ -1,3 +1,50 @@
+# Release notes — Sovatela 1.10.5
+
+Release date: 2026-10-17 · [All releases](https://github.com/jacobla1/sovatela/releases)
+
+An independent review of 1.10.4, made before announcing it, found two faults
+and a privacy policy that said less than the app does. This release fixes
+them. None was known to have been exploited.
+
+## Fixed
+
+- **An imported chat could make the window do unbounded work.** A crafted
+  chat file of about a hundred bytes could claim a billion research steps, and
+  opening it made the window try to draw them all. Importing now refuses such
+  a file, and the window only ever draws a real, capped list. It needed you to
+  import a file someone sent you; nothing was read or sent.
+- **A history folder in iCloud Drive is now covered everywhere.** 1.10.4 said
+  it was, but saving, moving the folder and *Delete all data* still read
+  history files without checking whether their contents were on the Mac, so
+  an evicted file could leave saving waiting. Moving the folder or deleting
+  all data now stops before changing anything and names the files to
+  download first.
+
+## Changed
+
+- **The privacy policy names every place data goes**, including the address
+  an image provider returns for collecting a picture and your cloud service
+  when you agree to a download, and says that reference images go to image
+  providers and that every request carries your IP address. It went live on
+  the site on 2026-10-17, ahead of this release.
+- **The dependency audit makes one exception**, for three advisories in the
+  `zip` crate about unpacking archives onto disk, which Sovatela never does.
+  The security page explains it.
+
+## Corrected
+
+- The security page said the key check runs once at launch and is the only
+  automatic call; it runs whenever the chat view opens, and is the only one
+  by default. It said keys are used only inside the app; the optional
+  terminal integration uses the Scaleway key too.
+
+[QA-1.10.5.md](QA-1.10.5.md) records verification. Windows and Linux installers
+remain unsigned and experimental, with no clean-machine lifecycle test and no
+measured real-photo OCR accuracy. Existing
+[accessibility limitations](https://sovatela.eu/accessibility) remain disclosed.
+
+---
+
 # Release notes — Sovatela 1.10.4
 
 Release date: 2026-10-16 · [All releases](https://github.com/jacobla1/sovatela/releases)

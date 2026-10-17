@@ -84,8 +84,24 @@ jobs:
       # Everything in Cargo.lock ships inside the binary. Warnings for
       # unmaintained crates are not failures: the gtk-rs GTK3 bindings are
       # pulled in by Tauri's Linux stack and cannot be moved from here.
+      #
+      # The project's only ignored advisories, decided by the owner on
+      # 2026-10-17. RUSTSEC-2026-0367, -0368 and -0369 are all in `zip`'s
+      # `ZipArchive::extract` / `ZipStreamReader::extract`, which unpack an
+      # archive onto disk and mishandle symbolic links and permission bits.
+      # Sovatela never calls them: it opens archives in memory and reads
+      # entries by name, and it writes archives with `ZipWriter`. Every
+      # version before 9.0.0 is affected, and 9.0.0 to 9.0.4 were one to eight
+      # days old when these appeared, seven major versions on; that upgrade is
+      # to be revisited once 9.x has been out two weeks (after 2026-10-30).
+      # `tests/releaseHygiene.test.js` fails if the app calls an extract
+      # function, or if anything is added to this list.
       - name: Rust dependencies
-        run: cargo audit --file src-tauri/Cargo.lock
+        run: >-
+          cargo audit --file src-tauri/Cargo.lock
+          --ignore RUSTSEC-2026-0367
+          --ignore RUSTSEC-2026-0368
+          --ignore RUSTSEC-2026-0369
 
       - name: Formatting
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --check

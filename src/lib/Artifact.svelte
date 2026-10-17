@@ -1,9 +1,14 @@
 <script>
   // Renders a model-generated visual artifact in a locked-down iframe.
-  // Security: sandbox="allow-scripts" WITHOUT allow-same-origin means the frame
-  // is a unique opaque origin — it cannot touch the parent window, Tauri's
-  // invoke(), localStorage, or the keychain. The CSP additionally blocks all
-  // external network access, so artifacts stay self-contained and private.
+  // Security: sandbox="allow-scripts" WITHOUT allow-same-origin makes the frame
+  // a unique opaque origin, so it cannot touch the parent window or its
+  // storage. Tauri's own script is not injected into the frame, so invoke()
+  // does not exist there. WebKit does expose the app's native message handler
+  // to every frame, and Tauri counts this app's `artifact://` scheme as local;
+  // what refuses a message from here is Tauri's per-launch invoke key, which
+  // the frame cannot read. One barrier, measured by qa/artifact-ipc (see
+  // SECURITY.md). The CSP additionally blocks all external network access, so
+  // artifacts stay self-contained and private.
   import { invoke } from "@tauri-apps/api/core";
   import DocPreview from "./DocPreview.svelte";
 

@@ -65,8 +65,10 @@
 //! scratch, and permits named compute services required by Vision. The parent
 //! owns scratch cleanup, including after a timeout or crash. Native framework
 //! initialization before main and the permitted services are outside that
-//! installation boundary. Windows and Linux currently retain the process and
-//! resource limits only; they do not gain a privilege boundary from this module.
+//! installation boundary. On Windows, with the default `windows-confinement`
+//! feature, the parent starts the helper inside an AppContainer instead (see
+//! `doc_confinement_windows`). Linux retains the process and resource limits
+//! only, with no privilege boundary.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::io::{Read, Write};

@@ -1,5 +1,45 @@
 # Changelog
 
+## 1.10.5 — 2026-10-17
+
+Fixes for what an independent review of 1.10.4 found before its announcement.
+Nothing here was known to have been exploited.
+
+- An imported chat can no longer make the window do unbounded work. The
+  import check did not look at a reply's research steps, and the window drew
+  whatever was there, so a tiny crafted file could claim a billion steps. The
+  importer refuses steps that are not a short list of short lines, and the
+  window draws only a real list, capped. Found by an independent review of
+  1.10.4.
+- A history folder in iCloud Drive, or another cloud service, is now covered
+  by the cloud-placeholder check everywhere it is read. Saving, moving the
+  folder, deciding which files in it are the app's, and deleting all data read
+  history files directly, so an evicted file could leave saving waiting.
+  Moving the folder or deleting all data now refuses before changing anything,
+  and names the files to download first. *Corrected:* 1.10.4's notes said a
+  history folder in iCloud Drive was covered; those four reads were not.
+  Found by the same review.
+- The privacy policy names every place data goes. It listed three
+  destinations besides the AI providers and missed two: the address an image
+  provider returns for collecting a finished picture, and your cloud service
+  when you agree to download a file from it. It also said image providers
+  receive prompts, where reference images you attach go too, and now says
+  that every request carries your IP address. Published on the site on
+  2026-10-17, ahead of this release. Found by the same review.
+- Corrected, from the same review: the security page said the key check runs
+  once at launch and is the only automatic call (it runs whenever the chat
+  view opens, and is the only one *by default*), and that keys are used only
+  in the Rust backend (the optional terminal integration's launcher uses the
+  Scaleway key too). Four code comments described behaviour the code no
+  longer has: Windows document confinement, why an artifact cannot reach the
+  app, a proxy probe that was removed, and a shared client that no longer
+  follows redirects.
+- The dependency audit ignores three advisories against `zip`
+  (RUSTSEC-2026-0367 to 0369), the project's first exception. All three are
+  about unpacking an archive onto disk, which Sovatela never does; a test
+  fails if it ever starts. Upgrading to `zip` 9, which fixes them, waits until
+  that version has been out two weeks.
+
 ## 1.10.4 — 2026-10-16
 
 The rest of what an independent review of 1.10.2 found, and files that a cloud

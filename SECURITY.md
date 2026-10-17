@@ -37,9 +37,11 @@ service name `com.anaubi.sovatela`. They are:
 - never written to a configuration file,
 - never returned to the user interface after saving — *Settings* shows the last
   five characters and nothing more, and no command hands a stored key back,
-- read and used only in the Rust backend. A key you type necessarily passes
-  through the interface once, on its way to being stored; after that it does
-  not travel back,
+- read and used, by the app itself, only in the Rust backend. A key you type
+  necessarily passes through the interface once, on its way to being stored;
+  after that it does not travel back. The optional terminal integration is the
+  exception: its launcher and local proxy use your Scaleway key too, as
+  *Terminal access* below describes,
 - sent only to the provider they belong to. **Until 1.10.1 this did not fully
   hold for a Black Forest Labs key**, which could follow a redirect from BFL's
   endpoint to another host — see the security history below.
@@ -60,7 +62,7 @@ Everything the app can contact, and when:
 
 | When | Where | What is sent |
 | --- | --- | --- |
-| **At launch, automatically** | Your Scaleway endpoint — `GET /models` | Your Scaleway key. This is the connection dot in the corner: it asks whether the key still works, and nothing else. It is the only automatic call in the app |
+| **Automatically, when the chat view opens** (at launch, and again after leaving Settings) | Your Scaleway endpoint — `GET /models` | Your Scaleway key. This is the connection dot in the corner: it asks whether the key still works, and nothing else. It is the only automatic call by default; the other is the launch version check below, if you switch it on |
 | While you use it | The providers you configured — chat, vision, search, image generation | What you asked for |
 | After an image is generated | A delivery address the image provider returns, which is not the address you configured | Nothing but the request for your own image |
 | *Settings → About →* **Check for updates** | `https://sovatela.eu/version.json` | No query string, no account, and nothing this app knows about you or your machine — not even which version you are on. The request itself is unavoidable: that page is hosted by GitHub, which sees your IP address the way any website does. Only on a press |
@@ -424,8 +426,14 @@ that can be run. A new file is created without permission to run, as before.
 
 ### Third-party code
 
-Dependencies are pinned via lockfiles (`package-lock.json`, `Cargo.lock`). All
-bundled components and their licences are enumerated in
+Dependencies are pinned via lockfiles (`package-lock.json`, `Cargo.lock`), and
+`cargo audit` runs on every change and weekly. **One exception is made, and it
+is the only one:** three advisories published on 2026-10-09 and 10 against the
+`zip` crate (RUSTSEC-2026-0367, -0368, -0369) concern unpacking an archive onto
+disk, which Sovatela never does; it reads documents in memory and writes them
+with `zip`'s writer, and a test fails if that changes. The fixed `zip` 9 was
+days old and seven major versions on; the upgrade is due once it has settled.
+All bundled components and their licences are enumerated in
 [`THIRD-PARTY-LICENSES.md`](THIRD-PARTY-LICENSES.md).
 
 **Terminal access is the exception, and it is opt-in.** Setting up
@@ -758,6 +766,19 @@ than filed away:
     *Network*); and a link is now opened exactly as it was checked, since the
     address parser and the system's opener read tabs, newlines and
     backslashes differently.
+- **Found by an independent review of 1.10.4 and fixed in 1.10.5:**
+  - **An imported chat could make the window do unbounded work.** The import
+    check did not look at a reply's research steps, and the window drew
+    whatever was there: a 100-byte file claiming a billion steps asked for a
+    billion rows when the chat was opened. Low: it needs the user to import a
+    file someone sent them, and nothing is read or sent. The importer now
+    refuses steps that are not a short list of short lines, and the window
+    draws only a real, capped list.
+  - **Four history reads did not check for cloud placeholders** (see
+    *Workspace* and the CHANGELOG): saving, moving a history folder, deciding
+    which files are ours, and deleting all data. A history folder in iCloud
+    Drive with evicted files could leave saving waiting; moving or deleting it
+    now refuses before changing anything and names the files to download.
 - **Accessibility defects**, stated rather than glossed —
   [Accessibility statement](docs/ACCESSIBILITY.md)
 - **Security and robustness reviews** (July 2026) and the mitigation plan that

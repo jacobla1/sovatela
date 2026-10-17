@@ -1103,3 +1103,24 @@ describe("the import rules the spec describes are the ones the code applies", ()
     );
   });
 });
+
+// An independent review of 1.10.4 found the privacy policy naming three
+// non-provider destinations and "image prompts" only, while SECURITY.md and the
+// code also have the image delivery address, consented cloud downloads, and
+// reference images sent to image providers. The policy is the page people check.
+describe("the privacy policy names every destination SECURITY.md does", () => {
+  const policy = readFileSync(join(import.meta.dirname, "../docs/PRIVACY.md"), "utf8");
+  it("lists the image delivery address and cloud downloads", () => {
+    expect(policy).toMatch(/delivery address your image provider\s+returns/);
+    expect(policy).toMatch(/your cloud service/);
+    expect(policy).not.toMatch(/Three destinations are not providers/);
+    expect(policy).not.toMatch(/goes to two places/);
+  });
+  it("says reference images go to the image provider", () => {
+    const row = policy.split("\n").find((l) => l.startsWith("| Your image provider"));
+    expect(row).toMatch(/reference images/);
+  });
+  it("says every request carries the IP address", () => {
+    expect(policy).toMatch(/your IP address and the time/);
+  });
+});

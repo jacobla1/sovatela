@@ -1228,8 +1228,9 @@ fn bfl_polling_allowed(url: &str) -> bool {
 /// A client for endpoints the user configured, which applies the transport rule
 /// to every redirect hop as well as to the address itself.
 ///
-/// The shared client follows redirects, and checking only the configured
-/// address left the hop unexamined: an endpoint reached over HTTPS could answer
+/// The shared client followed redirects until 1.10.1 (it refuses them now,
+/// since GHSA-h696-pjhx-m886), and checking only the configured address left
+/// the hop unexamined: an endpoint reached over HTTPS could answer
 /// 302 and send the request onward in the clear. `reqwest` strips
 /// `Authorization` when a redirect crosses to a different host *or port*, which
 /// covers an ordinary `https://host` → `http://host` downgrade (443 and 80
@@ -2080,6 +2081,10 @@ fn move_one(path: &std::path::Path, dest: &std::path::Path) -> Result<(), String
 /// The `updated_at` a conversation file carries, for deciding which of two
 /// copies of the same conversation is the current one.
 fn conversation_updated_at(path: &std::path::Path) -> String {
+    // Unknown rather than waited for. See `evicted_history_files`.
+    if is_cloud_placeholder(path) {
+        return String::new();
+    }
     std::fs::read_to_string(path)
         .ok()
         .and_then(|t| serde_json::from_str::<Conversation>(&t).ok())
@@ -2164,6 +2169,12 @@ fn clear_staging(dir: &std::path::Path, staged: &[std::path::PathBuf]) -> Option
 /// left untouched and reported.
 fn move_our_history(from: &std::path::Path, to: &std::path::Path) -> HistoryMove {
     let mut out = HistoryMove::default();
+    let evicted = evicted_history_files(from);
+    if !evicted.is_empty() {
+        out.failures
+            .push(evicted_history_refusal("Nothing was moved", &evicted));
+        return out;
+    }
     let (files, ids) = owned_history_files(from);
     let assets = owned_asset_files(from, &ids);
 
@@ -2354,6 +2365,11 @@ fn conversation_id_of(path: &std::path::Path) -> Option<String> {
         return None;
     }
     let stem = path.file_stem()?.to_str()?;
+    // Not read, so not claimed. Callers that must not leave a chat behind
+    // refuse first (`evicted_history_files`).
+    if is_cloud_placeholder(path) {
+        return None;
+    }
     let text = std::fs::read_to_string(path).ok()?;
     // Deserialize as the whole conversation, not the header. The header needs
     // only an id and a title, and plenty of unrelated files have both — a
@@ -2371,6 +2387,62 @@ fn conversation_id_of(path: &std::path::Path) -> Option<String> {
         return None;
     }
     (stem == sanitize_id(&convo.id).ok()?).then_some(convo.id)
+}
+
+/// Files in a history folder whose contents a cloud service has moved off the
+/// Mac: the conversations and index, and the image assets.
+///
+/// The independent review of 1.10.4 (F3) found that the cloud-placeholder
+/// check reached the reads that open a chat and list the sidebar, but not the
+/// ones that move a history folder, decide which files are ours, and delete
+/// them. Those read every file, and a read of an evicted one can wait for a
+/// download for ever. Skipping such a file instead would be worse in two of
+/// them: a move would leave that chat behind, and "delete all data" would
+/// report success with it still there. So both refuse before changing
+/// anything, naming what to download.
+fn evicted_history_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for folder in [dir.to_path_buf(), assets_dir_of(dir)] {
+        if let Ok(entries) = std::fs::read_dir(&folder) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() && is_cloud_placeholder(&path) {
+                    out.push(path);
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Why a history operation was refused over `evicted_history_files`.
+fn evicted_history_refusal(what: &str, evicted: &[std::path::PathBuf]) -> String {
+    let names: Vec<String> = evicted
+        .iter()
+        .take(3)
+        .map(|p| format!("\u{201c}{}\u{201d}", file_name_of(p)))
+        .collect();
+    let more = evicted.len().saturating_sub(names.len());
+    format!(
+        "{what}: {} {} in the history folder {} stored in iCloud or another cloud service, \
+         and {} not on this Mac ({}{}). Download them in Finder (Control-click the folder \
+         and choose Download Now), then try again.",
+        evicted.len(),
+        if evicted.len() == 1 { "file" } else { "files" },
+        if evicted.len() == 1 { "is" } else { "are" },
+        if evicted.len() == 1 {
+            "its contents are"
+        } else {
+            "their contents are"
+        },
+        names.join(", "),
+        if more > 0 {
+            format!(", and {more} more")
+        } else {
+            String::new()
+        },
+    )
 }
 
 /// Every file in `dir` that belongs to this app, and the ids they carry.
@@ -2397,10 +2469,13 @@ fn owned_history_files(dir: &std::path::Path) -> (Vec<std::path::PathBuf>, Vec<S
     // proves nothing — an unrelated index.json listing someone else's items
     // would have been taken.
     let index = dir.join(CONV_INDEX_FILE);
-    let index_is_ours = std::fs::read_to_string(&index)
-        .ok()
-        .and_then(|t| serde_json::from_str::<Vec<ConversationMeta>>(&t).ok())
-        .is_some_and(|entries| !entries.is_empty() && entries.iter().all(|e| ids.contains(&e.id)));
+    let index_is_ours = !is_cloud_placeholder(&index)
+        && std::fs::read_to_string(&index)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Vec<ConversationMeta>>(&t).ok())
+            .is_some_and(|entries| {
+                !entries.is_empty() && entries.iter().all(|e| ids.contains(&e.id))
+            });
     if index_is_ours {
         files.push(index);
     }
@@ -2467,9 +2542,9 @@ async fn fetch_as_data_url(url: &str, trusted_origin: Option<&str>) -> Result<St
     let mut current =
         reqwest::Url::parse(url.trim()).map_err(|_| "invalid image URL".to_string())?;
 
-    // Follow redirects by hand, checking every hop. The shared client follows
-    // them automatically, and until now only the first address was ever
-    // vetted — so a service could pass the check and then redirect to
+    // Follow redirects by hand, checking every hop. The shared client used to
+    // follow them automatically (it refuses them since 1.10.1), and until then
+    // only the first address was ever vetted — so a service could pass the check and then redirect to
     // localhost, a LAN host, or a cloud metadata address, and this app would
     // fetch it. The same page-reader logic is used here for the same reason:
     // whoever chose the address is not the user.
@@ -8115,7 +8190,11 @@ fn chosen_title(dir: &std::path::Path, id: &str, safe: &str) -> Option<String> {
     if let Some(m) = index.iter().find(|m| m.id == id) {
         return named(&m.title, m.title_custom);
     }
-    let s = std::fs::read_to_string(dir.join(format!("{safe}.json"))).ok()?;
+    let path = dir.join(format!("{safe}.json"));
+    if is_cloud_placeholder(&path) {
+        return None;
+    }
+    let s = std::fs::read_to_string(path).ok()?;
     let h: ConversationHeader = serde_json::from_str(&s).ok()?;
     named(&h.title, h.title_custom)
 }
@@ -8429,6 +8508,13 @@ fn import_attachment_problem(a: &serde_json::Value) -> Option<String> {
     }
 }
 
+/// The most research steps one imported message may carry, and the longest
+/// one. A reply has at most `MAX_ROUNDS` rounds of `MAX_TOOL_CALLS_PER_ROUND`
+/// calls and a few status lines, so real chats stay in the hundreds and the
+/// lines are short.
+const MAX_IMPORT_STEPS: usize = 1000;
+const MAX_IMPORT_STEP_CHARS: usize = 2000;
+
 /// Read an untrusted conversation file into one this app is willing to store.
 ///
 /// The id and any project are dropped by the caller, not here: this answers
@@ -8506,6 +8592,35 @@ fn validate_imported_conversation(v: &serde_json::Value) -> Result<(), String> {
             }
             Some(_) => {
                 return Err("that file has a message whose attachments are not a list".into())
+            }
+        }
+        // `steps` is the trail of a research turn, drawn under the reply. It
+        // was not checked at all, and the interface loops over whatever it is:
+        // `{"length": 1000000000}` in a 100-byte file asked for a billion
+        // rows when the chat was opened (independent review of 1.10.4, F1).
+        match m.get("steps") {
+            None | Some(serde_json::Value::Null) => {}
+            Some(serde_json::Value::Array(steps)) => {
+                if steps.len() > MAX_IMPORT_STEPS {
+                    return Err(format!(
+                        "that file has a message with {} research steps, more than the \
+                         {MAX_IMPORT_STEPS} a chat from this app ever has",
+                        steps.len()
+                    ));
+                }
+                if steps.iter().any(|s| {
+                    !s.as_str()
+                        .is_some_and(|s| s.chars().count() <= MAX_IMPORT_STEP_CHARS)
+                }) {
+                    return Err(
+                        "that file has a message whose research steps are not short lines of \
+                         text"
+                            .into(),
+                    );
+                }
+            }
+            Some(_) => {
+                return Err("that file has a message whose research steps are not a list".into())
             }
         }
     }
@@ -9171,6 +9286,13 @@ async fn delete_all_data(app: tauri::AppHandle) -> Result<(), String> {
              want the app to own it.",
             dir.display()
         ));
+    }
+    // Which files are ours is decided by reading them, and an evicted one
+    // cannot be read without a download. Skipping it would report "deleted"
+    // with that chat still there. See `evicted_history_files`.
+    let evicted = evicted_history_files(&dir);
+    if !evicted.is_empty() {
+        return Err(evicted_history_refusal("Nothing was deleted", &evicted));
     }
     // Delete only what this app wrote. Through 1.5.1 this removed every
     // `*.json` in the folder and then `remove_dir_all` on `assets/` — in a
@@ -10507,11 +10629,18 @@ mod tests {
         let workspace = include_str!("workspace.rs").replace("\r\n", "\n");
         // Assembled so that this test's own text is not a match.
         let check = concat!("is_cloud_", "placeholder(");
-        let reads: [(&str, &str); 8] = [
+        let reads: [(&str, &str); 13] = [
             (&lib, "fn read_to_string_capped("),
             (&lib, "fn bring_chosen_file_local("),
             (&lib, "fn read_picked_attachment("),
             (&lib, "fn read_conv_index("),
+            // F3 of the independent review of 1.10.4: these four read history
+            // files directly, and the first version of this list missed them.
+            (&lib, "fn conversation_updated_at("),
+            (&lib, "fn conversation_id_of("),
+            (&lib, "fn owned_history_files("),
+            (&lib, "fn chosen_title("),
+            (&lib, "fn evicted_history_files("),
             (&lib, "fn list_conversations("),
             (&lib, "fn inline_assets("),
             (&workspace, "pub fn read_bytes("),
@@ -10525,6 +10654,23 @@ mod tests {
             assert!(
                 body.contains(check),
                 "{needle} reads a file without checking whether its contents are on this Mac"
+            );
+        }
+        // Moving a history folder and deleting all data must refuse before
+        // they read anything, or they would leave an evicted chat behind.
+        let refuse_first = concat!("evicted_history_", "files(");
+        for op in ["fn move_our_history(", "async fn delete_all_data("] {
+            let at = lib.find(op).unwrap_or_else(|| panic!("{op} is gone"));
+            let body = &lib[at..at + lib[at..].find("\n}\n").unwrap()];
+            let check = body
+                .find(refuse_first)
+                .unwrap_or_else(|| panic!("{op} does not check"));
+            let scan = body
+                .find("owned_history_files(")
+                .expect("no ownership scan");
+            assert!(
+                check < scan,
+                "{op} reads files before refusing evicted ones"
             );
         }
         // A file the person has just chosen is offered for download rather
@@ -10564,6 +10710,22 @@ mod tests {
                 "{caller} no longer reads through read_to_string_capped"
             );
         }
+    }
+
+    #[test]
+    fn a_history_folder_on_this_mac_has_nothing_evicted() {
+        let dir = temp_dir("evicted");
+        std::fs::create_dir_all(assets_dir_of(&dir)).unwrap();
+        std::fs::write(dir.join("a.json"), "{}").unwrap();
+        std::fs::write(assets_dir_of(&dir).join("a-0123456789abcdef"), "x").unwrap();
+        assert!(evicted_history_files(&dir).is_empty());
+        let m = evicted_history_refusal(
+            "Nothing was deleted",
+            &[dir.join("one.json"), dir.join("two.json")],
+        );
+        assert!(m.starts_with("Nothing was deleted: 2 files"), "{m}");
+        assert!(m.contains("“one.json”, “two.json”"), "{m}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -10654,6 +10816,13 @@ mod tests {
         assert!(err.contains("stored in iCloud"), "{err}");
         let err = workspace::read_file(root, name).unwrap_err();
         assert!(err.contains("stored in iCloud"), "{err}");
+        // The history operations: an evicted file is found without reading
+        // it, and neither claimed nor dated.
+        let found = evicted_history_files(root);
+        assert!(found.contains(&path), "{} was not found", path.display());
+        assert!(evicted_history_refusal("Nothing was moved", &found).contains("Download Now"));
+        assert_eq!(conversation_id_of(&path), None);
+        assert_eq!(conversation_updated_at(&path), "");
         // The paperclip: each way of not downloading is reported, and the
         // file is never read.
         for (outcome, says) in [
@@ -15769,6 +15938,37 @@ mod tests {
         .unwrap()
     }
 
+    /// F1 of the independent review of 1.10.4: `steps` was not checked, and
+    /// the interface loops over whatever it is.
+    #[test]
+    fn research_steps_must_be_a_short_list_of_short_lines() {
+        let with_steps = |steps: &str| {
+            import_json(&format!(
+                r#"[{{"role":"user","text":"q"}},{{"role":"assistant","text":"a","steps":{steps}}}]"#
+            ))
+        };
+        for ok in [r#"["🔎 Searching","📄 Reading"]"#, "[]", "null"] {
+            assert!(
+                validate_imported_conversation(&with_steps(ok)).is_ok(),
+                "{ok} was refused"
+            );
+        }
+        let many = format!("[{}]", vec!["\"s\""; MAX_IMPORT_STEPS + 1].join(","));
+        let long = format!("[\"{}\"]", "x".repeat(MAX_IMPORT_STEP_CHARS + 1));
+        for bad in [
+            r#"{"length":1000000000,"0":"x"}"#.to_string(),
+            r#"{"length":4294967296}"#.to_string(),
+            r#""a string""#.to_string(),
+            r#"["ok",5]"#.to_string(),
+            many,
+            long,
+        ] {
+            let err = validate_imported_conversation(&with_steps(&bad))
+                .expect_err(&format!("{} was accepted", &bad[..bad.len().min(40)]));
+            assert!(err.contains("research steps"), "{err}");
+        }
+    }
+
     #[test]
     fn an_ordinary_exported_chat_imports() {
         let v = import_json(
@@ -17337,8 +17537,8 @@ fn claude_glm_launcher_path() -> Option<std::path::PathBuf> {
     return Some(home.join("bin").join("claude-glm.cmd"));
 }
 
-/// A live proxy answers on 127.0.0.1:4000; a quick TCP probe tells the user it's
-/// already running.
+/// Whether the terminal integration's proxy is running: always `false` now,
+/// and makes no probe. Kept so an older interface build does not break.
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 fn claude_glm_proxy_running() -> bool {
     // Always false, and the field is kept only so an older interface build does

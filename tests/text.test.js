@@ -271,3 +271,28 @@ describe("the link-scheme pattern", () => {
     }
   });
 });
+
+// F1 of the independent review of 1.10.4: an imported chat's `steps` was not
+// checked, and the view looped over whatever it was.
+import { stepsOf, MAX_SHOWN_STEPS } from "../src/lib/text.js";
+describe("a message's research steps", () => {
+  it("are drawn only from a real array of strings", () => {
+    expect(stepsOf({ steps: ["🔎 Searching", "📄 Reading"] })).toEqual(["🔎 Searching", "📄 Reading"]);
+    expect(stepsOf({ steps: { length: 1_000_000_000, 0: "x" } })).toEqual([]);
+    expect(stepsOf({ steps: "a string" })).toEqual([]);
+    expect(stepsOf({ steps: ["ok", 5, { a: 1 }, null] })).toEqual(["ok"]);
+    expect(stepsOf({})).toEqual([]);
+    expect(stepsOf(null)).toEqual([]);
+  });
+
+  it("are capped", () => {
+    const many = Array.from({ length: MAX_SHOWN_STEPS + 50 }, (_, i) => `step ${i}`);
+    expect(stepsOf({ steps: many })).toHaveLength(MAX_SHOWN_STEPS);
+  });
+
+  it("are read only through stepsOf in the chat view", () => {
+    const chat = readFileSync(join(import.meta.dirname, "../src/lib/Chat.svelte"), "utf8");
+    const template = chat.slice(chat.indexOf("</script>"));
+    expect(template, "the template reads m.steps directly again").not.toMatch(/m\.steps/);
+  });
+});

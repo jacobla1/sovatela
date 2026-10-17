@@ -160,6 +160,20 @@ export function parseParts(text) {
   return parts;
 }
 
+// ---------- A message's research steps ----------
+// The steps a research turn took, as the chat view may draw them. `steps`
+// reaches the view from saved and imported chats as well as from the stream,
+// and an array-like object such as `{"length": 1000000000}` made its loops ask
+// for a billion rows (independent review of 1.10.4, F1). The importer refuses
+// one now; this is the second line, for a chat that arrives some other way:
+// only a real array of strings, and no more than an importer would accept.
+export const MAX_SHOWN_STEPS = 1000;
+export function stepsOf(m) {
+  return Array.isArray(m?.steps)
+    ? m.steps.slice(0, MAX_SHOWN_STEPS).filter((s) => typeof s === "string")
+    : [];
+}
+
 // ---------- Markdown rendering (assistant text only) ----------
 // Fenced code blocks never reach this — parseParts extracts them as
 // artifacts first — so this handles prose: headings, lists, inline code,

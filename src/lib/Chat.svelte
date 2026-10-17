@@ -2,7 +2,7 @@
   import { untrack } from "svelte";
   import { knownProjectId } from "./projects.js";
   import { invoke, Channel } from "@tauri-apps/api/core";
-    import { cleanText, hasVisibleText, parseParts, renderMd } from "./text.js";
+    import { cleanText, hasVisibleText, parseParts, renderMd, stepsOf } from "./text.js";
   import Artifact from "./Artifact.svelte";
   import Icon from "./Icon.svelte";
   import History from "./History.svelte";
@@ -2182,20 +2182,20 @@
               <Icon name="zap" size={11} /> Quick · lower accuracy
             </div>
           {/if}
-          {#if m.steps && m.steps.length > 1}
+          {#if stepsOf(m).length > 1}
             <!-- Multi-step research: keep the whole trail, collapsed once done. -->
             {#if sending && mi === messages.length - 1}
               <!-- Visible only. The announcer above carries these to a screen reader,
                    so a live region here would say each step twice. -->
               <div class="agent-steps">
-                {#each m.steps as step}
+                {#each stepsOf(m) as step}
                   <div class="agent-step">{step}</div>
                 {/each}
               </div>
             {:else}
               <details class="agent-steps-done">
-                <summary>{m.steps.length} steps</summary>
-                {#each m.steps as step}
+                <summary>{stepsOf(m).length} steps</summary>
+                {#each stepsOf(m) as step}
                   <div class="agent-step">{step}</div>
                 {/each}
               </details>
@@ -2208,7 +2208,7 @@
                  turn keeps a label instead of going silent once its status
                  clears — the bubble must never be blank while we're working. -->
             <div class="msg-status">
-              {m.steps?.[m.steps.length - 1] ?? "🤔 Working on it…"}
+              {stepsOf(m).at(-1) ?? "🤔 Working on it…"}
             </div>
           {/if}
           {#if m.attachments && m.attachments.length}
