@@ -41,8 +41,16 @@ runtime from the same OS credential store the Sovatela desktop app uses (item
 `com.anaubi.sovatela` / `secrets`) — the macOS **Keychain**, Windows **Credential
 Manager**, or Linux **Secret Service**. Set it once in the app
 (Settings → Scaleway API key) and both the desktop app and `claude-glm` use it;
-the key is never written to disk. Your OS may prompt once to allow access (on
-macOS, click **Always Allow**).
+the key is never written to disk.
+
+**On macOS, click Allow, not Always Allow, when the launcher asks to read the
+item.** The prompt names `security`, the system tool the launcher uses. The
+item holds every key you have stored in Sovatela, and *Always Allow* lets any
+program you run read all of them without asking, including the agent
+`claude-glm` starts. *Allow* is asked again at each launch. Earlier versions
+of this page said to click Always Allow. If you did, remove the grant: open
+**Keychain Access**, find `com.anaubi.sovatela`, open *Access Control*,
+select `security` and click **−**.
 
 ### Optional: a separate key, on its own Scaleway Project
 

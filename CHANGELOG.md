@@ -7,17 +7,20 @@ The first published release with the fixes from an independent review of
 them.
 
 - A refusal is shown, not only spoken. A chat file the importer refused, an
-  export that failed, a chat that could not be opened or deleted (such as one
-  whose file iCloud has moved off the Mac), and a failed link, image save,
-  copy or stop now put the reason in a bar at the top of the chat window,
-  which stays until dismissed. Import and export failures had gone only to
+  export that failed, a chat that could not be opened or deleted, and a
+  failed link, image save, copy or stop now put the reason in a bar at the
+  top of the chat window, which stays until dismissed. Import and export failures had gone only to
   the screen-reader announcer and the rest only to the developer console, so
   for most people the click seemed to do nothing. A project that could not be
   saved or deleted says so in its panel, with the edits still there; a
   document preview or artifact that could not be shown says why in its
   place; and in Settings, the update-check switch, memories, *Show folder*
   and *Reset tally* report a failure beside the control. Found by the
-  installed-build check of the 1.10.5 draft.
+  installed-build check of the 1.10.5 draft. *Corrected 2026-10-18:* this
+  entry gave a chat whose file iCloud has moved off the Mac as one whose
+  delete now reports its reason. Deleting such a chat reads its file first,
+  which waits for the download instead of refusing (independent review of
+  1.10.6).
 
 ## 1.10.5 — 2026-10-17 (tagged, not published)
 
@@ -37,13 +40,16 @@ still name the commit they were made for. These changes first reach users in
   window draws only a real list, capped. Found by an independent review of
   1.10.4.
 - A history folder in iCloud Drive, or another cloud service, is now covered
-  by the cloud-placeholder check everywhere it is read. Saving, moving the
+  by the cloud-placeholder check when saving, moving the folder, sorting its
+  files and deleting all data. Saving, moving the
   folder, deciding which files in it are the app's, and deleting all data read
   history files directly, so an evicted file could leave saving waiting.
   Moving the folder or deleting all data now refuses before changing anything,
   and names the files to download first. *Corrected:* 1.10.4's notes said a
   history folder in iCloud Drive was covered; those four reads were not.
-  Found by the same review.
+  Found by the same review. *Corrected 2026-10-18:* this entry said
+  "everywhere it is read". Searching chats and deleting one still read
+  without the check (independent review of 1.10.6).
 - The privacy policy names every place data goes. It listed three
   destinations besides the AI providers and missed two: the address an image
   provider returns for collecting a finished picture, and your cloud service

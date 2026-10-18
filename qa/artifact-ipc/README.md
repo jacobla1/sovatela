@@ -2,7 +2,9 @@
 
 Artifacts (charts and small apps the model writes) run in a sandboxed frame
 under a strict policy, designed so their code cannot reach Tauri's IPC bridge,
-the app's commands, the credential store, the disk or the network. That was
+the app's commands, the credential store, the disk or the network. The last
+does not hold: a preconnect still connects (found by the 1.10.6 review; this
+probe does not try one). That was
 checked in a running app once, for 1.6.0 on macOS. The 1.10.2 launch review
 asked for it to be checked on every release, against the installed build,
 because the automated tests (`tests/artifactSandbox.test.js`) check the frame's

@@ -184,7 +184,9 @@ endpoint for chat; see the Roadmap.
   project's instructions + files are assembled into a system prompt **on every
   send** — never stored inside the saved conversation, so they can't go stale.
 - **Artifacts** render in `<iframe sandbox="allow-scripts">` (no same-origin) +
-  a strict CSP — generated code cannot reach Tauri, the keychain, or the network.
+  a strict CSP — generated code cannot reach Tauri or the keychain, or load
+  anything from the network. It can still make the app open a connection to a
+  host it names (see [SECURITY.md](SECURITY.md#generated-code)).
 
 ## Project layout
 
@@ -376,10 +378,12 @@ Full index: [`docs/README.md`](docs/README.md).
 - Chat history, memory, and projects are stored **on the user's device** (or a
   folder they choose); nothing goes to the app's developer. Settings can
   **reveal the history folder** and **delete all stored data** in one step.
-- Artifacts run in an opaque-origin sandbox with a CSP that denies network,
-  storage and navigation: generated code cannot reach your files, this app, or
-  anything online. It is **not** isolated from the window's CPU and memory, so
-  code that loops forever can still make the app unresponsive — which is why
+- Artifacts run in an opaque-origin sandbox with a CSP that denies loading,
+  storage and navigation: generated code cannot reach your files or this app,
+  or load anything online. **It can make the app open a connection to a host
+  it names**, which can tell that host the artifact ran and carry what the
+  artifact holds in the name; run artifacts only from chats you trust. It is
+  **not** isolated from the window's CPU and memory, so code that loops forever can still make the app unresponsive — which is why
   nothing runs until you press *run* on the artifact.
 
 ## Roadmap

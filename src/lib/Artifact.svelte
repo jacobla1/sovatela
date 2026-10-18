@@ -7,8 +7,10 @@
   // to every frame, and Tauri counts this app's `artifact://` scheme as local;
   // what refuses a message from here is Tauri's per-launch invoke key, which
   // the frame cannot read. One barrier, measured by qa/artifact-ipc (see
-  // SECURITY.md). The CSP additionally blocks all external network access, so
-  // artifacts stay self-contained and private.
+  // SECURITY.md). The CSP additionally blocks every load from the network. It
+  // does not stop a <link rel="preconnect">: WebKit still looks the name up
+  // and opens a connection to it, which tells that host the artifact ran and
+  // can carry data in the name (found by the 1.10.6 review).
   import { invoke } from "@tauri-apps/api/core";
   import DocPreview from "./DocPreview.svelte";
 
@@ -158,7 +160,7 @@
   // A document fetched over a registered scheme is not a local scheme and
   // carries the policy it is served with. `sandbox="allow-scripts"` is
   // unchanged, so the frame is still an opaque origin that cannot reach the
-  // parent window, `invoke()`, the keychain or the network.
+  // parent window, `invoke()` or the keychain, or load from the network.
   let frameSrc = $state("");
   let frameError = $state("");
   $effect(() => {

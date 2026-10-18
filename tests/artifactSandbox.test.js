@@ -28,8 +28,9 @@ const artifactCsp = readFileSync(join(repo, "src-tauri/src/lib.rs"), "utf8")
   .replace(/\s+/g, " ")
   .trim();
 
-// SECURITY.md tells readers that model-generated code "cannot reach the Tauri
-// IPC bridge, the credential store, your filesystem, or the network", and
+// SECURITY.md tells readers that model-generated code cannot reach the Tauri
+// IPC bridge, the credential store or your filesystem, or load anything from
+// the network (it used to say "or the network", which a preconnect disproves), and
 // points at this component plus the window CSP as the evidence. Until now the
 // only thing standing behind that sentence was reading the source.
 //
@@ -93,7 +94,9 @@ describe("artifact frame is sandboxed against the app", () => {
     expect(el.getAttribute("src")).toMatch(/^(artifact:|http:\/\/artifact\.localhost)/);
   });
 
-  it("is served a deny-by-default CSP that permits no network of any kind", () => {
+  it("is served a deny-by-default CSP that permits no network load of any kind", () => {
+    // A load, not a connection: the policy does not cover a preconnect, which
+    // WebKit opens anyway (SECURITY.md, Generated code).
     // Read the policy the backend sends, rather than the copy in the document:
     // the header is what applies, and a header cannot be intersected away by
     // the embedder the way an inherited policy narrows a frame's own meta tag.

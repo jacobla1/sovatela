@@ -240,6 +240,94 @@ describe("high-risk promises match the implementation", () => {
     ).toEqual([]);
   });
 
+  // Every page said an artifact has no network. The 1.10.6 review showed it has
+  // one: a <link rel="preconnect"> makes WebKit open a connection to any host
+  // the artifact names, and the frame's CSP does not cover it. Nothing here
+  // can run WebKit, so the precondition is the absence of an engine-level
+  // block in the code. When one ships and is verified on an installed build,
+  // this sweep is forbidding a true statement and must be narrowed.
+  it("no tracked file says an artifact has no network", () => {
+    const rust = read("src-tauri/src/lib.rs");
+    expect(rust, "an engine-level block exists now; revisit this sweep").not.toMatch(
+      /WKContentRuleList|proxyConfigurations/,
+    );
+
+    const tracked = execFileSync("git", ["ls-files", "-z"], { cwd: repo, encoding: "utf8" })
+      .split("\0")
+      .filter((f) => /\.(md|svelte|js|mjs|rs|html)$/.test(f))
+      // The register lists these claims in order to correct them.
+      .filter((f) => f !== "tests/docPromises.test.js" && f !== "docs/release/REVIEW-1.10.6.md");
+
+    const about = /artifact|generated code|the frame/i;
+    // "No network load" and "no network call" are true of other things, and
+    // "cannot … load anything from the network" is the corrected wording.
+    const claims = [
+      /\bno network\b(?! (?:loads?|path|calls?))/gi,
+      /cannot reach(?:(?!load)[^.])*\b(?:the network|anything online)/gi,
+      /denies network/gi,
+      /blocks all (?:external )?network/gi,
+      /no network or filesystem access/gi,
+    ];
+
+    const offences = [];
+    for (const f of tracked) {
+      if (!existsSync(join(repo, f))) continue; // withheld from the public mirror
+      for (const paragraph of paragraphs(read(f))) {
+        if (CORRECTION.test(paragraph) || /does not hold|preconnect/i.test(paragraph)) continue;
+        for (const claim of claims) {
+          for (const m of paragraph.matchAll(claim)) {
+            // About an artifact, near the claim: a list flattened into one
+            // paragraph can mention artifacts three items away.
+            const near = paragraph.slice(Math.max(0, m.index - 200), m.index + 60);
+            if (about.test(near)) offences.push(`${f}: …${near.slice(-160)}`);
+          }
+        }
+      }
+    }
+    expect(
+      offences,
+      "these say an artifact has no network. It can make the app open a " +
+        "connection to a host it names (SECURITY.md, Generated code).",
+    ).toEqual([]);
+  });
+
+  // The launcher reads the whole credential-store item with /usr/bin/security,
+  // and four places told users to answer the prompt with Always Allow. That
+  // grant belongs to `security`, so it opens every stored key to any program,
+  // including the agent claude-glm starts (T1 in the 1.10.6 review). Always
+  // Allow for Sovatela itself is fine and is still advised; this looks only at
+  // paragraphs about the launcher.
+  it("nothing tells users to Always Allow the terminal launcher", () => {
+    const tracked = execFileSync("git", ["ls-files", "-z"], { cwd: repo, encoding: "utf8" })
+      .split("\0")
+      .filter((f) => /\.(md|svelte|js|mjs|rs|html|command|sh|ps1)$/.test(f))
+      .filter((f) => f !== "tests/docPromises.test.js" && f !== "docs/release/REVIEW-1.10.6.md");
+
+    const about = /claude-glm|launcher|`security`|\bterminal\b/i;
+    // Advice, not mention: the corrected text names Always Allow in order to
+    // say not to click it.
+    const advice = /(?:click|choose|approve[^.]*)\s+(?:\*\*|<strong>|")?Always Allow/i;
+    const warning = /not\s+(?:\*\*|<strong>|")?Always\s+Allow|Allow(?:\*\*|<\/strong>|")?,\s+not/i;
+
+    const offences = [];
+    for (const f of tracked) {
+      if (!existsSync(join(repo, f))) continue; // withheld from the public mirror
+      const text = read(f);
+      // Shell comments are paragraphs too, once the comment markers are gone.
+      const prose = /\.(command|sh|ps1)$/.test(f) ? text.replace(/^\s*#\s?/gm, "") : text;
+      for (const paragraph of paragraphs(prose)) {
+        if (!about.test(paragraph) || !advice.test(paragraph)) continue;
+        if (warning.test(paragraph) || CORRECTION.test(paragraph)) continue;
+        offences.push(`${f}: ${paragraph.trim().slice(0, 140)}`);
+      }
+    }
+    expect(
+      offences,
+      "these advise Always Allow for the launcher's keychain read. That grant " +
+        "lets any program read every stored key; advise Allow (SECURITY.md).",
+    ).toEqual([]);
+  });
+
   // The same page said an advisory had not been issued. One was.
   it("no document says the terminal finding was not issued as an advisory", () => {
     const security = read("SECURITY.md");

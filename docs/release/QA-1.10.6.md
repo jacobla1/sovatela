@@ -73,8 +73,15 @@ The review's conditions that this release does not settle:
       setup, a streamed reply, a local attachment and its warning by
       keyboard, reopened history, an expected refusal, the S4 probe, and each
       provider feature the announcement names.
-- [ ] Signing and notarization checked on the published `.dmg` by someone
-      other than the release session (`scripts/verify-notarization.sh`).
+- [x] Signing and notarization checked on the published `.dmg` by someone
+      other than the release session: the independent review of 1.10.6
+      (2026-10-17) ran `codesign`, `spctl` and `stapler` on the dmg and on the
+      installed app, and found the installed app byte-identical to the dmg's.
+
+That review returned **Go with conditions**. The announcement now waits for
+1.10.7, and every finding is tracked in
+[REVIEW-1.10.6.md](REVIEW-1.10.6.md), including the two items above that
+remain open.
 
 ## Release verification
 

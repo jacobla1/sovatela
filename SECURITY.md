@@ -69,7 +69,7 @@ Everything the app can contact, and when:
 | **At launch, only if you switch it on** | `https://sovatela.eu/version.json` | The same, and the same caveat. *Settings → About → Check for a new version when Sovatela starts* is off by default; enabling it makes this the second automatic call, and it is the only setting that adds one |
 | *Settings → Usage →* **Check for updated prices** | `raw.githubusercontent.com/jacobla1/sovatela/…/pricing.json` | The same — a static file, only on a press |
 | With **web search on**, during a search | Any public page the model decides to read | The request for that page. The address is chosen by the model, not by you — see below |
-| **Only when you agree**, after choosing a file whose contents are in the cloud | Your cloud service — iCloud Drive, or another service through macOS — via macOS | The request for that file. Sovatela asks first, naming the file, and macOS does the fetching; nothing from your conversations is sent, and the service learns that the file was downloaded to this Mac. Offered only for a file you just chose as an attachment, a template or a chat to import. A file the app reaches on its own (a workspace file the model asked for, or your history folder in iCloud Drive) is never fetched; it is treated as not there yet |
+| **Only when you agree**, after choosing a file whose contents are in the cloud | Your cloud service — iCloud Drive, or another service through macOS — via macOS | The request for that file. Sovatela asks first, naming the file, and macOS does the fetching; nothing from your conversations is sent, and the service learns that the file was downloaded to this Mac. Offered only for a file you just chose as an attachment, a template or a chat to import. A file the app reaches on its own (a workspace file the model asked for, or a chat in your history folder in iCloud Drive) is not fetched when it opens, lists or saves; it is treated as not there yet. **Two places in 1.10.6 still read without checking** (the independent review of 1.10.6 found them): searching chats reads every chat file, and deleting one reads it first for its title. On a chat whose file is only in the cloud, either asks macOS for it, which downloads it when online and waits when offline. Planned for 1.10.7 |
 
 **The page reader deserves stating plainly.** When web search is on, the model
 can decide to open a page it found, and that address is its choice. Injected
@@ -79,9 +79,15 @@ is pinned so a name cannot be re-pointed mid-request, and every redirect is
 re-checked (`vetted_ip` in `src-tauri/src/lib.rs`). In 1.10.3 and earlier a
 few IPv6 forms were not recognised as private: the deprecated site-local range
 `fec0::/10`, and the 6to4 (`2002::/16`) and Teredo (`2001::/32`) forms that
-carry an IPv4 address inside them; 1.10.4 refuses them, and gives a
-page 45 seconds in all, where before only each read had a limit. What is *not* constrained is which public site it reads. Turning
-web search off removes this entirely.
+carry an IPv4 address inside them; 1.10.4 refuses them, and puts a
+45-second limit on fetching a page in all, where before only each read had a
+limit. **That limit covers fetching, not reading.** This page said it gave a
+page 45 seconds in all; the independent review of 1.10.6 showed that turning
+a fetched page into text is not bounded by it. A page built to be slow to
+convert keeps the app working on it for longer, which a page near the 2 MiB
+cap can stretch to minutes, and a page nested deeply enough crashes the app.
+Fixing both is planned for 1.10.7. What is *not* constrained is which public
+site it reads. Turning web search off removes this entirely.
 
 **A third correction, on the same table.** Both update rows said the check
 sends "nothing". No *application* data is sent — no identifier, no version, no
@@ -288,10 +294,28 @@ confinement.
 
 Artifacts — charts, diagrams, small applications the model writes — render in an
 `<iframe sandbox="allow-scripts">` without `allow-same-origin`, under a strict
-Content-Security-Policy. That is designed to keep generated code away from the
-Tauri IPC bridge, the credential store, your filesystem and the network.
+Content-Security-Policy. That keeps generated code away from the Tauri IPC
+bridge, the credential store and your filesystem, and stops it loading
+anything. **It does not keep it off the network entirely**, and until
+2026-10-18 this page said it did.
 
-**Checked against the installed 1.10.3 on macOS, on 2026-10-16**, with the
+**An artifact can make the app open a connection to a host it names.** A
+`<link rel="preconnect">` in an artifact, written into the page or added by
+its script, makes WebKit look the name up and open a connection to it. The
+frame's policy does not cover that. Nothing is fetched, and nothing from the
+app goes with it; but the connection itself tells whoever runs that host that
+the artifact ran, and from what IP address. Anything the artifact holds can be
+spelled into the name it looks up, and that name goes to your DNS resolver and
+on to the name's own servers. An artifact holds what the model wrote into it,
+which can include text from your conversation. The independent review of
+1.10.6 found this and confirmed it on the installed app, with a local
+listener; `dns-prefetch` and `prefetch` connected nothing, and every route
+that navigates stayed closed. Run artifacts only from chats you trust, which
+includes a chat file someone sent you. Windows has not been checked, and
+WebView2 most likely behaves the same. Closing it is planned for 1.10.7.
+
+**Checked against the installed 1.10.3 on macOS, on 2026-10-16**, and again
+by the independent review on the installed 1.10.6 on 2026-10-17, with the
 probe in `qa/artifact-ipc/` (a chat to import whose artifact tries every route
 there is and asks the app to open a local address for each, so that a local
 listener proves any route that worked). No route reached a command, and the
@@ -300,7 +324,8 @@ listener received nothing. In detail:
 - None of Tauri's objects exists in the frame, and the window around it cannot
   be read (`SecurityError`).
 - The app's own route, a request to `ipc://localhost`, is blocked by the
-  frame's policy, and so is the network.
+  frame's policy, and so is every request to load something from the network.
+  This probe does not try a preconnect; see above for what one does.
 - **One route is open, and a single barrier closes it.** WebKit makes the
   app's native message handler available to every frame, the artifact's
   included, so the probe's message was delivered. Tauri treats the app's own
@@ -421,8 +446,25 @@ replacing a file kept its permissions, so overwriting a hook or script that
 already ran left it able to run. **From 1.10.4** the question shows
 how the content begins, and these are refused before anyone is asked: a name
 with such characters, a write into a hidden folder (a dotfile such as
-`.gitignore` in an ordinary folder is still allowed), and replacing a file
-that can be run. A new file is created without permission to run, as before.
+`.gitignore` in an ordinary folder is still allowed), and, on macOS and
+Linux, replacing a file that can be run. A new file is created without
+permission to run, as before.
+
+**Two limits found by the independent review of 1.10.6**, both planned for
+1.10.7:
+
+- **"A file that can be run" means one marked runnable, so the rule applies on
+  macOS and Linux only.** Windows has no such mark; whether a file runs there
+  depends on its name, so an existing `.bat`, `.cmd`, `.ps1` or `.exe` in the
+  folder can be replaced once you approve it. This page stated the rule
+  without saying so.
+- **The folder you grant can be your home folder**, and then the places that
+  start programs when you log in are inside it: `Library/LaunchAgents` on
+  macOS, the `Startup` folder on Windows, and shell start-up files such as
+  `.zshrc`. Those are not hidden folders, a file there needs no permission to
+  run, and the question shows only the first six lines of what is written.
+  Grant a folder made for the purpose, not your home folder, and read the path
+  in each question.
 
 ### Third-party code
 
@@ -508,7 +550,10 @@ any branch or tag. That shows this repository built the file, not that the
 release workflow built it from the tag. `scripts/verify-release.sh` made the
 looser check too; from 1.10.4's version of the script it names the
 workflow, the tag and the commit, requires every file the signed list names,
-and fails on any file on the release that the list does not cover.
+and fails on any file on the release that the list does not cover, except
+two named documents attached for reading, the QA record and the terms, which
+are exempt by design. This page did not name that exemption until the
+independent review of 1.10.6 pointed it out.
 
 The signature closes the gap named above: the list is no longer just a file
 sitting beside the installers it vouches for, because replacing it now requires
@@ -621,6 +666,26 @@ Stated plainly, because a security page that only lists strengths is not useful:
   the
   [security note](docs/release/SECURITY-NOTE-2026-08-30-claude-glm.md), which records what
   was wrong and what to do if you installed it before that.
+
+  **On macOS, the launcher reads the whole credential-store item, and this
+  project told you to let it do so forever.** The item holds every key you
+  have stored: Scaleway, the terminal key, Black Forest Labs, OVHcloud,
+  Linkup, Qwant Staan, and the SearXNG and image tokens. The launcher keeps
+  only the Scaleway key, but it reads the item with `/usr/bin/security`, and
+  the launcher's own comment, its README, the troubleshooting guide and the
+  app's Terminal access section all said to answer the prompt with **Always
+  Allow**. That grant belongs to `security`, not to the launcher, so
+  afterwards *any* program running as you can read every key, silently. That
+  includes Claude Code, which `claude-glm` starts, and which runs commands
+  from repositories and pages it did not write. The independent review of
+  1.10.6 found this and confirmed the grant on the publisher's own Mac.
+  Answer **Allow**, which is asked at each launch. If you clicked Always Allow,
+  open **Keychain Access**, find `com.anaubi.sovatela`, open *Access Control*,
+  select `security` and click **−**. If anything there is unfamiliar, remove
+  it and replace your keys. 1.10.7 is planned to hand the launcher the
+  terminal key alone, so that `security` needs no grant. Linux and Windows
+  have no per-program grant to give: any program running as you can read the
+  item there, as they always could.
 - **Single-item deletions, if the renderer is ever compromised.** Deleting a
   chat, and deleting all chats, projects and memory, confirm natively in the
   backend, so the dialog cannot be skipped by whatever called the command.

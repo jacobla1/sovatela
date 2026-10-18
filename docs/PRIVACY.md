@@ -1,13 +1,17 @@
 # Privacy policy
 
-Last updated: 2026-10-17 · Applies to: Sovatela v1.10.6
+Last updated: 2026-10-18 · Applies to: Sovatela v1.10.6
 
 > **How this was written, since you are entitled to know.** By the publisher,
 > not by a lawyer. It is written to be accurate about what the software does,
-> and that half is checkable rather than asserted: every destination named in
-> § 4 was confirmed by capturing the network traffic of the **1.7.3** released
-> build — the most recent one published at the time of writing — and the
-> code that decides each one is public. What has *not* had professional review
+> and that half is checkable rather than asserted: the code that decides each
+> destination in § 4 is public, and the destinations the app had at **1.7.3**
+> were confirmed by capturing that released build's network traffic. Your
+> cloud service was added later and has not been captured; a cloud download
+> that completes has never been observed. An artifact's connections (§ 4) were
+> found by an independent review of 1.10.6, not by a capture. *This paragraph
+> is corrected:* it said every destination had been captured, which stopped
+> being true as § 4 grew. What has *not* had professional review
 > is the legal characterisation in § 5 — who is a controller for what. That is
 > said here rather than left to be discovered, because an unreviewed policy you
 > can read beats a reviewed one you cannot.
@@ -68,7 +72,7 @@ Full instructions: [Uninstall and data deletion](UNINSTALL.md).
 ## 4. What is sent, and to whom
 
 The application transmits data using your own credentials, to the providers you
-configured. Five destinations are not providers, and are listed here rather
+configured. Six destinations are not providers, and are listed here rather
 than left to be discovered:
 
 - `sovatela.eu`, when you press *Check for updates* (or at launch, if you
@@ -81,10 +85,20 @@ than left to be discovered:
 - your cloud service (iCloud Drive, or another service through macOS), only
   when you choose a file whose contents are in the cloud and agree to
   download it. macOS does the fetching; nothing from your conversations is
-  sent.
+  sent. *One exception in 1.10.6:* if your history folder is in iCloud Drive,
+  searching your chats, or deleting one, also asks macOS for a chat whose
+  file is only in the cloud, without asking you first;
+- any host named by an artifact you run. An artifact cannot load anything,
+  but it can make the app open a connection to a host it names, and look that
+  name up through your DNS resolver. That tells the host the artifact ran,
+  and your IP address, and the name itself can carry what the artifact holds,
+  which can include text from your conversation. Run artifacts only from
+  chats you trust.
 
-*This list is corrected:* it named three and missed the last two
-(independent review of 1.10.4). See [Security](../SECURITY.md) for what each
+*This list is corrected:* it named three and missed the image delivery
+address and the cloud service (independent review of 1.10.4), and then
+missed the artifact connections and the two history reads (independent
+review of 1.10.6). See [Security](../SECURITY.md) for what each
 one sends. Every request, to any destination, also carries what any request
 does: your IP address and the time. Where this page says a request sends
 "nothing about you", it means nothing beyond that:
@@ -105,6 +119,12 @@ servers you have configured, and those reach hosts of their own — including
 outside Europe. Sovatela neither controls nor observes that traffic. If this
 matters to you, the section names a firewall profile that bounds it, and the
 feature is off until you install it.
+
+**Setting it up is the app's own traffic**, and it leaves Europe: the app
+downloads `uv` from GitHub and the LiteLLM proxy from PyPI (the Python Package
+Index), both US-based, and each checked against a checksum shipped inside the
+app. Nothing from your conversations is sent. It happens only when you press
+the setup button and confirm.
 
 Each provider processes that data under **its own terms and privacy policy**,
 which you accept when you create an account with them. Links to each provider's
@@ -223,7 +243,9 @@ You may lodge a complaint with `Datatilsynet (the Danish Data Protection Agency)
 ## 8. Security
 
 Keys are stored in the OS credential store, never in files. Generated artifacts
-run sandboxed with no network or filesystem access. See
+run sandboxed, with no access to your files or the app, and cannot load
+anything from the network; they can still open a connection to a host they
+name, as § 4 describes. *Corrected:* this said they had no network access. See
 [`SECURITY.md`](../SECURITY.md), which documents what the design does *not*
 protect against as well as what it does.
 

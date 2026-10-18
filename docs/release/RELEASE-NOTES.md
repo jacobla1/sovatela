@@ -14,8 +14,8 @@ installed-build check found the last fault below; its changes are all here.
 
 - **A refusal is shown, not only spoken.** When the app refused to import a
   chat file, nothing appeared on screen: the reason went only to screen
-  readers. Opening or deleting a chat that failed, such as one whose file
-  iCloud has moved off the Mac, looked like a click that did nothing. These,
+  readers. Opening or deleting a chat that failed looked like a click that
+  did nothing. These,
   and failed exports, links, image saves and a few settings, now say what
   went wrong where you are looking.
 
@@ -24,8 +24,8 @@ installed-build check found the last fault below; its changes are all here.
   opening it made the window try to draw them all. Importing now refuses such
   a file, and the window only ever draws a real, capped list. It needed you to
   import a file someone sent you; nothing was read or sent.
-- **A history folder in iCloud Drive is now covered everywhere.** 1.10.4 said
-  it was, but saving, moving the folder and *Delete all data* still read
+- **A history folder in iCloud Drive is now covered when saving, moving the
+  folder and deleting all data.** 1.10.4 said it was covered, but those still read
   history files without checking whether their contents were on the Mac, so
   an evicted file could leave saving waiting. Moving the folder or deleting
   all data now stops before changing anything and names the files to
@@ -33,7 +33,7 @@ installed-build check found the last fault below; its changes are all here.
 
 ## Changed
 
-- **The privacy policy names every place data goes**, including the address
+- **The privacy policy names the places data goes**, including the address
   an image provider returns for collecting a picture and your cloud service
   when you agree to a download, and says that reference images go to image
   providers and that every request carries your IP address. It went live on
@@ -48,6 +48,14 @@ installed-build check found the last fault below; its changes are all here.
   automatic call; it runs whenever the chat view opens, and is the only one
   by default. It said keys are used only inside the app; the optional
   terminal integration uses the Scaleway key too.
+- *Corrected 2026-10-18, after the independent review of 1.10.6:* these
+  notes said the history folder was "now covered everywhere", and gave a chat
+  whose file iCloud has moved off the Mac as one whose delete now explains
+  itself. Searching chats and deleting one still read without the check; on
+  an evicted chat, delete waits for the download instead. The privacy policy
+  also missed two places data goes: a host named by an artifact you run, and
+  the terminal-access setup downloads. Both are listed now. See the security
+  page for what else that review found.
 
 [QA-1.10.6.md](QA-1.10.6.md) records verification, and
 [QA-1.10.5.md](QA-1.10.5.md) the held release. Windows and Linux installers
@@ -89,10 +97,13 @@ app waiting. None of it was known to have been exploited.
   could run and nothing was fetched.
 - **Workspace writes** show how the content begins when you are asked, and
   are refused for a name that hides what it is called, a hidden folder such as
-  `.git`, or a file that can be run.
+  `.git`, or, on macOS and Linux, a file that can be run (*corrected
+  2026-10-18:* this did not say the last applies there only).
 - **Smaller fixes:** a chat's images are read only by the names the app gives
   them; a link is opened exactly as it was checked; the page reader treats a
-  few more network addresses as private and gives a page 45 seconds in all.
+  few more network addresses as private and gives fetching a page 45 seconds
+  in all (*corrected 2026-10-18:* this said "a page"; turning the page into
+  text is not bounded by it).
 
 ## Changed
 

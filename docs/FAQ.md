@@ -119,9 +119,15 @@ you the same effect — with the caveat that your provider then holds those file
 which may cut against your reasons for using this app.
 
 **Is my data safe from artifacts?**
-Yes. Generated code renders in a sandboxed iframe with no same-origin access and
-a strict Content-Security-Policy. It cannot reach your files, your keys, the
-app's internals, or the network.
+Mostly. Generated code renders in a sandboxed iframe with no same-origin access
+and a strict Content-Security-Policy. It cannot reach your files, your keys or
+the app's internals, and it cannot load anything from the network. It can make
+the app open a connection to a server it names, which tells that server the
+artifact ran and can carry what the artifact holds, including text from your
+conversation, in the name. So run artifacts only from chats you trust,
+including chat files someone sent you. *Corrected:* this answer used to say
+plainly "yes", and that artifacts cannot reach the network. See
+[SECURITY.md](../SECURITY.md#generated-code).
 
 **Does it work offline?**
 The app opens and your saved history is readable offline. Anything needing the

@@ -85,7 +85,9 @@ an adverb ever was.
   or deleted, and several settings, failed silently for everyone. Each now
   puts its reason on screen beside what was being done, in an alert a screen
   reader reads once, and the chat window's notice stays until it is
-  dismissed.
+  dismissed. VoiceOver reading an import refusal was confirmed on the
+  installed 1.10.6 during its independent review; the other refusals are
+  reasoned from the same markup.
 - **Structure a screen reader can move through.** Each view has one `main`.
   The chat list is named navigation holding real lists, so it announces "3 of
   12" rather than a run of buttons, and marks which chat is open. Settings is

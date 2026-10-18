@@ -409,7 +409,9 @@ command -v node >/dev/null 2>&1 || die "node is required (Claude Code depends on
 # Not exported here, so it is not in this process's environment and cannot be
 # inherited by anything. It is exported inside one subshell below, which becomes
 # the proxy.
-# macOS may prompt once to allow access — click "Always Allow".
+# macOS asks whether `security` may read the item. Answer "Allow", not "Always
+# Allow": the item holds every stored key, and Always Allow would let any
+# program running as you read all of them without asking.
 KEY_BLOB=$(security find-generic-password -s "com.anaubi.sovatela" -a "secrets" -w 2>/dev/null) || die \
   "Could not read the Sovatela keychain item.
 Open Sovatela and add your Scaleway API key first (Settings → Scaleway API key)."

@@ -237,8 +237,18 @@ Linux) and that `~/bin` is on your PATH.
 
 The launcher reads the same credential-store item as the app
 (`com.anaubi.sovatela`), so there's no key to paste — but your OS may prompt for
-permission on first use. On macOS click **Always Allow**. On Linux you need
-`libsecret`'s tools:
+permission.
+
+**On macOS, click Allow, not Always Allow, when the launcher asks to read the
+item.** The prompt names `security`, the system tool the launcher uses. The
+item holds every key you have stored in Sovatela, and *Always Allow* lets any
+program you run read all of them without asking, including the agent
+`claude-glm` starts. *Allow* is asked again at each launch. Earlier versions
+of this page said to click Always Allow. If you did, remove the grant: open
+**Keychain Access**, find `com.anaubi.sovatela`, open *Access Control*,
+select `security` and click **−**.
+
+On Linux you need `libsecret`'s tools:
 
 ```sh
 sudo apt install libsecret-tools    # or: dnf install libsecret / pacman -S libsecret

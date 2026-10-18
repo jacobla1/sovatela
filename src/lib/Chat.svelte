@@ -1539,7 +1539,7 @@
         //
         // Opening it ran model-written JavaScript the moment a reply landed,
         // without anyone asking for it. The iframe is capability-isolated —
-        // opaque origin, no IPC, no network, no storage — so this was never a
+        // opaque origin, no IPC, no network loads, no storage — so this was never a
         // way out of the sandbox. But it shares the webview's CPU and memory,
         // so a loop or an allocation storm freezes the application, and the
         // code that decides to write one can be steered by a document or a web
@@ -2291,13 +2291,14 @@
                   <div class="artifact-chip pending">◆ Building {titleFor(part)}…</div>
                 {:else if part.type === "artifact"}
                   <!-- Pressing this runs code the model wrote, in a frame with
-                       no network, no storage and no way back into the app. The
+                       no network loads, no storage and no way back into the
+                       app (a preconnect still connects; SECURITY.md). The
                        label says "run" rather than "open" because that is what
                        it does, and because until 1.8.4 it happened by itself
                        the moment a reply arrived. -->
                   <button
                     class="artifact-chip"
-                    title="Runs this generated code in a sandboxed frame — no network, no access to your files or this app"
+                    title="Runs this generated code in a sandboxed frame, with no access to your files or this app. It can still make the app connect to a server it names, so run code only from chats you trust"
                     onclick={() => openArtifact(part)}
                   >
                     ◆ {titleFor(part)} · run ↗

@@ -1744,9 +1744,11 @@
 
     {#if cgStatus?.launcher_installed && !cgInstalling}
       <p class="hint">
-        Ready — open a terminal and run <code>claude-glm</code>. The first run
+        Ready — open a terminal and run <code>claude-glm</code>. Each run
         may ask your system to allow reading your saved key from the OS
-        credential store; approve it (on macOS, click <strong>Always Allow</strong>).
+        credential store. On macOS, click <strong>Allow</strong>, not
+        <strong>Always Allow</strong>: that would let any program you run read
+        every key stored here, without asking.
       </p>
     {/if}
   {/if}
