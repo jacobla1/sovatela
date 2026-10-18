@@ -129,6 +129,72 @@ else
   check "the proxy stops when the session ends" ok
 fi
 
+# ---- T1: on macOS the key comes from Sovatela, and `security` is not asked ---
+#
+# Reading the credential item with `security` needs a grant on the whole item,
+# and the launcher's own comment said to make it "Always Allow", which lets any
+# program read every key in it (the 1.10.6 review, T1). The launcher now asks
+# Sovatela's binary, which the item already trusts, for the terminal key alone.
+run_launcher() {
+  rm -f "$out/litellm.env" "$out/claude.env" "$out/stub.pid" "$out/security.calls"
+  env -i HOME="$home" OUT_DIR="$out" PATH="$stub:$NODE_DIR:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin" \
+    "$shell" "$stub/claude-glm" >"$out/$1.log" 2>&1
+}
+stop_stub() { if [ -f "$out/stub.pid" ]; then kill "$(cat "$out/stub.pid")" 2>/dev/null || true; fi; }
+if [ "$(uname -s)" = Darwin ]; then
+  APPKEY="KEY-HANDED-OVER-BY-SOVATELA"
+  cp "$stub/security" "$work/security.orig"
+  cat > "$stub/security" <<EOF
+#!/bin/sh
+echo called >> "$out/security.calls"
+printf '%s' '{"scaleway_api_key":"$SECRET","claude_glm_api_key":""}'
+EOF
+  cat > "$work/sovatela" <<EOF
+#!/bin/sh
+[ "\$1" = "--sovatela-terminal-key" ] && [ \$# -eq 1 ] || exit 64
+printf '%s' '$APPKEY'
+EOF
+  chmod +x "$stub/security" "$work/sovatela"
+  printf '%s\n' "$work/sovatela" > "$home/.config/claude-glm/sovatela-app"
+
+  if run_launcher t1-app; then
+    grep -q "^SCW_SECRET_KEY=$APPKEY$" "$out/litellm.env" \
+      && check "the key comes from Sovatela" ok || check "the key comes from Sovatela" no
+    [ -f "$out/security.calls" ] \
+      && check "security is not asked when Sovatela answers" no \
+      || check "security is not asked when Sovatela answers" ok
+  else
+    check "the launcher runs with the key from Sovatela" no; sed 's/^/    /' "$out/t1-app.log"
+  fi
+  stop_stub
+
+  # Sovatela moved or removed: the old read still works, and it is the only
+  # time `security` is asked.
+  mv "$work/sovatela" "$work/sovatela.gone"
+  if run_launcher t1-fallback; then
+    grep -q "^SCW_SECRET_KEY=$SECRET$" "$out/litellm.env" && [ -f "$out/security.calls" ] \
+      && check "without Sovatela it falls back to security" ok \
+      || check "without Sovatela it falls back to security" no
+  else
+    check "without Sovatela it falls back to security" no; sed 's/^/    /' "$out/t1-fallback.log"
+  fi
+  stop_stub
+
+  # Exit 3 is "no key stored": stop and say so, rather than asking security.
+  printf '#!/bin/sh\nexit 3\n' > "$work/sovatela"; chmod +x "$work/sovatela"
+  if run_launcher t1-nokey; then
+    check "no stored key stops the launcher" no
+  else
+    grep -q "No Scaleway API key is stored yet" "$out/t1-nokey.log" && [ ! -f "$out/security.calls" ] \
+      && check "no stored key stops the launcher, without asking security" ok \
+      || check "no stored key stops the launcher, without asking security" no
+  fi
+  stop_stub
+
+  rm -f "$home/.config/claude-glm/sovatela-app"
+  cp "$work/security.orig" "$stub/security"
+fi
+
 # ---- the ownership check must fail closed, not skip -------------------------
 #
 # It used to `return 0` — "ours" — when lsof was absent, so on a machine without

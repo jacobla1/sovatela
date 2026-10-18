@@ -6,6 +6,22 @@ import DOMPurify from "dompurify";
 
 marked.setOptions({ gfm: true, breaks: true });
 
+// Every link says where it really goes, on hover. The window has no status bar,
+// so a reply could show one address as a link's text and lead to another (the
+// 1.10.6 review, L1). Set after sanitising, over any title the reply wrote, so
+// the reply cannot choose what this says. Opening a link whose text names a
+// different host also asks first, in Rust.
+DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+  if (node.tagName !== "A" || !node.hasAttribute("href")) return;
+  try {
+    const u = new URL(node.getAttribute("href"));
+    const where = `${u.host}${u.pathname === "/" ? "" : u.pathname}`;
+    node.setAttribute("title", `Opens ${where.length > 80 ? `${where.slice(0, 80)}…` : where}`);
+  } catch {
+    node.removeAttribute("title");
+  }
+});
+
 // Hide reasoning/tool markup some models leak (<think>…</think>, <tool_call>…).
 export function cleanText(text) {
   let s = text.replace(/<think>[\s\S]*?<\/think>/g, "");
@@ -224,6 +240,91 @@ const ALLOWED_ATTR = [
 // `img` separately from this pattern.
 const ALLOWED_URI_REGEXP = /^(?:https?:|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i;
 
+// **What reaches the parser is bounded first, and a parse that fails anyway
+// still renders.** marked recurses once per level of nesting, so a reply of
+// 15,000 `>` or 12,000 `- ` overflowed WebKit's stack and threw. Nothing caught
+// it: the `{@html}` update was abandoned and the node kept whatever it held
+// before, which after switching chats was **another chat's reply**, shown here
+// with Copy and Try again under it (the 1.10.6 review, R3). Unmatched emphasis
+// delimiters cost quadratic time within a paragraph instead: 4,000 took 1.6
+// seconds in Node, and the window does nothing else meanwhile. Such text comes
+// from an imported chat or from a reply steered by a page the model read; no
+// real reply is nested twenty deep or carries a thousand stray asterisks in
+// one paragraph. So nesting is cut at MAX_NESTING, a paragraph over
+// MAX_DELIMITERS turns the whole reply into plain text, and anything that
+// still throws does the same, saying so. Fenced code is left alone by both
+// checks, since marked does not parse inside it.
+const MAX_NESTING = 20;
+const MAX_DELIMITERS = 1000;
+
+// One container marker at the start of a line: a quote, or a list item.
+const CONTAINER = /^ {0,3}(?:>[ \t]?|(?:[-*+]|\d{1,9}[.)])(?:[ \t]+|$))/;
+
+function capNesting(line) {
+  let rest = line;
+  let kept = "";
+  let depth = 0;
+  for (let m = rest.match(CONTAINER); m && m[0]; m = rest.match(CONTAINER)) {
+    if (depth < MAX_NESTING) kept += m[0];
+    depth += 1;
+    rest = rest.slice(m[0].length);
+  }
+  return depth > MAX_NESTING ? kept + rest : line;
+}
+
+// The text marked will parse, or null when it should not be parsed at all.
+export function boundMarkdown(text) {
+  const out = [];
+  let fence = null;
+  let delimiters = 0;
+  for (const line of text.split("\n")) {
+    const f = line.match(/^ {0,3}(`{3,}|~{3,})/);
+    if (fence) {
+      if (f && f[1][0] === fence[0] && f[1].length >= fence.length) fence = null;
+      out.push(line);
+      continue;
+    }
+    if (f) {
+      fence = f[1];
+      out.push(line);
+      continue;
+    }
+    if (!line.trim()) delimiters = 0;
+    delimiters += line.match(/[*_~]/g)?.length ?? 0;
+    if (delimiters > MAX_DELIMITERS) return null;
+    out.push(capNesting(line));
+  }
+  return out.join("\n");
+}
+
+const escapeHtml = (s) =>
+  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+// The reply as it was written, with a sentence saying why it looks that way.
+// Escaped rather than sanitised: there is no markup left to sanitise.
+function plainReply(text, why) {
+  const paragraphs = text
+    .split(/\n\s*\n/)
+    .filter((p) => p.trim())
+    .map((p) => `<p>${escapeHtml(p).replace(/\n/g, "<br>")}</p>`);
+  return `<p><em>${why}</em></p>${paragraphs.join("")}`;
+}
+
+export function renderMd(text) {
+  const bounded = boundMarkdown(text);
+  if (bounded === null) {
+    return plainReply(
+      text,
+      "This reply carries more formatting than can be shown safely, so it is shown as plain text.",
+    );
+  }
+  try {
+    return sanitize(marked.parse(bounded, { async: false }));
+  } catch {
+    return plainReply(text, "This reply could not be formatted, so it is shown as plain text.");
+  }
+}
+
 // **These lists are the only ones in force.** Until the 1.10.2 launch review
 // found it, this call also passed `USE_PROFILES: { html: true }`, and in
 // DOMPurify a profile *replaces* ALLOWED_TAGS and ALLOWED_ATTR with its own
@@ -232,8 +333,8 @@ const ALLOWED_URI_REGEXP = /^(?:https?:|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i;
 // `<video>`, `tabindex`, `download` and `ftp:` links all survived. A reply
 // could put a dialog over the conversation. No script ran and nothing was
 // fetched, but it was the spoofing the paragraph above exists to prevent.
-export function renderMd(text) {
-  return DOMPurify.sanitize(marked.parse(text, { async: false }), {
+function sanitize(html) {
+  return DOMPurify.sanitize(html, {
     ALLOWED_TAGS,
     ALLOWED_ATTR,
     ALLOWED_URI_REGEXP,

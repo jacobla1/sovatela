@@ -119,6 +119,27 @@ describe("the chat window shows what it refused", () => {
   });
 });
 
+describe("a start-up read that failed is said, not swallowed (I4)", () => {
+  it("an unreadable key", async () => {
+    responses.has_api_key = async () => {
+      throw "The credential store refused access";
+    };
+    render(Chat, { props: {} });
+    await waitFor(() => expect(bar()).toBeTruthy());
+    expect(bar().textContent).toContain("Your saved key could not be read");
+    expect(bar().textContent).toContain("refused access");
+  });
+
+  it("unreadable search settings", async () => {
+    responses.get_search_settings = async () => {
+      throw "settings.json is not valid JSON";
+    };
+    render(Chat, { props: {} });
+    await waitFor(() => expect(bar()).toBeTruthy());
+    expect(bar().textContent).toContain("The web search settings could not be read");
+  });
+});
+
 describe("the project panel keeps a failed save open, with the reason", () => {
   const project = { id: "p1", name: "Thesis", instructions: "", files: [] };
 

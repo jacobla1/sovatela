@@ -1,6 +1,6 @@
 # Technical and security specification
 
-Sovatela v1.10.6 · Companion to Product spec ·
+Sovatela v1.10.7 · Companion to Product spec ·
 UX spec · [Security policy](../SECURITY.md)
 
 Fuller engineering rationale is kept internally in `ENGINEERING_NOTES.md`, which
@@ -151,7 +151,10 @@ Artifacts render in `<iframe sandbox="allow-scripts">` **without**
 access to the parent document, no Tauri IPC, no storage and no network. **The
 last does not hold:** a `<link rel="preconnect">` makes WebKit look up and
 connect to a host the artifact names, which the CSP does not cover (found by
-the 1.10.6 review; see SECURITY.md, Generated code). The
+the 1.10.6 review; see SECURITY.md, Generated code). From 1.10.7 a content
+rule list on the macOS window refuses every network address, preconnects
+included (`src-tauri/src/artifact_net.rs`); Windows and Linux have only the
+bypassable hint stripping. The
 reasoning and the bypasses tested are recorded in an internal design note
 (`CSP-EXPERIMENT-2026-07.md`), available on request.
 

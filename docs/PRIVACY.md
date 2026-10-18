@@ -1,6 +1,6 @@
 # Privacy policy
 
-Last updated: 2026-10-18 · Applies to: Sovatela v1.10.6
+Last updated: 2026-10-18 · Applies to: Sovatela v1.10.7
 
 > **How this was written, since you are entitled to know.** By the publisher,
 > not by a lawyer. It is written to be accurate about what the software does,
@@ -85,15 +85,17 @@ than left to be discovered:
 - your cloud service (iCloud Drive, or another service through macOS), only
   when you choose a file whose contents are in the cloud and agree to
   download it. macOS does the fetching; nothing from your conversations is
-  sent. *One exception in 1.10.6:* if your history folder is in iCloud Drive,
-  searching your chats, or deleting one, also asks macOS for a chat whose
-  file is only in the cloud, without asking you first;
-- any host named by an artifact you run. An artifact cannot load anything,
-  but it can make the app open a connection to a host it names, and look that
-  name up through your DNS resolver. That tells the host the artifact ran,
-  and your IP address, and the name itself can carry what the artifact holds,
-  which can include text from your conversation. Run artifacts only from
-  chats you trust.
+  sent. (Until 1.10.7, searching your chats or deleting one also asked macOS
+  for a chat whose file was only in the cloud, without asking you first; it
+  no longer does.)
+- on Windows and Linux, any host named by an artifact you run. An artifact
+  cannot load anything, but it can make the app open a connection to a host
+  it names, and look that name up through your DNS resolver. That tells the
+  host the artifact ran, and your IP address, and the name itself can carry
+  what the artifact holds, which can include text from your conversation.
+  Run artifacts only from chats you trust. On macOS, from 1.10.7, the app
+  refuses every network address an artifact names, connections of this kind
+  included.
 
 *This list is corrected:* it named three and missed the image delivery
 address and the cloud service (independent review of 1.10.4), and then
@@ -244,8 +246,9 @@ You may lodge a complaint with `Datatilsynet (the Danish Data Protection Agency)
 
 Keys are stored in the OS credential store, never in files. Generated artifacts
 run sandboxed, with no access to your files or the app, and cannot load
-anything from the network; they can still open a connection to a host they
-name, as § 4 describes. *Corrected:* this said they had no network access. See
+anything from the network; on Windows and Linux they can still open a
+connection to a host they name, as § 4 describes. *Corrected:* this said they
+had no network access. See
 [`SECURITY.md`](../SECURITY.md), which documents what the design does *not*
 protect against as well as what it does.
 

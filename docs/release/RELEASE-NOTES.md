@@ -1,3 +1,81 @@
+# Release notes — Sovatela 1.10.7
+
+Release date: 2026-10-18 · [All releases](https://github.com/jacobla1/sovatela/releases)
+
+An independent review of 1.10.6, made before announcing it, found a way for
+other programs to read every key terminal access was set up with, a web page
+that could crash the app, and workspace writes that could reach login items.
+This release fixes those and the review's smaller findings, and one problem
+found since. None was known to have been exploited.
+
+## What to do if you use terminal access (`claude-glm`)
+
+1. **On macOS, if you ever clicked *Always Allow* when `claude-glm` asked to
+   read your key:** open **Keychain Access**, find `com.anaubi.sovatela`, open
+   *Access Control*, select `security` and click **−**. That grant let any
+   program on your Mac read every key Sovatela holds. If anything else there
+   is unfamiliar, remove it and replace your keys.
+2. **Run setup again** (*Settings → Terminal access*). The new launcher asks
+   Sovatela for the terminal key alone; the old one stays until you do, and
+   Settings says so.
+3. **Give terminal access its own key, for the AI models only** (*Guide → A
+   key for the AI models only*). The coding agent runs as you and can obtain
+   that key, so it should be able to do nothing but call the models.
+
+## Fixed
+
+- **Terminal access no longer needs a grant that opens every key.** See
+  above.
+- **A web page can no longer crash the app.** With web search on, a page
+  nested deeply enough could stop Sovatela outright, and a page built to be
+  slow could keep it working for minutes. Such pages are refused, and Stop
+  ends a page read straight away.
+- **Workspace writes stay away from what starts at login.** Your home folder
+  can no longer be the workspace, and the places that start programs when you
+  log in are refused in any workspace. If you had chosen your home folder,
+  Settings asks you to pick another.
+- **Artifacts are kept off the network on macOS.** An artifact could make the
+  app connect to a server it named, which could tell that server it ran and
+  carry what it held. On macOS the window now refuses every network address.
+  On Windows and Linux the hints that reach out are removed, but a determined
+  artifact can get past that; run artifacts there only from chats you trust.
+- **A reply that cannot be formatted is shown as plain text**, with a note,
+  instead of leaving another chat's reply on screen.
+- **A chat with an image no longer fails partway through research.**
+- **Searching and deleting chats no longer download ones iCloud has moved
+  off the Mac**; the search says how many it could only search by title.
+- **Smaller:** a link shows where it really goes, and asks first when its
+  text names a different address; a setting that cannot be read says so
+  instead of showing a default; importing a file that is not a chat says what
+  to choose instead.
+
+## Changed
+
+- **The setup guide says what your Scaleway key can do.** A key made for
+  *Myself* can do anything you can on Scaleway. That is still the quickest
+  start, but if your Scaleway account holds anything besides Sovatela, or you
+  use terminal access, the guide shows how to make a key for the AI models
+  only.
+
+## Corrected
+
+- The privacy policy, security page, README and FAQ said artifacts had no
+  network access, and the security page and earlier notes said a few things
+  1.10.6 did not do: that a page read was bounded to 45 seconds, that a
+  history folder in iCloud was never fetched, and that a runnable file is
+  refused on every platform. These were corrected on the site on 2026-10-18.
+- Earlier notes and Settings said a terminal key from its own Scaleway
+  Project puts terminal use on its own invoice line. It does not: both land
+  on your default Project's line.
+
+[QA-1.10.7.md](QA-1.10.7.md) records verification. Windows and Linux
+installers remain unsigned and experimental, with no clean-machine lifecycle
+test and no measured real-photo OCR accuracy; on those, artifacts are not
+kept off the network as they are on macOS. Existing
+[accessibility limitations](https://sovatela.eu/accessibility) remain disclosed.
+
+---
+
 # Release notes — Sovatela 1.10.6
 
 Release date: 2026-10-17 · [All releases](https://github.com/jacobla1/sovatela/releases)

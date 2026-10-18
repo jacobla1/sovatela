@@ -121,11 +121,13 @@ which may cut against your reasons for using this app.
 **Is my data safe from artifacts?**
 Mostly. Generated code renders in a sandboxed iframe with no same-origin access
 and a strict Content-Security-Policy. It cannot reach your files, your keys or
-the app's internals, and it cannot load anything from the network. It can make
-the app open a connection to a server it names, which tells that server the
-artifact ran and can carry what the artifact holds, including text from your
-conversation, in the name. So run artifacts only from chats you trust,
-including chat files someone sent you. *Corrected:* this answer used to say
+the app's internals, and it cannot load anything from the network. On Windows
+and Linux it can make the app open a connection to a server it names, which
+tells that server the artifact ran and can carry what the artifact holds,
+including text from your conversation, in the name; there, run artifacts only
+from chats you trust, including chat files someone sent you. On macOS, from
+1.10.7, the window refuses every network address, so that connection is not
+made. *Corrected:* this answer used to say
 plainly "yes", and that artifacts cannot reach the network. See
 [SECURITY.md](../SECURITY.md#generated-code).
 

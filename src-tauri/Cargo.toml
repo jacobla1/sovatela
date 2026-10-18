@@ -1,6 +1,6 @@
 [package]
 name = "scale"
-version = "1.10.6"
+version = "1.10.7"
 description = "BYO-key desktop chat client for GLM-5.2 on Scaleway"
 authors = ["Jacob Bergmann Larsen"]
 license = "MIT"
@@ -109,6 +109,18 @@ objc2 = "0.6.4"
 objc2-vision = "0.3.2"
 objc2-foundation = "0.3.2"
 objc2-core-graphics = "0.3.2"
+# A content rule list on the window's webview keeps artifacts off the network
+# (artifact_net.rs). Both crates are already in the build, through wry.
+objc2-web-kit = { version = "0.3.2", default-features = false, features = [
+  "std",
+  "WKContentRuleList",
+  "WKContentRuleListStore",
+  "WKUserContentController",
+  "WKWebView",
+  "WKWebViewConfiguration",
+  "block2",
+] }
+block2 = "0.6.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62.2", features = [

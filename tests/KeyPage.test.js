@@ -194,3 +194,54 @@ describe("a deletion that did not finish is not reported as done", () => {
     expect(screen.queryByText("Deleted ✓")).toBeNull();
   });
 });
+
+// W1 of the 1.10.6 review: the home folder is refused as a workspace now. One
+// chosen before 1.10.7 stays in the settings rather than being changed behind
+// the person's back, so Settings is where they learn it is off, and why.
+describe("a saved workspace that is no longer allowed says so", () => {
+  it("shows why the folder is not used", async () => {
+    invoke.mockImplementation((cmd) => {
+      if (cmd === "get_workspace_dir") return Promise.resolve("/Users/someone");
+      if (cmd === "workspace_problem")
+        return Promise.resolve("/Users/someone is your home folder, or contains it.");
+      return Promise.resolve(cmd in canned ? canned[cmd] : null);
+    });
+    render(KeyPage, { props: { mode: "settings" } });
+    expect(await screen.findByText(/This folder is not used: .*home folder/)).toBeTruthy();
+  });
+
+  it("says nothing when the folder is fine", async () => {
+    invoke.mockImplementation((cmd) => {
+      if (cmd === "get_workspace_dir") return Promise.resolve("/Users/someone/Documents/ai");
+      if (cmd === "workspace_problem") return Promise.resolve("");
+      return Promise.resolve(cmd in canned ? canned[cmd] : null);
+    });
+    render(KeyPage, { props: { mode: "settings" } });
+    await screen.findByText("/Users/someone/Documents/ai");
+    expect(screen.queryByText(/This folder is not used/)).toBeNull();
+  });
+});
+
+// I4 of the 1.10.6 review: a read that failed used to be swallowed, so a
+// corrupt settings file showed defaults as though they were saved.
+describe("a setting that could not be read is named", () => {
+  it("says which, and that nothing was changed", async () => {
+    invoke.mockImplementation((cmd) => {
+      if (cmd === "get_search_settings") return Promise.reject("settings.json is not valid JSON");
+      if (cmd === "get_history_settings") return Promise.reject("permission denied");
+      return Promise.resolve(cmd in canned ? canned[cmd] : null);
+    });
+    render(KeyPage, { props: { mode: "settings" } });
+    const alert = await screen.findByText(/Some settings could not be read/);
+    expect(alert.closest("[role=alert]")).toBeTruthy();
+    expect(await screen.findByText(/Web search: settings.json is not valid JSON/)).toBeTruthy();
+    expect(screen.getByText(/Chat history: permission denied/)).toBeTruthy();
+    expect(alert.textContent).toContain("Nothing has been changed");
+  });
+
+  it("shows nothing when every read succeeds", async () => {
+    render(KeyPage, { props: { mode: "settings" } });
+    await screen.findByText(/Connected/);
+    expect(screen.queryByText(/Some settings could not be read/)).toBeNull();
+  });
+});

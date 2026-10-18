@@ -52,7 +52,7 @@ of this page said to click Always Allow. If you did, remove the grant: open
 **Keychain Access**, find `com.anaubi.sovatela`, open *Access Control*,
 select `security` and click **−**.
 
-### Optional: a separate key, on its own Scaleway Project
+### Set a separate key, for model access only
 
 The launcher prefers `claude_glm_api_key` from that same credential item and
 falls back to `scaleway_api_key`, so sharing remains the default and existing
@@ -67,11 +67,20 @@ the whole conversation, tool output and file contents every turn; a real July
 2026 invoice showed 10.5M input tokens against 599K output, of which the app
 had recorded 1.3M and 220K. The rest was this.
 
-A separate key issued in its own Scaleway **Project** does not fix the tally —
-nothing does, short of routing terminal traffic through the app — but Scaleway
-itemises invoices by Project, so the two land on separate lines and the app's
-estimate becomes something you can check. Confirm the split appears as expected
-on your first invoice.
+Do this before your first session. Make the terminal key as the
+[Quick Start](../../docs/QUICKSTART.md) describes under *A key for the AI
+models only*: for an IAM application whose only permission is
+**GenerativeApisModelAccess**, for all Projects. On macOS any program running as you can ask Sovatela for this one
+key (SECURITY.md, *Terminal access*), and on Linux and Windows any such program
+can read the credential store, so a key that can only call the models is the
+one worth having there. A separate key can also be revoked without touching
+chat.
+
+What it does **not** do is put terminal use on its own invoice line. *Corrected
+for 1.10.7:* this section said a key issued in its own Project would. Scaleway
+bills Generative APIs to the Project named in the request's address, and the
+launcher, like the app, uses your default Project's address, so both land on
+the same line whichever key is used.
 
 ## Use
 

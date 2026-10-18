@@ -373,10 +373,11 @@ Expected, in two specific cases — the estimate is a floor, not a bill.
 through a local proxy without passing through the app, so none of that usage is
 counted while all of it is billed. It is also far heavier than chatting: an
 agent resends the whole conversation, tool output and file contents on every
-turn, so a fortnight of terminal use can outweigh months of chat. If you want
-the two separable on your invoice, give the terminal a key from its own Scaleway
-**Project** (Settings → Terminal access) — Scaleway itemises invoices by
-Project. That does not add the usage to the estimate; nothing does.
+turn, so a fortnight of terminal use can outweigh months of chat. Scaleway's
+invoice does not separate the two either: it bills Generative APIs to the
+Project in the request's address, and both use your default Project's.
+*Corrected for 1.10.7:* this said a terminal key from its own Project would
+split them.
 
 **Replies you stopped early.** Scaleway bills the tokens it generated, but the
 token count arrives in a final message the app never receives once you press

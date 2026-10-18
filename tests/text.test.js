@@ -296,3 +296,19 @@ describe("a message's research steps", () => {
     expect(template, "the template reads m.steps directly again").not.toMatch(/m\.steps/);
   });
 });
+
+// L1 of the 1.10.6 review: the window has no status bar, so a link's real
+// destination is put in its title, over anything the reply wrote there.
+describe("links say where they go", () => {
+  it("titles a link with its real host and path", () => {
+    const html = renderMd('[https://console.scaleway.com](https://evil.example/login "Scaleway console")');
+    const a = new DOMParser().parseFromString(html, "text/html").querySelector("a");
+    expect(a.getAttribute("title")).toBe("Opens evil.example/login");
+  });
+
+  it("leaves no title on a link it cannot parse", () => {
+    const html = renderMd('<a href="/relative" title="spoof">x</a>');
+    const a = new DOMParser().parseFromString(html, "text/html").querySelector("a");
+    expect(a?.getAttribute("title") ?? null).toBeNull();
+  });
+});

@@ -29,6 +29,18 @@
 
   const isSettings = $derived(mode === "settings");
 
+  // Settings that could not be read, named, so the page does not present
+  // defaults as though they were the saved values. Each read used to end in
+  // `.catch(() => {})`: an unreadable settings.json, or a credential store that
+  // refused, showed a fresh-looking page with no reason (the 1.10.6 review,
+  // I4). Nothing is overwritten either way; saving is refused separately.
+  let unreadSettings = $state([]);
+  const unread = (what) => (e) => {
+    const line = `${what}: ${String(e?.message ?? e)}`;
+    console.error(line);
+    if (!unreadSettings.includes(line)) unreadSettings = [...unreadSettings, line];
+  };
+
   // Read from the bundle rather than package.json, so the number shown is the
   // one the user actually installed and cannot drift from it. Degrades to a
   // dash rather than breaking the panel if the call is ever unavailable.
@@ -54,7 +66,7 @@
   let checkOnLaunchError = $state("");
   invoke("get_update_check_on_launch")
     .then((v) => (checkOnLaunch = !!v))
-    .catch(() => {});
+    .catch(unread("The update-check setting"));
 
   async function toggleCheckOnLaunch(enabled) {
     checkOnLaunch = enabled;
@@ -565,6 +577,16 @@
   // any string — so the dialog the user saw was a courtesy, not the boundary.
   // Nothing in this file decides what the assistant may read any more.
   let workspaceError = $state("");
+  // Why the saved folder is not used, when it is not. A home folder chosen
+  // before 1.10.7 is refused now, and the setting is left as it was rather
+  // than changed behind the person's back, so this is where they find out.
+  let workspaceProblem = $state("");
+
+  function loadWorkspaceProblem() {
+    invoke("workspace_problem")
+      .then((p) => (workspaceProblem = p || ""))
+      .catch(() => (workspaceProblem = ""));
+  }
 
   async function chooseWorkspaceFolder() {
     workspaceError = "";
@@ -575,6 +597,7 @@
         setTimeout(() => (workspaceSaved = false), 2000);
       }
       workspaceDir = picked || "";
+      loadWorkspaceProblem();
     } catch (e) {
       workspaceError = String(e?.message ?? e);
     }
@@ -714,14 +737,14 @@
       wipeError = reason;
       invoke("list_memories")
         .then((m) => (memories = m || []))
-        .catch(() => {});
+        .catch(unread("Remembered facts"));
       invoke("get_memory_settings")
         .then((s) => {
           if (!s) return;
           aboutYou = s.about_you || "";
           customInstructions = s.custom_instructions || "";
         })
-        .catch(() => {});
+        .catch(unread("Personalisation"));
     }
   }
 
@@ -748,7 +771,7 @@
   if (untrack(() => isSettings)) {
     invoke("get_key_hint")
       .then((h) => (hint = h))
-      .catch((e) => console.error("Could not read key hint:", e));
+      .catch(unread("The Scaleway key"));
     invoke("get_search_settings")
       .then((s) => {
         if (!s) return;
@@ -760,7 +783,7 @@
         else if (s.url) sharedUrl = s.url;
         searchChoice = resolveSearchChoice(s.provider, s.url);
       })
-      .catch(() => {});
+      .catch(unread("Web search"));
     invoke("get_image_settings")
       .then((s) => {
         if (!s) return;
@@ -773,17 +796,18 @@
         if (s.url) imageUrl = s.url;
         if (s.model) imageModel = s.model;
       })
-      .catch(() => {});
+      .catch(unread("Image generation"));
     invoke("get_history_settings")
       .then((s) => {
         if (!s) return;
         saveHistory = s.save_history;
         historyDir = s.dir || "";
       })
-      .catch(() => {});
+      .catch(unread("Chat history"));
     invoke("get_workspace_dir")
       .then((d) => (workspaceDir = d || ""))
-      .catch(() => {});
+      .catch(unread("The workspace folder"));
+    loadWorkspaceProblem();
     // Always: the uninstall step below needs to know whether a launcher from an
     // earlier version is on disk even where the section itself is hidden.
     refreshClaudeGlm();
@@ -795,12 +819,12 @@
         customInstructions = s.custom_instructions || "";
         autoMemory = s.auto_memory;
       })
-      .catch(() => {});
+      .catch(unread("Personalisation"));
     invoke("list_memories")
       .then((m) => {
         if (Array.isArray(m)) memories = m;
       })
-      .catch(() => {});
+      .catch(unread("Remembered facts"));
     refreshUsage();
   }
 
@@ -824,7 +848,7 @@
       if (!ok) {
         status = "error";
         error =
-          "Scaleway rejected that key. Make sure you copied the full Secret Key (not the Access Key ID), and that it has access to Generative APIs.";
+          "Scaleway rejected that key. Make sure you copied the full Secret Key (not the Access Key ID). If you made it for an IAM application, that application needs a policy giving it GenerativeApisModelAccess; a new policy can take a minute or two to apply.";
         return;
       }
       await invoke("save_api_key", { key: trimmed });
@@ -870,7 +894,10 @@
       date</strong> — a year is a good default — so the key stops being useful
       if it ever escapes. When the day comes, chat stops and Sovatela says the
       key was refused and how to replace it; choose <strong>Never</strong> if
-      you would rather not be interrupted.</span>
+      you would rather not be interrupted. A key for <em>Myself</em> can do
+      anything you can on Scaleway: if your account holds anything besides
+      Sovatela, make a key for the AI models only instead (<em>Guide → Get a
+      Scaleway API key</em>).</span>
     </li>
     <li>
       <span>Copy the <strong>Secret Key</strong> — Scaleway shows it only once —
@@ -1547,11 +1574,17 @@
     a <em>report.md</em>". It can only touch files <strong>inside this one
     folder</strong>, is <strong>asked to confirm before every write</strong>,
     and <strong>cannot delete</strong> anything. Off until you pick a folder.
+    Pick one made for the purpose: your home folder, a folder that contains
+    it, or the top of a disk is refused, and so is writing anywhere programs
+    are started from at login.
   </p>
   <div class="folder-row">
     <span class="folder-label">Folder</span>
     <code class="folder-path">{workspaceDir || "None — feature off"}</code>
   </div>
+  {#if workspaceDir && workspaceProblem}
+    <p class="warn-text">This folder is not used: {workspaceProblem}</p>
+  {/if}
   <div class="actions">
     <button class="ghost" onclick={chooseWorkspaceFolder}>Choose folder…</button>
     {#if workspaceDir}
@@ -1594,13 +1627,20 @@
   </p>
 
   <p class="hint">
-    <strong>To tell the two apart on your invoice</strong>, give the terminal
-    its own key from its own Scaleway <strong>Project</strong>, and paste it
-    below. Scaleway itemises an invoice by Project, so the two then arrive on
-    separate lines — the app's line becomes something you can check the
-    estimate against, which it is not while both share one key. This changes
-    nothing in the estimate itself: terminal usage stays uncounted either way.
-    Worth confirming on your first invoice that the split appears as expected.
+    <strong>Give the terminal its own key, for the AI models only.</strong>
+    The agent this starts runs as you and can obtain the terminal key, so this
+    is the key most likely to be lost, and it should be able to do nothing
+    but call the models. In Scaleway's <strong>IAM</strong>: create an
+    application, give it a policy with only
+    <strong>GenerativeApisModelAccess</strong> for <strong>All
+    projects</strong>, generate a key with that application as the bearer, and
+    paste it below (<em>Guide → A key for the AI models only</em>). You can
+    then also revoke it without touching chat. It does <strong>not</strong> put terminal
+    use on a separate invoice line: Scaleway bills Generative APIs to the
+    Project in the request's address, and both the app and the terminal use
+    your default Project's. <em>Corrected for 1.10.7:</em> this said a key from
+    its own Project would separate them. Terminal usage stays uncounted in the
+    estimate either way.
   </p>
 
   <div class="field">
@@ -1744,12 +1784,24 @@
 
     {#if cgStatus?.launcher_installed && !cgInstalling}
       <p class="hint">
-        Ready — open a terminal and run <code>claude-glm</code>. Each run
-        may ask your system to allow reading your saved key from the OS
-        credential store. On macOS, click <strong>Allow</strong>, not
-        <strong>Always Allow</strong>: that would let any program you run read
-        every key stored here, without asking.
+        Ready — open a terminal and run <code>claude-glm</code>. On macOS it
+        asks Sovatela for the terminal key, so nothing should ask permission.
+        If macOS does ask about <code>security</code> (Sovatela was moved, for
+        example), click <strong>Allow</strong>, not <strong>Always Allow</strong>:
+        that would let any program you run read every key stored here, without
+        asking.
       </p>
+      {#if cgStatus.launcher_reads_whole_item}
+        <p class="warn-text">
+          This launcher is from an earlier version and reads every stored key
+          with macOS's <code>security</code> tool. Run setup again to replace
+          it with one that asks Sovatela for the terminal key alone. If you
+          ever clicked <strong>Always Allow</strong> for <code>security</code>,
+          remove that too: open Keychain Access, find
+          <code>com.anaubi.sovatela</code>, open Access Control, select
+          <code>security</code> and click −.
+        </p>
+      {/if}
     {/if}
   {/if}
 {/snippet}
@@ -1865,10 +1917,9 @@
       <strong>Terminal access.</strong> If you set up <code>claude-glm</code>,
       Claude Code reaches Scaleway through a local proxy without passing
       through the app, so none of it is counted — and agent sessions are far
-      heavier than chat, often by an order of magnitude or more. Giving the
-      terminal its own key from its own Scaleway <strong>Project</strong> puts
-      it on a separate invoice line, which is what makes the number below
-      checkable. See <em>Terminal access</em>.
+      heavier than chat, often by an order of magnitude or more. Scaleway's
+      invoice shows both together, because both use your default Project.
+      See <em>Terminal access</em>.
     </li>
     <li>
       <strong>Replies you stop early.</strong> The token count arrives in a
@@ -2344,6 +2395,15 @@
   <main class="onboarding">
     <button class="back" onclick={() => onBack?.()}>← Back to chat</button>
     <h1>Settings</h1>
+    {#if unreadSettings.length}
+      <div class="warn-text" role="alert">
+        Some settings could not be read, so what this page shows for them may be
+        a default rather than what you saved. Nothing has been changed.
+        <ul>
+          {#each unreadSettings as line (line)}<li>{line}</li>{/each}
+        </ul>
+      </div>
+    {/if}
     <p class="guide-link">
       New to Sovatela?
       <button class="link" onclick={() => onOpenGuide?.()}>Open the Guide →</button>

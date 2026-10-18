@@ -702,6 +702,17 @@ button.primary:disabled {
 }
 /* The matched words, marked. `mark` defaults to a yellow highlight that is
    wrong in both themes, so it is restyled rather than left to the browser. */
+/* Under the result count: what a search could not look inside, such as chats
+   whose file is only in the cloud. Information, not a failure. */
+.history-note {
+  margin: 0;
+  /* Lined up with .history-group-head above it. */
+  padding: 0 8px 6px 10px;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  line-height: 1.4;
+}
+
 .history-snippet mark {
   background: color-mix(in srgb, var(--accent) 30%, transparent);
   color: inherit;

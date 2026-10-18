@@ -13,24 +13,63 @@ other feature is optional.
 
 1. Create an account at
    [console.scaleway.com/register](https://console.scaleway.com/register).
-2. Go to **IAM → API keys** and create a key
+2. Go to **IAM → API keys** and generate a key
    ([console.scaleway.com/iam/api-keys](https://console.scaleway.com/iam/api-keys)).
    Leave **Myself** as the bearer, pick **No** for Object Storage, and set an
    **expiry date** — a year is a good default. See *A key that expires* below
-   for why, and for the case against.
+   for why, and for the case against. A key for *Myself* can do anything you
+   can on Scaleway; *A key for the AI models only*, below, says when that
+   matters and how to make one that cannot.
 3. Copy the **secret key** — Scaleway shows it once, so do it before closing
    that window. Missed it? Generate another; old keys keep working until you
    delete them, so a spare costs nothing.
+
+### A key for the AI models only
+
+**Make one if you use terminal access (`claude-glm`), or if your Scaleway
+account holds anything besides Sovatela.** For anyone else it is optional.
+
+A Scaleway key can do whatever its bearer can. A key made for *Myself* carries
+all of your own permissions: on an account you opened yourself, it could start
+servers on your bill and, if you keep anything else there, read or delete it.
+A key made for an application whose only permission is
+**GenerativeApisModelAccess** can do one thing: ask the models for text, which
+costs money and reads nothing. Terminal access is the case where a key is
+easiest to lose: the coding agent it starts runs as you, and can obtain the
+terminal key ([SECURITY.md](../SECURITY.md#credentials) says how). Scaleway
+cannot cap what a key spends (its documentation says usage cannot be blocked
+past a threshold), but you can set a **billing alert**.
+
+In the console's **IAM** section
+([console.scaleway.com/iam](https://console.scaleway.com/iam)):
+
+1. **Applications → Create application.** Call it *Sovatela*.
+2. **Policies → Create policy.** Choose the *Sovatela* application as the
+   principal. In the rule, pick the permission set
+   **GenerativeApisModelAccess** (under *Generative APIs*) and the scope
+   **All projects**. Nothing else. Do not skip this step: an application with
+   no policy can do nothing, Scaleway still lets you make a key for it, and
+   Sovatela will then say the key was rejected. A new policy can take a minute
+   or two to apply.
+3. **API keys → Generate API key.** Choose the *Sovatela* application as the
+   bearer, pick **No** for Object Storage, and set an expiry date.
+4. Paste it into *Settings → Scaleway API key* (or *Settings → Terminal
+   access* for the terminal), then delete the key it replaces in the console.
+
+**Why "All projects".** Sovatela sends its requests to Scaleway's address for
+your default Project. A policy limited to another Project would refuse them.
 
 ### A key that expires
 
 Scaleway lets you give a key an expiry date, and it is worth using one.
 
-Sovatela cannot leak your key — it lives in the operating system's credential
-store, is never shown back to you after saving, and is sent only to Scaleway.
-But keys get out in ways an application has no say over: a screenshot, a note
-you left yourself, an old backup, a laptop you no longer have. An expiry date
-is what limits how long any of that is worth anything to whoever finds it.
+Sovatela keeps your key in the operating system's credential store, never
+shows it back to you after saving, and sends it only to Scaleway. But keys get
+out in ways an application has no say over — a screenshot, a note you left
+yourself, an old backup, a laptop you no longer have — and some it can only
+limit (see *Credentials* in [SECURITY.md](../SECURITY.md#credentials)). An
+expiry date is what limits how long any of that is worth anything to whoever
+finds it.
 
 **The cost is that chat stops on that day**, and the app cannot warn you in
 advance, because it never sees the expiry date — only Scaleway knows it. What

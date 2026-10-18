@@ -8,6 +8,13 @@ fn main() {
     if scale_lib::doc_sandbox::run_helper_if_requested() {
         return;
     }
+    // The claude-glm launcher asks for the terminal key this way on macOS, so
+    // that it never needs a grant on the whole credential item. Prints one key
+    // and exits; no window, no network.
+    #[cfg(target_os = "macos")]
+    if scale_lib::run_terminal_key_if_requested() {
+        return;
+    }
     // Validation only, and only in a testhooks build: the self-test and probes
     // the Windows gate measures confinement with. A build that could ship has
     // none of them, and their flags fall through to the refusal below.

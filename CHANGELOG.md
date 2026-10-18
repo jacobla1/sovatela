@@ -1,5 +1,55 @@
 # Changelog
 
+## 1.10.7 — 2026-10-18
+
+Fixes for what an independent review of 1.10.6 found before its
+announcement, and two problems found since. Nothing here was known to have
+been exploited. Terminal access needs action from anyone who uses it; see the
+release notes.
+
+- **Terminal access hands over one key, not all of them.** On macOS the
+  `claude-glm` launcher read the whole credential item with `security`, and
+  our documents said to answer the prompt with Always Allow, which let any
+  program read every stored key. The launcher now asks Sovatela for the
+  terminal key alone, so `security` needs no grant. Settings recognises an
+  older launcher and says to run setup again. Any program running as you can
+  still ask Sovatela for that one key, which is why a key for the AI models
+  only is now the advice for terminal access (#67, #71). Found by the review
+  (T1).
+- **A web page can no longer crash the app.** A page nested tens of
+  thousands of levels deep overflowed the page reader's stack. Such a page is
+  refused before it is converted, converting runs where the time limit and
+  Stop can abandon it, and Stop ends a page read straight away (#64; R1, R2).
+- **Workspace writes stay away from what starts at login.** Your home
+  folder, a folder containing it, and the top of a disk are no longer
+  accepted as the workspace; a folder chosen before is not used, and Settings
+  says why. Login items, start-up folders and shell start-up files are
+  refused anywhere in a workspace; on Windows a runnable file is not replaced;
+  the approval says how many lines it does not show (#66; W1, W2).
+- **Artifacts are kept off the network on macOS.** A preconnect in an
+  artifact made the app open a connection to any host it named. The macOS
+  window now refuses every network address, and artifacts do not run if that
+  cannot be put in place. Elsewhere the link hints are stripped, which can be
+  got past (#68; A1).
+- **A reply that cannot be formatted is shown as plain text**, instead of
+  leaving the previous chat's reply on screen (#63; R3).
+- **Searching and deleting chats no longer fetch ones that are only in
+  iCloud**; the search says how many it could not look inside (#65; F3b).
+- **A chat with an image no longer fails mid-research.** Its replies come
+  from the vision model, which refused the "start concluding" instruction
+  placed after a tool result (#72). Found by the owner.
+- Smaller: a link's real destination shows on hover, and a link whose text
+  names another host asks first; settings that cannot be read say so; a
+  not-JSON import says what to choose; IPv4-translated addresses count as
+  private; the Linux package has a description (#69; L1, I4, U2, I1, H-b).
+- **Documents.** The privacy policy, security page, README and FAQ said
+  artifacts had no network access, and several cloud-folder and workspace
+  claims overstated 1.10.6; corrected on the site on 2026-10-18, ahead of
+  this release (#62). The Quick Start now says what a key made for *Myself*
+  can do, and how to make one for the AI models only (#70, #71). Three
+  places said a terminal key from its own Project splits the Scaleway
+  invoice; it does not, and they are corrected.
+
 ## 1.10.6 — 2026-10-17
 
 The first published release with the fixes from an independent review of
@@ -1810,7 +1860,10 @@ project's own tooling turned up.
   and the two arrive on separate invoice lines, which is what makes the app's
   estimate checkable — Scaleway itemises by Project, and a single shared key
   makes app and terminal usage indistinguishable there. This does not add
-  terminal usage to the estimate; nothing does.
+  terminal usage to the estimate; nothing does. *Corrected 2026-10-18:* the
+  invoice split does not happen. Scaleway bills Generative APIs to the Project
+  in the request's address, and the app and the launcher both use the default
+  Project's, whichever key is sent.
 
   There is a security dividend too: terminal access can then be revoked without
   breaking chat.

@@ -242,13 +242,15 @@ describe("high-risk promises match the implementation", () => {
 
   // Every page said an artifact has no network. The 1.10.6 review showed it has
   // one: a <link rel="preconnect"> makes WebKit open a connection to any host
-  // the artifact names, and the frame's CSP does not cover it. Nothing here
-  // can run WebKit, so the precondition is the absence of an engine-level
-  // block in the code. When one ships and is verified on an installed build,
-  // this sweep is forbidding a true statement and must be narrowed.
+  // the artifact names, and the frame's CSP does not cover it. 1.10.7 adds an
+  // engine-level block on macOS (src-tauri/src/artifact_net.rs), measured in a
+  // WKWebView harness but not yet on an installed build. Until the review's
+  // P1-P4 probe passes on the installed 1.10.7, documents keep saying an
+  // artifact can connect. When it passes, narrow this sweep to Windows and
+  // Linux, which have no such block.
   it("no tracked file says an artifact has no network", () => {
     const rust = read("src-tauri/src/lib.rs");
-    expect(rust, "an engine-level block exists now; revisit this sweep").not.toMatch(
+    expect(rust, "the block moved into lib.rs; revisit this sweep").not.toMatch(
       /WKContentRuleList|proxyConfigurations/,
     );
 
@@ -326,6 +328,43 @@ describe("high-risk promises match the implementation", () => {
       "these advise Always Allow for the launcher's keychain read. That grant " +
         "lets any program read every stored key; advise Allow (SECURITY.md).",
     ).toEqual([]);
+  });
+
+  // A Scaleway key carries every permission of its bearer. The simple path,
+  // a key for "Myself", is still offered, because the models-only key costs
+  // new users three extra steps (owner's decision, 2026-10-18). What may not
+  // happen is advising it without saying what such a key can do. Separately,
+  // several places said a terminal key from its own Project splits the
+  // invoice; Scaleway bills the Project in the request URL, and the app and
+  // launcher both use the default one's.
+  it("advice to make a key for Myself says what that key can do", () => {
+    const tracked = execFileSync("git", ["ls-files", "-z"], { cwd: repo, encoding: "utf8" })
+      .split("\0")
+      .filter((f) => /\.(md|svelte|js|rs|html)$/.test(f))
+      .filter((f) => f !== "tests/docPromises.test.js" && !/^docs\/release\/(QA-|REVIEW-)/.test(f));
+    const advice = /leave (?:<strong>|\*\*)?myself(?:<\/strong>|\*\*)? as the bearer/i;
+    const warned = /can do anything you can/i;
+    const split = [
+      /itemis\w* (?:an |the |your )?invoices? by project/i,
+      /own (?:scaleway )?(?:<strong>|\*\*)?project(?:<\/strong>|\*\*)?[^.]*separate (?:invoice )?lines?/i,
+    ];
+    const unwarned = [];
+    const splits = [];
+    for (const f of tracked) {
+      if (!existsSync(join(repo, f))) continue; // withheld from the public mirror
+      for (const paragraph of paragraphs(read(f))) {
+        if (advice.test(paragraph) && !warned.test(paragraph)) unwarned.push(`${f}: ${paragraph.slice(0, 140)}`);
+        if (split.some((c) => c.test(paragraph)) && !CORRECTION.test(paragraph)) {
+          splits.push(`${f}: ${paragraph.slice(0, 140)}`);
+        }
+      }
+    }
+    expect(unwarned, "say that a key for Myself can do anything you can on Scaleway").toEqual([]);
+    expect(splits, "Generative APIs bill the Project in the request URL, not the key's").toEqual([]);
+    // And the models-only key is still described where people set keys up.
+    for (const f of ["docs/QUICKSTART.md", "src/lib/KeyPage.svelte", "deploy/claude-glm/README.md"]) {
+      expect(read(f), `${f} no longer describes the models-only key`).toContain("GenerativeApisModelAccess");
+    }
   });
 
   // The same page said an advisory had not been issued. One was.

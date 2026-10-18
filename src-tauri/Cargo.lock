@@ -3738,9 +3738,10 @@ dependencies = [
 
 [[package]]
 name = "scale"
-version = "1.10.6"
+version = "1.10.7"
 dependencies = [
  "base64 0.22.1",
+ "block2",
  "flate2",
  "futures-util",
  "html2text",
@@ -3753,6 +3754,7 @@ dependencies = [
  "objc2-core-graphics",
  "objc2-foundation",
  "objc2-vision",
+ "objc2-web-kit",
  "pdf-extract",
  "quick-xml",
  "regex",

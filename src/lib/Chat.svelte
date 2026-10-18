@@ -147,9 +147,11 @@
   // The app is explorable without a key; replies just won't work. Assume a key
   // until told otherwise so the banner doesn't flash for connected users.
   let hasKey = $state(true);
+  // A failure is said, not swallowed: an unreadable credential store looked
+  // exactly like a key that was there (the 1.10.6 review, I4).
   invoke("has_api_key")
     .then((v) => (hasKey = !!v))
-    .catch(() => {});
+    .catch((e) => showFailure("Your saved key could not be read", e, { repeat: false }));
 
   // ---------- Header status dot: a real Scaleway health check ----------
   // Mirrors the backend states from check_connection. The dot only ever shows
@@ -195,7 +197,7 @@
       imageProvider = provider;
       bflModel = (s.bfl_model || "").trim() || "flux-pro-1.1";
     })
-    .catch(() => {});
+    .catch((e) => showFailure("The image settings could not be read", e, { repeat: false }));
 
   // Whether a search provider actually resolves — the backend decides, so the
   // provider-fallback rules live in one place. Chat is torn down and rebuilt
@@ -210,7 +212,7 @@
         rememberToggles();
       }
     })
-    .catch(() => {});
+    .catch((e) => showFailure("The web search settings could not be read", e, { repeat: false }));
 
   // ---------- Conversation history (local) ----------
   let conversationId = $state(newConversationId());
@@ -584,9 +586,11 @@
     // renderer no longer holds `opener:default`, so a compromised one cannot
     // hand the operating system a `file://` or a custom scheme.
     if (/^https?:\/\//i.test(href)) {
-      invoke("open_external", { url: href }).catch((err) =>
-        showFailure("That link was not opened", err),
-      );
+      // The visible text goes too, so Rust can ask first when it names a
+      // different host from the one the link opens (L1).
+      invoke("open_external", { url: href, shown: a.textContent || "" }).catch((err) => {
+        if (String(err?.message ?? err) !== "cancelled") showFailure("That link was not opened", err);
+      });
     }
   }
 
@@ -2189,6 +2193,13 @@
   </button>
 {/snippet}
 
+    <!-- Keyed by chat, so opening another chat builds its messages afresh
+         rather than reusing this one's nodes. Reuse is what let a reply that
+         failed to render keep showing the previous chat's text (the 1.10.6
+         review, R3); renderMd no longer throws, and this makes sure no other
+         failure can do the same. The id changes only on New and Open, never
+         while a reply streams. -->
+    {#key conversationId}
     {#each messages as m, mi}
       <!-- `editing` widens the turn. A user message is normally a card sized to
            its own text and right-aligned, which is the wrong shape to rewrite a
@@ -2292,13 +2303,14 @@
                 {:else if part.type === "artifact"}
                   <!-- Pressing this runs code the model wrote, in a frame with
                        no network loads, no storage and no way back into the
-                       app (a preconnect still connects; SECURITY.md). The
+                       app (on Windows and Linux a preconnect still connects;
+                       SECURITY.md). The
                        label says "run" rather than "open" because that is what
                        it does, and because until 1.8.4 it happened by itself
                        the moment a reply arrived. -->
                   <button
                     class="artifact-chip"
-                    title="Runs this generated code in a sandboxed frame, with no access to your files or this app. It can still make the app connect to a server it names, so run code only from chats you trust"
+                    title="Runs this generated code in a sandboxed frame, with no access to your files or this app. On Windows and Linux it can still make the app connect to a server it names, so there, run code only from chats you trust"
                     onclick={() => openArtifact(part)}
                   >
                     ◆ {titleFor(part)} · run ↗
@@ -2426,6 +2438,7 @@
         </div>
       </div>
     {/each}
+    {/key}
     </div>
   </div>
 

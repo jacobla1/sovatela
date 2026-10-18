@@ -185,8 +185,9 @@ endpoint for chat; see the Roadmap.
   send** — never stored inside the saved conversation, so they can't go stale.
 - **Artifacts** render in `<iframe sandbox="allow-scripts">` (no same-origin) +
   a strict CSP — generated code cannot reach Tauri or the keychain, or load
-  anything from the network. It can still make the app open a connection to a
-  host it names (see [SECURITY.md](SECURITY.md#generated-code)).
+  anything from the network. On Windows and Linux it can still make the app
+  open a connection to a host it names; on macOS, from 1.10.7, the window
+  refuses every network address (see [SECURITY.md](SECURITY.md#generated-code)).
 
 ## Project layout
 
@@ -380,10 +381,12 @@ Full index: [`docs/README.md`](docs/README.md).
   **reveal the history folder** and **delete all stored data** in one step.
 - Artifacts run in an opaque-origin sandbox with a CSP that denies loading,
   storage and navigation: generated code cannot reach your files or this app,
-  or load anything online. **It can make the app open a connection to a host
-  it names**, which can tell that host the artifact ran and carry what the
-  artifact holds in the name; run artifacts only from chats you trust. It is
-  **not** isolated from the window's CPU and memory, so code that loops forever can still make the app unresponsive — which is why
+  or load anything online. **On Windows and Linux it can make the app open a
+  connection to a host it names**, which can tell that host the artifact ran
+  and carry what the artifact holds in the name; run artifacts only from chats
+  you trust there. On macOS, from 1.10.7, the window refuses every network
+  address. It is **not** isolated from the window's CPU and memory, so code
+  that loops forever can still make the app unresponsive — which is why
   nothing runs until you press *run* on the artifact.
 
 ## Roadmap

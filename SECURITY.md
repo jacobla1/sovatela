@@ -49,6 +49,21 @@ service name `com.anaubi.sovatela`. They are:
 Plaintext copies written by early pre-release versions are migrated into the
 credential store on first launch and removed.
 
+**What a Scaleway key can do decides what a lost one costs.** A Scaleway key
+carries every permission of its bearer. Until 1.10.7 the Quick Start said to
+make the key for *Myself*, which on an account you opened yourself means all of
+it: servers, Object Storage, databases, backups. That is still the simplest
+path, and the Quick Start still offers it, now saying what such a key can do.
+For terminal access, and for anyone whose Scaleway account holds anything
+besides Sovatela, it says to make the key for an IAM application whose only
+permission is **GenerativeApisModelAccess**. A key like that can only ask the
+models for text, which costs money and reads nothing. Scaleway cannot cap what
+a key spends; a billing alert is the nearest thing. A later version is planned
+to make that key for you from the one you paste. This matters because a key can leave this app in ways the
+app does not prevent: on macOS, any program running as you can ask Sovatela for
+the terminal-access key (see *Terminal access*), and on Windows and Linux any
+such program can read the credential store directly.
+
 ### Network
 
 All HTTPS calls are made from the Rust backend using `reqwest`, not from the
@@ -69,7 +84,7 @@ Everything the app can contact, and when:
 | **At launch, only if you switch it on** | `https://sovatela.eu/version.json` | The same, and the same caveat. *Settings → About → Check for a new version when Sovatela starts* is off by default; enabling it makes this the second automatic call, and it is the only setting that adds one |
 | *Settings → Usage →* **Check for updated prices** | `raw.githubusercontent.com/jacobla1/sovatela/…/pricing.json` | The same — a static file, only on a press |
 | With **web search on**, during a search | Any public page the model decides to read | The request for that page. The address is chosen by the model, not by you — see below |
-| **Only when you agree**, after choosing a file whose contents are in the cloud | Your cloud service — iCloud Drive, or another service through macOS — via macOS | The request for that file. Sovatela asks first, naming the file, and macOS does the fetching; nothing from your conversations is sent, and the service learns that the file was downloaded to this Mac. Offered only for a file you just chose as an attachment, a template or a chat to import. A file the app reaches on its own (a workspace file the model asked for, or a chat in your history folder in iCloud Drive) is not fetched when it opens, lists or saves; it is treated as not there yet. **Two places in 1.10.6 still read without checking** (the independent review of 1.10.6 found them): searching chats reads every chat file, and deleting one reads it first for its title. On a chat whose file is only in the cloud, either asks macOS for it, which downloads it when online and waits when offline. Planned for 1.10.7 |
+| **Only when you agree**, after choosing a file whose contents are in the cloud | Your cloud service — iCloud Drive, or another service through macOS — via macOS | The request for that file. Sovatela asks first, naming the file, and macOS does the fetching; nothing from your conversations is sent, and the service learns that the file was downloaded to this Mac. Offered only for a file you just chose as an attachment, a template or a chat to import. A file the app reaches on its own (a workspace file the model asked for, or a chat in your history folder in iCloud Drive) is not fetched when it opens, lists or saves; it is treated as not there yet. **Until 1.10.7 two places read without checking** (the independent review of 1.10.6 found them): searching chats read every chat file, and deleting one read it first for its title, so an evicted chat was downloaded when online and waited for when offline. 1.10.7 searches only the titles of chats that are not on this Mac, and says how many it could not look inside; deleting one takes its name from the chat list and reads nothing |
 
 **The page reader deserves stating plainly.** When web search is on, the model
 can decide to open a page it found, and that address is its choice. Injected
@@ -84,10 +99,14 @@ carry an IPv4 address inside them; 1.10.4 refuses them, and puts a
 limit. **That limit covers fetching, not reading.** This page said it gave a
 page 45 seconds in all; the independent review of 1.10.6 showed that turning
 a fetched page into text is not bounded by it. A page built to be slow to
-convert keeps the app working on it for longer, which a page near the 2 MiB
-cap can stretch to minutes, and a page nested deeply enough crashes the app.
-Fixing both is planned for 1.10.7. What is *not* constrained is which public
-site it reads. Turning web search off removes this entirely.
+convert kept the app working on it for longer, which a page near the 2 MiB
+cap could stretch to minutes, and a page nested deeply enough crashed the app.
+**1.10.7 bounds reading too.** A page nested deeper than 512 levels, which no
+page a browser shows is, is refused before it is converted, by a cheap count
+of its tags and then by its real depth once parsed. Converting runs where the
+45-second limit and Stop can abandon it, and Stop ends a page read straight
+away. What is *not* constrained is which public site it reads. Turning web
+search off removes this entirely.
 
 **A third correction, on the same table.** Both update rows said the check
 sends "nothing". No *application* data is sent — no identifier, no version, no
@@ -296,8 +315,8 @@ Artifacts — charts, diagrams, small applications the model writes — render i
 `<iframe sandbox="allow-scripts">` without `allow-same-origin`, under a strict
 Content-Security-Policy. That keeps generated code away from the Tauri IPC
 bridge, the credential store and your filesystem, and stops it loading
-anything. **It does not keep it off the network entirely**, and until
-2026-10-18 this page said it did.
+anything. Until 1.10.7 that did not keep it off the network entirely, and
+until 2026-10-18 this page said it did.
 
 **An artifact can make the app open a connection to a host it names.** A
 `<link rel="preconnect">` in an artifact, written into the page or added by
@@ -310,9 +329,27 @@ on to the name's own servers. An artifact holds what the model wrote into it,
 which can include text from your conversation. The independent review of
 1.10.6 found this and confirmed it on the installed app, with a local
 listener; `dns-prefetch` and `prefetch` connected nothing, and every route
-that navigates stayed closed. Run artifacts only from chats you trust, which
-includes a chat file someone sent you. Windows has not been checked, and
-WebView2 most likely behaves the same. Closing it is planned for 1.10.7.
+that navigates stayed closed.
+
+**On macOS, 1.10.7 blocks it in the engine.** The window's web view is given
+a content rule list that refuses every `http`, `https`, `ws` and `wss`
+address, and WebKit applies that to preconnects as well as to loads. The
+window itself loads nothing over the network (everything that reaches the
+internet is done in Rust), so the block costs it nothing. If the list cannot
+be put in place, artifacts are not run at all, and the panel says why. This
+was measured before it was written, in a web view that frames an artifact the
+way the app does: without the list the review's preconnects reached a local
+listener, with it nothing did, while the artifact still ran. Whether it holds
+in the installed release is a condition of publishing it, recorded in
+QA-1.10.7.
+
+**On Windows and Linux it is not blocked.** Every platform strips the link
+hints that reach out (`preconnect`, `dns-prefetch`, `prefetch`, `preload`,
+`modulepreload`, `prerender`) from an artifact before it runs, and neutralises
+them on links its script creates later, but a determined artifact can get
+past that. There, run artifacts only from chats you trust, which includes a
+chat file someone sent you. Windows has not been checked, and WebView2 most
+likely behaves as WebKit did.
 
 **Checked against the installed 1.10.3 on macOS, on 2026-10-16**, and again
 by the independent review on the installed 1.10.6 on 2026-10-17, with the
@@ -450,21 +487,22 @@ with such characters, a write into a hidden folder (a dotfile such as
 Linux, replacing a file that can be run. A new file is created without
 permission to run, as before.
 
-**Two limits found by the independent review of 1.10.6**, both planned for
-1.10.7:
+**Two limits found by the independent review of 1.10.6, fixed in 1.10.7:**
 
-- **"A file that can be run" means one marked runnable, so the rule applies on
+- **"A file that can be run" meant one marked runnable, so the rule applied on
   macOS and Linux only.** Windows has no such mark; whether a file runs there
   depends on its name, so an existing `.bat`, `.cmd`, `.ps1` or `.exe` in the
-  folder can be replaced once you approve it. This page stated the rule
-  without saying so.
-- **The folder you grant can be your home folder**, and then the places that
-  start programs when you log in are inside it: `Library/LaunchAgents` on
-  macOS, the `Startup` folder on Windows, and shell start-up files such as
+  folder could be replaced once approved. 1.10.7 refuses replacing a file
+  Windows runs by its name.
+- **The folder you granted could be your home folder**, and then the places
+  that start programs when you log in were inside it: `Library/LaunchAgents`
+  on macOS, the `Startup` folder on Windows, and shell start-up files such as
   `.zshrc`. Those are not hidden folders, a file there needs no permission to
-  run, and the question shows only the first six lines of what is written.
-  Grant a folder made for the purpose, not your home folder, and read the path
-  in each question.
+  run, and the question showed only the first six lines of what was written.
+  1.10.7 refuses your home folder, a folder that contains it, and the top of a
+  disk as the workspace; a folder chosen before is left in the settings but
+  not used, and Settings says why. Those places are refused anywhere in a
+  workspace, and the question says how many lines it is not showing.
 
 ### Third-party code
 
@@ -667,8 +705,8 @@ Stated plainly, because a security page that only lists strengths is not useful:
   [security note](docs/release/SECURITY-NOTE-2026-08-30-claude-glm.md), which records what
   was wrong and what to do if you installed it before that.
 
-  **On macOS, the launcher reads the whole credential-store item, and this
-  project told you to let it do so forever.** The item holds every key you
+  **Until 1.10.7, on macOS, the launcher read the whole credential-store
+  item, and this project told you to let it do so forever.** The item holds every key you
   have stored: Scaleway, the terminal key, Black Forest Labs, OVHcloud,
   Linkup, Qwant Staan, and the SearXNG and image tokens. The launcher keeps
   only the Scaleway key, but it reads the item with `/usr/bin/security`, and
@@ -679,13 +717,29 @@ Stated plainly, because a security page that only lists strengths is not useful:
   includes Claude Code, which `claude-glm` starts, and which runs commands
   from repositories and pages it did not write. The independent review of
   1.10.6 found this and confirmed the grant on the publisher's own Mac.
-  Answer **Allow**, which is asked at each launch. If you clicked Always Allow,
-  open **Keychain Access**, find `com.anaubi.sovatela`, open *Access Control*,
-  select `security` and click **−**. If anything there is unfamiliar, remove
-  it and replace your keys. 1.10.7 is planned to hand the launcher the
-  terminal key alone, so that `security` needs no grant. Linux and Windows
-  have no per-program grant to give: any program running as you can read the
-  item there, as they always could.
+  If you clicked Always Allow, open **Keychain Access**, find
+  `com.anaubi.sovatela`, open *Access Control*, select `security` and click
+  **−**. If anything there is unfamiliar, remove it and replace your keys.
+
+  **From 1.10.7 the launcher asks Sovatela for the terminal key alone**, and
+  `security` needs no grant. The item already trusts Sovatela, so there is no
+  prompt, and the other keys never leave it. Run setup again to get the new
+  launcher: it lives outside the app, and Settings says when yours is an old
+  one. **What remains:** any program running as you can ask Sovatela for that
+  one key the same way, Claude Code included, and on Linux and Windows, which
+  have no per-program grant, any such program can read the whole item as it
+  always could. So make the terminal key for an IAM application whose only
+  permission is **GenerativeApisModelAccess** (see *Credentials*): taken, it
+  can only spend, not reach the rest of your Scaleway account.
+- **The release build jobs hold a write token while running install
+  scripts.** On the public repository, the Linux and Windows jobs need
+  `contents: write` to upload to the draft release, and they run `npm ci` and
+  the Rust build, whose dependencies' install and build code could use that
+  token while the job runs: to edit the draft or push a tag. Accepted rather
+  than restructured just before a release (the independent review of 1.10.6
+  rated it informational): the tokens expire before the macOS job signs,
+  notarization and the build attestations bind the files that are published,
+  and a published release cannot be changed.
 - **Single-item deletions, if the renderer is ever compromised.** Deleting a
   chat, and deleting all chats, projects and memory, confirm natively in the
   backend, so the dialog cannot be skipped by whatever called the command.
@@ -831,6 +885,31 @@ than filed away:
     *Network*); and a link is now opened exactly as it was checked, since the
     address parser and the system's opener read tabs, newlines and
     backslashes differently.
+- **Found by an independent review of 1.10.6 and fixed in 1.10.7**, with the
+  advisory for terminal access below:
+  - **Terminal access opened every stored key to any program** (T1, Medium),
+    through the Always Allow grant on `security` this project advised. See
+    *Terminal access* under *What this does not protect against*, and the
+    [security note](docs/release/SECURITY-NOTE-2026-10-terminal-key.md).
+  - **A web page could crash the app** (R1, Medium): nesting deep enough to
+    overflow the page reader's stack. Needs web search on. The page is now
+    refused before it is converted. Processing a page was also unbounded (R2,
+    Low); see *Network*.
+  - **Approved workspace writes could reach login items** (W1, Medium) when
+    the workspace was the home folder, and on Windows a runnable file could be
+    replaced (W2, Low). See *Workspace*.
+  - **An artifact could open network connections** (A1, Low): blocked in the
+    engine on macOS, hardened elsewhere. See *Generated code*.
+  - **A reply that failed to render showed another chat's reply** (R3,
+    Low–Medium): now shown as plain text, with a notice.
+  - **Search and delete read chats that are only in the cloud** (F3b, Low).
+  - Smaller: a link's real destination is now shown, and confirmed when its
+    text names another host (L1); settings that cannot be read now say so
+    (I4); IPv4-translated addresses count as private (I1).
+- **Found by the owner and fixed in 1.10.7:** a chat holding an image failed
+  after a few rounds of research, because the vision model refuses an
+  instruction placed after a tool result. Not a security issue; listed for
+  completeness.
 - **Found by an independent review of 1.10.4 and fixed in 1.10.6** (the fixes
   were tagged as 1.10.5, which was not published; see the CHANGELOG):
   - **An imported chat could make the window do unbounded work.** The import

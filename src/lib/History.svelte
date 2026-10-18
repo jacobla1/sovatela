@@ -73,6 +73,9 @@
   let results = $state(null); // null = not searching; [] = searched, nothing found
   let searching = $state(false);
   let searchError = $state("");
+  // Chats whose file is only in the cloud: their titles were searched, their
+  // contents were not (reading one would download it, or hang offline).
+  let notOnThisMac = $state(0);
   let searchToken = 0;
 
   async function runSearch(q) {
@@ -86,10 +89,11 @@
     searching = true;
     searchError = "";
     try {
-      const hits = await onSearch?.(q);
+      const found = await onSearch?.(q);
       // A slower earlier search must not overwrite a later one's results.
       if (mine !== searchToken) return;
-      results = hits ?? [];
+      results = found?.hits ?? [];
+      notOnThisMac = found?.not_on_this_mac ?? 0;
     } catch (e) {
       if (mine !== searchToken) return;
       results = [];
@@ -317,6 +321,13 @@
       </div>
       {#if searchError}
         <p class="warn-text" role="alert">{searchError}</p>
+      {:else if !searching && notOnThisMac > 0}
+        <p class="history-note">
+          {notOnThisMac === 1
+            ? "1 chat is stored only in the cloud, so only its title was searched."
+            : `${notOnThisMac} chats are stored only in the cloud, so only their titles were searched.`}
+          Open {notOnThisMac === 1 ? "it" : "them"} in Finder to download.
+        </p>
       {/if}
       <ul class="history-group" role="list" aria-labelledby="hist-group-results">
         {#each results as c (c.id)}

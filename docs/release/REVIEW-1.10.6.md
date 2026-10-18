@@ -95,10 +95,40 @@ documents PR (branch `docs/review-1.10.6-claims`), then the site and public
       points here.
 - [x] **Accessibility statement:** records VoiceOver reading the import
       refusal on 1.10.6. The chat list stays unverified.
-- [ ] **Known limitations for users:** A1 until §2 closes it, R1/R2 until
-      fixed, and A1/S4 unverified on WebView2. They go in the 1.10.7 release
-      notes' limitations; SECURITY.md carries them now.
-      (`docs/KNOWN_LIMITATIONS.md` is local and not published.)
+- [x] **Scoped Scaleway keys** *(raised by the owner, 2026-10-18; not in the
+      review).* The Quick Start and the welcome screen said to make the key
+      for *Myself*. That bearer carries every permission the person has, so a
+      lost key meant the whole Scaleway account: servers, storage, databases,
+      backups. Keys are now made for an IAM application whose only permission
+      is `GenerativeApisModelAccess`, for all Projects, so a lost key costs
+      money and reads nothing. This was checked against Scaleway's
+      documentation on 2026-10-18:
+      - a key inherits its bearer's permissions;
+      - Generative APIs need `GenerativeApisModelAccess` or broader;
+      - a request URL without a Project ID can only be used with the default
+        Project;
+      - usage cannot be blocked past a threshold; there are billing alerts
+        only.
+
+      SECURITY.md (*Credentials*) and the claude-glm README now say what a
+      lost key can do. A docPromises sweep guards the wording.
+      **Tiered, by the owner's decision (2026-10-18):** three extra console
+      steps are a real onboarding cost. So the simple *Myself* key stays the
+      default, and the advice beside it says what it can do. A models-only
+      key is required advice for terminal access, and for anyone whose
+      Scaleway account holds anything else. The sweep now insists that any
+      *Myself* advice states the risk, rather than forbidding the advice.
+- [x] **The invoice split by Project was wrong** *(found while checking the
+      above).* The claude-glm README, Settings (twice), TROUBLESHOOTING, a
+      code comment and the 1.2.0 CHANGELOG entry said a terminal key from its
+      own Project puts terminal use on a separate invoice line. Scaleway bills
+      the Project in the request URL, and both the app and the launcher use
+      the default Project's. All are corrected, and the same sweep guards
+      them.
+- [x] **Known limitations for users** (release PR). The 1.10.7 release notes
+      say artifacts are kept off the network on macOS only. SECURITY.md
+      carries the T1 residual, the per-platform A1 status, and I3 as
+      accepted.
 - [-] **The GitHub release text of 1.10.6 and 1.10.4:** checked, and no
       change is needed. Both use the generic template, which links to
       `CHANGELOG.md` on public `main`. The site's release feed and the
@@ -109,93 +139,224 @@ documents PR (branch `docs/review-1.10.6-claims`), then the site and public
 Each item lands as its own PR, with a test that exercises the behaviour, not
 the source text (I5).
 
-- [ ] **A1: in-app text.** Correct the run chip's tooltip (`Chat.svelte:2300`).
-- [ ] **A1: stop the channel.**
-      - Interim hardening: strip `rel=preconnect|dns-prefetch|prefetch|
-        preload|modulepreload` from staged HTML, send
-        `x-dns-prefetch-control: off`, and add a first-running script that
-        neutralises `rel` on links created later.
-      - Engine-level block on macOS, time-boxed (decided 2026-10-18). Ship it
-        only if P1–P4 go silent on the installed build. Neither option is
-        verified yet:
-        - a block-everything `WKContentRuleList`;
-        - a dead proxy on the webview's data store (macOS 14+).
+- [x] **A1: in-app text.** The run chip's tooltip was corrected in #62.
+- [x] **A1: stop the channel** (#68).
+      - **Measured first,** in a WKWebView harness that frames an artifact as
+        the app does: a custom scheme, the artifact CSP, a sandboxed iframe,
+        and a loopback listener.
+        - With no block, P1–P3 connect and dns-prefetch, preload and
+          modulepreload do not. This reproduces the review.
+        - A block-all **WKContentRuleList** stops all three, and the
+          artifact still runs (positive control).
+        - A proxy on the data store is **not used for preconnects** at all,
+          so it was dropped.
+      - **macOS:** `artifact_net::install` attaches a rule list blocking
+        `http(s)` and `ws(s)` to the main webview at start-up. The window
+        loads nothing over the network itself. Debug builds exempt the dev
+        server. It fails closed: `stage_artifact` refuses to run an artifact
+        until the block is in place, and says why if it could not be.
+      - **Every platform:** interim hardening. Link hints are stripped as
+        written, a first-running script neutralises hints on links created
+        later (placed after a doctype, so quirks mode is not triggered), and
+        `X-DNS-Prefetch-Control: off` is sent. It can be got past, and is
+        labelled so.
+      - **Windows/Linux:** no engine block. Windows frames artifacts from
+        `http://artifact.localhost`, so this rule shape would block the
+        artifact itself. WebView2 proxy switches and WebKitGTK filters were
+        not tried, because there is no machine to test them on and an untested
+        switch could break the window. They stay disclosed.
+      - **Owed, installed-build check (decisive):** the review's P1–P4
+        (`poc/scripts-2/make-preconnect.mjs`, listeners 8735–8738) on the
+        signed 1.10.7. Nothing should connect, and the artifact should still
+        draw. Only after that do the macOS documents say artifacts cannot
+        connect, and the docPromises sweep is narrowed.
+- [x] **T1: in-app text.** Done in #62: the Settings hint and the launcher
+      comment say Allow, not Always Allow. #67 re-words the hint again for the
+      handover.
+- [x] **T1: narrow what the launcher can read** (#67).
+      - `scale --sovatela-terminal-key` prints the terminal key alone (the
+        chat key if no separate one is set) and exits before anything starts.
+        It refuses to print to a terminal, and refuses extra arguments.
+      - The installer records the app's own path, which the app passes it, in
+        `~/.config/claude-glm/sovatela-app`.
+      - The launcher asks that binary first. It falls back to `security`, with
+        the Allow advice, only if the app is gone. The credential item already
+        trusts the app, so the handover prompts no one and needs no grant for
+        `security`. The single entry stays.
+      - *Residual, to disclose in SECURITY.md (release PR):* any program
+        running as the person can run the flag and get that one key.
+      - `verify-launcher.sh` covers it: the key comes from the app and
+        `security` is never asked; without the app it falls back; exit 3 stops
+        with "no key stored". The first two fail against the old launcher.
+      - On the real debug binary, the flag refuses a terminal (exit 2) and
+        stray arguments (exit 64) before reading anything.
+      - *Owed, installed-build check:* on the signed 1.10.7, run setup, then
+        `claude-glm`. No prompt should appear, and `security` should not be
+        added to the item's access list.
+- [x] **T1: existing users.** Settings flags a launcher from before 1.10.7
+      (`launcher_reads_whole_item`) and says to run setup again. It also says
+      how to remove an Always Allow grant on `security`. The release notes
+      say it too (release PR); the advisory question is in §5.
+- [x] **R1:** a web page can crash the app (html2text stack overflow).
+      Fixed in `html_to_text`:
+      - the page is parsed (iteratively), its tree depth is measured with a
+        loop, and anything deeper than 512 levels, WebKit's own limit, is
+        refused before html2text's recursive part runs;
+      - the body cap stays at 2 MiB. Flat pages that size convert in about
+        0.2 s, and the superlinear cost was nesting.
 
-        The main window makes no http(s) loads of its own; its CSP allows only
-        `'self'`, `data:`, `blob:` and IPC.
-      - Windows: WebView2's answer, or a disclosed residual.
-      - *Verified by* re-running P1–P4 from the review
-        (`poc/scripts-2/make-preconnect.mjs`, loopback listeners) on the
-        installed 1.10.7, plus variants for each rel and for a created link.
-- [ ] **T1: in-app text.** `KeyPage.svelte:1749` and the embedded launcher
-      comment (`install-claude-glm.command:412`, compiled in at
-      `lib.rs:17323`) stop advising Always Allow.
-- [ ] **T1: narrow what the launcher can read.** Decided 2026-10-18: the
-      launcher asks the signed app binary, which is already on the item's
-      access list, for the terminal key alone. `security` is never granted, and
-      there is no prompt. Residual, to disclose: any local process can ask the
-      same and get that one key. The single Keychain entry stays. macOS only.
-- [ ] **T1: tell existing users.** Release notes, and an advisory if decided
-      (§5), to remove `security` from the item's access list.
-- [ ] **R1:** a web page can crash the app (html2text stack overflow,
-      `lib.rs:5655`).
-      - Add a cheap nesting-depth pre-pass that refuses a few hundred levels
-        or more.
-      - Lower the body cap.
-      - Run the conversion on a thread with an explicit stack size.
-      - *Verified by* the review's `poc/html2text-depth` cases (`ul` and
-        `blockquote` ×30,000) through the app's own conversion function.
-- [ ] **R2:** processing is unbounded.
-      - Run the conversion where the 45 s deadline can abandon it.
-      - Check the stop flag.
-      - Bound the work by size and depth (with R1).
-      - *Verified by* `div` ×200,000 returning within the deadline.
-- [ ] **R1/R3 class sweep.** List every recursive parser fed untrusted input:
-      html5ever, marked, DOMPurify on deep DOM, KaTeX/highlight if present,
-      and serde (128 levels by default). Record each as bounded or fixed. R3
-      is F1's class again, and F1's fix covered only `steps`.
-- [ ] **R3:** another chat's reply is shown for this chat.
-      - Add try/catch in `renderMd` (`text.js:235`), with a plain-text
-        fallback and a notice.
-      - Cap nesting before parsing.
-      - Key the reply node so stale content cannot survive.
-      - Check every `{@html}` site.
-      - *Verified by* the review's deep-quote and deep-list fixtures, and by
-        switching chats in a component test.
-- [ ] **F3b:** check `is_cloud_placeholder` in `search_conversations`
-      (`lib.rs:8932`, skip the chat) and `delete_conversation` (`lib.rs:9112`,
-      refuse with the reason).
-- [ ] **I5 (for F3b):** replace the hand-kept 13-name list with a test that
-      can't miss a reader: route every history and synced-file read through
-      one checked function, and test that with an injected placeholder
-      predicate. Then re-word the §1 F3b claims to match.
-- [ ] **W1:** approved writes can reach autostart paths.
-      - Refuse home and volume roots as a workspace (decided 2026-10-18).
-        Users who chose home are asked to pick again, with the reason.
-      - Deny `Library/LaunchAgents`, `Library/LaunchDaemons`, the Windows
-        `Startup` folders and top-level shell start-up files at any depth the
-        workspace allows.
-      - Show the full, scrollable content and its line count in the approval.
-- [ ] **W2:** refuse replacing runnable files by extension on Windows
-      (PATHEXT plus `.ps1`, `.js`, `.vbs`, `.lnk`). Re-word M2.
-- [ ] **L1:** show a link's real host before it opens: on hover and focus,
-      and in a confirmation when it differs from the link text.
-- [ ] **I4:** stop swallowing settings reads (`KeyPage.svelte:38,57,717-803`,
-      `Chat.svelte:152,198,213`). Route them through the notice bar.
-- [ ] **U2:** replace the raw parser message on a not-JSON import with one
-      that says what to choose instead, like the Markdown case.
-- [ ] **I1:** add `::ffff:0:0/96`, and check `64:ff9b::/96`, in
-      `is_private_ip`.
-- [ ] **H-b:** give the .deb a Description and Categories.
-- [ ] **Release record:** QA-1.10.7, CHANGELOG, the release notes and
-      `version.json`, through the usual release checklist.
+      Tests: the review's `ul`, `blockquote` and `div` ×30,000, run on a
+      2 MiB stack like a tokio worker's, plus 500 levels still reading and an
+      ordinary page converting exactly as `from_read` did.
+- [x] **R2:** processing was unbounded.
+      - Conversion runs on a blocking thread, so the 45 s deadline can
+        abandon it.
+      - Stop ends a page read within 100 ms (`until_cancelled`); it used to
+        be checked only between rounds.
+      - *Found on the way:* html5ever's parse is itself quadratic in nesting.
+        20,000 nested `<div>` took 0.6 s in a release build, so a 2 MiB page
+        of them would take minutes. A linear tag count (`rough_depth`)
+        refuses that before parsing. It errs high, and the exact depth check
+        after parsing stays as the backstop.
+      - Tests: the 2 MiB `<div>` page is refused in milliseconds; the tags
+        the count ignores (`li`, `p`, `td`, …) really do stay shallow at
+        30,000; the deadline returns on time mid-conversion; Stop ends a
+        read.
+      - SECURITY.md's "planned for 1.10.7" wording on M1 is re-worded in the
+        release PR.
+- [x] **R1/R3 class sweep** (#69). Every recursive parser that sees untrusted
+      input:
+      - **html5ever / html2text:** bounded in #64.
+      - **marked:** bounded in #63.
+      - **serde_json:** its 128-level limit returns an error.
+      - **DOMPurify:** recurses only into `<template>` contents, and WebKit's
+        and Blink's HTML parsers stop nesting at 512.
+      - **Documents** (PDF, docx, pptx, odt, templates, OCR): parsed in the
+        confined helper, where an overflow kills the helper and not the app.
+      - **The calculator (`meval`),** which the model can be steered to call:
+        at its 500-character cap it gets about 250 levels. A test runs the
+        deepest case on a 2 MiB stack, and it returns.
+      - **The interface:** parses no JSON. Imports arrive through serde in
+        Rust.
+      - No highlighter or maths renderer is bundled.
+- [x] **R3:** another chat's reply is shown for this chat. Fixed:
+      - nesting is capped at 20 levels before parsing;
+      - a paragraph over 1,000 emphasis delimiters is shown as plain text;
+      - any parse failure is shown as plain text with a notice;
+      - the message list is keyed by chat id.
 
+      The `{@html}` sites were checked: there are two. `Chat.svelte` renders
+      replies through `renderMd`, and `Icon.svelte` renders its own constant
+      paths. *Found on the way:* quadratic time on unmatched emphasis. 50,000
+      delimiters froze the old renderer for 521 s.
+
+      `tests/renderFailure.test.js`: five of its eight tests fail on the old
+      code.
+- [x] **F3b:** search and delete no longer read a chat whose file is only in
+      the cloud.
+      - Search skips the chat's contents and still matches its title from the
+        sidebar's index. The sidebar says how many chats it could not look
+        inside, so a search that missed them does not look complete.
+      - Delete names the chat from the index and deletes it. It does not
+        refuse: unlinking an evicted file fetches nothing, and refusing would
+        make the person download a chat in order to delete it.
+      - Tests stand a FIFO in for the evicted file. A FIFO's read never
+        returns, like an evicted file's offline, so a regression hangs and
+        fails at a timeout; both tests do exactly that against the old code.
+      - *Found on the way:* `detach_conversations_from_project` reads history
+        files too. It was already safe, because `owned_history_files` leaves
+        evicted chats out, and it now checks itself. An evicted chat therefore
+        keeps the membership of a deleted project, which is harmless:
+        `knownProjectId` ignores a project that no longer exists when the
+        chat is opened.
+      - The §1 claims are re-worded in the release PR.
+- [x] **I5 (for F3b):** `every_file_read_is_accounted_for` finds every file
+      read in `lib.rs`, `usage.rs`, `pricing.rs`, `workspace.rs` and
+      `cloud.rs` outside the tests. Each read must be in one of four lists:
+      - checks first;
+      - takes the check as an argument, from a caller that passes the real
+        one;
+      - asks before reading a chosen file;
+      - reads only the app's own folders, with what it reads.
+
+      A new reader fails until it is classified (mutation-checked). The
+      hand-kept list it supersedes stays, because it also checks refusal
+      order.
+- [x] **W1:** approved writes could reach autostart paths. Fixed:
+      - **The folder:** home, any folder containing it, and a disk's top
+        (`/`, `/Volumes/X`, `/mnt/X`, `/media/<user>/X`) are refused when
+        chosen. A folder saved before 1.10.7 is left in the settings but not
+        used: the chat says why, and so does Settings.
+      - **Autostart locations,** refused anywhere in the workspace and without
+        case: `Library/LaunchAgents`, `LaunchDaemons` and `StartupItems`;
+        `Start Menu/Programs/Startup` and any `AppData`; shell start-up files
+        (`.zshrc`, `.bash_profile`, `.profile`, …); PowerShell profiles. The
+        review's three paths are in the test.
+      - **The approval** now says how many lines it does not show ("… and 40
+        more lines, not shown here."), where it used to show a bare "…".
+        *Not done, by decision:* full scrollable content in the approval. The
+        approval is a native dialog, kept in Rust so the renderer cannot skip
+        it, and a native dialog cannot scroll. With home refused and autostart
+        paths denied, what is left is a file in a folder made for the purpose,
+        named in the dialog.
+- [x] **W2:** on Windows, replacing a file Windows runs by its name is refused
+      by extension (`runnable_by_name`: exe, bat, cmd, ps1, vbs, js, lnk, reg,
+      …). Tested by name on every platform, and by replacement on Windows CI.
+      M2's wording ("macOS and Linux only") is updated in the release PR.
+- [x] **L1** (#69).
+      - Every rendered link has a title naming its real host and path, over
+        any title the reply wrote.
+      - If the link's text reads as an address on a different host, Rust asks
+        natively before opening it.
+      - `www.` is ignored, and text that names no host is not compared.
+- [x] **I4** (#69).
+      - Settings names every read that failed in one alert at the top, and
+        says nothing was changed.
+      - The chat window's start-up reads (the key, search and image
+        settings) use the notice bar.
+      - Left silent on purpose: the version label (it degrades to a dash),
+        cancelling a request already ending, and the first-run screen's key
+        hint (which shows the key form either way).
+- [x] **U2** (#69): "that file is not a chat Sovatela saved. Choose a .json
+      file made with the ↓ (Export this chat) button in the chat list, saved as
+      JSON", with the parser's words kept after it.
+- [x] **I1** (#69): `::ffff:0:0/96` is refused whole. `64:ff9b::/96` already
+      was.
+- [x] **H-b** (#69): the bundle has a category (Productivity) and short and
+      long descriptions, which the .deb uses for Description and Categories.
+      The binary name stays `scale` (I6, §5).
+- [x] **A chat with an image fails mid-research** *(found by the owner on
+      1.10.6, 2026-10-18; not in the review).* Once a chat holds an image, it
+      goes to the Mistral vision model. The tool loop's wrap-up instructions
+      (a `system` message when the budget runs low, and a `user` message for
+      the final pass) were appended after the tool results. Mistral allows only
+      `assistant` or `tool` after `tool`, so Scaleway answered 400 "Unexpected
+      role 'system' after role 'tool'". `add_instruction` now folds these
+      into the leading system message for Mistral; GLM-5.2's requests are
+      unchanged. Tested against Mistral's ordering rules, as written in
+      mistral-common's validator.
+      - *Owed, installed-build check:* the owner's prompt ("dynamic chart of
+        Oslo's population since 1850") in a chat that already holds an image,
+        with web search on.
+- [x] **Release record** (release PR): version 1.10.7 in the five files,
+      the "Applies to" lines, the CHANGELOG, the release notes led by what
+      terminal-access users must do, QA-1.10.7, SECURITY.md re-worded for
+      1.10.7, the T1 security note, and the manifest regenerated (no crate
+      changed). The installed-build checks in QA-1.10.7, A1's above all, are
+      a condition of publishing.
 ## 3. Verification never done, owed before announcing
 
 - [-] **Windows installed check**, with S4 and A1 on WebView2. Decided
       2026-10-18: left disclosed as experimental and unverified, because there
       is no Windows machine. The announcement must not imply Windows was
       tested. Outstanding since 1.10.1.
+- [x] **A scoped key works end to end.** The owner confirmed it on 1.10.6
+      on 2026-10-18: the key saved (so `GenerativeApisModelAccess` allows
+      `GET /models`), chat replies streamed, an image question was
+      answered, and an artifact was drawn. The console showed the
+      application with that one permission set, for all Projects, and in no
+      group. Its use as the terminal key in `claude-glm` is checked with T1
+      on the installed 1.10.7 (QA-1.10.7).
 - [ ] **B4:** first launch to a real reply in a fresh macOS account, covering
       key setup, attachments, history, a refusal, the S4 probe and each
       feature the announcement names.
@@ -221,20 +382,47 @@ the source text (I5).
 
 ## 5. Decisions owed
 
-- [ ] **Advisories.** Inherited from QA-1.10.6: F1 and F3 (Low). New:
-      - T1 (Medium) affects every claude-glm user who followed our advice, and
-        needs their action. We recommend an advisory.
-      - W1 and R1 (Medium).
+- [x] **Advisories.** Decided 2026-10-18.
+      - **T1 gets a GitHub advisory** and a dated security note (in the
+        manner of the 2026-08-30 claude-glm note). It says who is affected
+        (anyone who set up claude-glm on macOS and answered Always Allow) and
+        the two steps: remove the grant, then run setup again in 1.10.7.
+        Drafted with the release PR, and published only with the owner's go.
+      - **W1, R1, F1 and F3** are described in the release notes and
+        SECURITY.md's security history, without separate advisories.
+- [ ] **1.10.8: Sovatela makes the models-only key itself** (owner's
+      decision, 2026-10-18). The person pastes whatever key they have, once.
+      With their consent, Sovatela uses Scaleway's IAM API to create the
+      application, the `GenerativeApisModelAccess` policy and a key for it,
+      stores the new key, and deletes the pasted one. The plan needs care in
+      four places:
+      - the app holds a full-access key for the length of the setup only;
+      - each change to the account is named and confirmed natively;
+      - a failure part-way leaves nothing half-made, or says exactly what
+        was made;
+      - an installed-build test against a real account.
+- [-] **A relay for the terminal key** (owner's question, 2026-10-18). It
+      would keep the key inside the signed app on macOS, so other programs
+      could use it during a session but never obtain it. Dropped for now:
+      with a key that can only reach the models, a stolen key's harm is
+      cost, and the relay would only change "steal" to "use during a
+      session", on macOS alone. Revisit if keys come to carry more than model
+      access.
 - [-] **I2:** same-origin hops of a user-chosen remote image endpoint skip the
       private-address check. By design, and documented ("no wider than that
       origin"). No change.
-- [ ] **I3:** `release.yml`'s Linux and Windows build jobs hold
-      `contents: write` while running install scripts. Either split the upload
-      into a separate job, so build jobs run read-only, or record it as
-      accepted.
+- [-] **I3:** accepted, decided 2026-10-18. The Linux and Windows build jobs
+      keep `contents: write` while running install scripts. The reasons:
+      - their tokens expire before the macOS job signs;
+      - notarization and the build attestations bind the final files;
+      - a published release is immutable.
+
+      Restructuring `release.yml` just before a release would put the release
+      itself at risk, and only a real release run can test that file. To be
+      recorded in SECURITY.md's "What this does not protect against".
 - [-] **I6:** the binary is named `scale`. Deferred by the earlier rename
       decision (brand only; identifier and keyring kept, to avoid data loss).
       H-b's collision note is covered there.
-- [ ] **`zip` 9:** the exception stands until it has settled (after
-      2026-10-30). If 1.10.7 ships before then, carry the exception and
-      re-check after.
+- [-] **`zip` 9:** decided 2026-10-18. 1.10.7 ships with the exception and its
+      guard test; the upgrade goes in 1.10.8, once `zip` 9 has settled (after
+      2026-10-30).

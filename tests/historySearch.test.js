@@ -31,7 +31,7 @@ describe("searching saved chats", () => {
   });
 
   it("asks once for a burst of typing, not once per keystroke", async () => {
-    const onSearch = vi.fn().mockResolvedValue([]);
+    const onSearch = vi.fn().mockResolvedValue({ hits: [] });
     mount({ onSearch });
     const box = screen.getByLabelText("Search saved chats");
 
@@ -46,7 +46,7 @@ describe("searching saved chats", () => {
   });
 
   it("shows the matched line, so the list says which chat that was", async () => {
-    const onSearch = vi.fn().mockResolvedValue([
+    const onSearch = vi.fn().mockResolvedValue({ hits: [
       {
         id: "a",
         title: "Ferry times",
@@ -56,7 +56,7 @@ describe("searching saved chats", () => {
         snippet_after: " from…",
         title_matched: false,
       },
-    ]);
+    ] });
     mount({ onSearch });
     await fireEvent.input(screen.getByLabelText("Search saved chats"), {
       target: { value: "09:40" },
@@ -72,7 +72,7 @@ describe("searching saved chats", () => {
   });
 
   it("says so when nothing matched, rather than showing an empty list", async () => {
-    mount({ onSearch: vi.fn().mockResolvedValue([]) });
+    mount({ onSearch: vi.fn().mockResolvedValue({ hits: [] }) });
     await fireEvent.input(screen.getByLabelText("Search saved chats"), {
       target: { value: "nothing here" },
     });
@@ -101,9 +101,9 @@ describe("searching saved chats", () => {
     const onSearch = vi
       .fn()
       .mockImplementationOnce(
-        () => new Promise((r) => (releaseFirst = () => r([{ id: "b", title: "STALE", snippet_match: "" }]))),
+        () => new Promise((r) => (releaseFirst = () => r({ hits: [{ id: "b", title: "STALE", snippet_match: "" }] }))),
       )
-      .mockResolvedValueOnce([{ id: "a", title: "FRESH", snippet_match: "" }]);
+      .mockResolvedValueOnce({ hits: [{ id: "a", title: "FRESH", snippet_match: "" }] });
 
     mount({ onSearch });
     const box = screen.getByLabelText("Search saved chats");
@@ -119,8 +119,22 @@ describe("searching saved chats", () => {
     expect(screen.queryByText("STALE"), "an overtaken search overwrote a newer one").toBeNull();
   });
 
+  // F3b of the 1.10.6 review: a chat whose file is only in iCloud is not read,
+  // so its contents are not searched. Saying how many keeps a search that
+  // missed them from looking complete.
+  it("says how many chats it could not look inside", async () => {
+    mount({ onSearch: vi.fn().mockResolvedValue({ hits: [], not_on_this_mac: 3 }) });
+    await fireEvent.input(screen.getByLabelText("Search saved chats"), {
+      target: { value: "ferry" },
+    });
+    await waitFor(() => expect(screen.getByText("No chats match")).toBeTruthy(), {
+      timeout: 5000,
+    });
+    expect(screen.getByText(/3 chats are stored only in the cloud/)).toBeTruthy();
+  });
+
   it("clears back to the grouped list", async () => {
-    mount({ onSearch: vi.fn().mockResolvedValue([]) });
+    mount({ onSearch: vi.fn().mockResolvedValue({ hits: [] }) });
     const box = screen.getByLabelText("Search saved chats");
     await fireEvent.input(box, { target: { value: "ferry" } });
     await waitFor(() => expect(screen.getByText("No chats match")).toBeTruthy(), {
@@ -257,9 +271,9 @@ describe("renaming a chat in the list", () => {
 
   it("can rename a chat found by searching, not only one found by scrolling", async () => {
     const onRename = vi.fn().mockResolvedValue("Renamed");
-    const onSearch = vi.fn().mockResolvedValue([
+    const onSearch = vi.fn().mockResolvedValue({ hits: [
       { id: "a", title: "Ferry times", updated_at: "2026-09-05T10:00:00Z", snippet_match: "" },
-    ]);
+    ] });
     mount({ onSearch, onRename });
     await fireEvent.input(screen.getByLabelText("Search saved chats"), {
       target: { value: "ferry" },

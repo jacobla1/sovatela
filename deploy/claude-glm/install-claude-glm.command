@@ -290,6 +290,26 @@ step "Writing configuration to $CONFIG_DIR"
 mkdir -p "$CONFIG_DIR"
 chmod 700 "$CONFIG_DIR"
 
+# Where Sovatela's own binary is. The launcher asks it for the terminal key,
+# which reads nothing it could not already read and prompts no one. Reading the
+# credential item with `security` instead needs a grant on the whole item, and
+# an "Always Allow" grant there lets any program read every key stored in it
+# (the 1.10.6 review, T1). Sovatela passes its path when it runs this; run by
+# hand, the usual install location is tried.
+SOVATELA_APP="${SOVATELA_APP_EXE:-}"
+if [ -z "$SOVATELA_APP" ] && [ -x /Applications/Sovatela.app/Contents/MacOS/scale ]; then
+  SOVATELA_APP=/Applications/Sovatela.app/Contents/MacOS/scale
+fi
+if [ -n "$SOVATELA_APP" ] && [ -x "$SOVATELA_APP" ]; then
+  print -r -- "$SOVATELA_APP" > "$CONFIG_DIR/sovatela-app"
+  chmod 600 "$CONFIG_DIR/sovatela-app"
+  say "  ✓ The launcher will ask Sovatela for the key ($SOVATELA_APP)"
+else
+  rm -f "$CONFIG_DIR/sovatela-app"
+  say "  • Sovatela was not found, so the launcher will read the key with macOS's"
+  say "    security tool, and macOS will ask each time. Answer Allow, not Always Allow."
+fi
+
 backup "$CONFIG_DIR/litellm.yaml"
 cat > "$CONFIG_DIR/litellm.yaml" <<'YAML'
 # Maps the model name Claude Code sends (glm-5.2) onto Scaleway's OpenAI-
@@ -409,14 +429,37 @@ command -v node >/dev/null 2>&1 || die "node is required (Claude Code depends on
 # Not exported here, so it is not in this process's environment and cannot be
 # inherited by anything. It is exported inside one subshell below, which becomes
 # the proxy.
-# macOS asks whether `security` may read the item. Answer "Allow", not "Always
-# Allow": the item holds every stored key, and Always Allow would let any
-# program running as you read all of them without asking.
-KEY_BLOB=$(security find-generic-password -s "com.anaubi.sovatela" -a "secrets" -w 2>/dev/null) || die \
-  "Could not read the Sovatela keychain item.
+# If it falls back to `security` below, macOS asks whether `security` may read
+# the item. Answer "Allow", not "Always Allow": the item holds every stored key,
+# and Always Allow would let any program running as you read all of them
+# without asking.
+#
+# Asked of Sovatela itself first. The credential item already trusts the app,
+# so this prompts no one and hands over the terminal key alone (T1). Exit 3
+# means no key is stored.
+SCW_KEY=""
+APP_FILE="$CONFIG_DIR/sovatela-app"
+SOVATELA_APP=""
+[ -f "$APP_FILE" ] && SOVATELA_APP=$(cat "$APP_FILE")
+if [ -n "$SOVATELA_APP" ] && [ -x "$SOVATELA_APP" ]; then
+  app_status=0
+  SCW_KEY=$("$SOVATELA_APP" --sovatela-terminal-key 2>/dev/null) || app_status=$?
+  if [ "$app_status" -eq 3 ]; then
+    die "No Scaleway API key is stored yet.
+Open Sovatela → Settings → Scaleway API key, then try again."
+  elif [ "$app_status" -ne 0 ]; then
+    SCW_KEY=""
+  fi
+fi
+# Otherwise — Sovatela moved, or this was installed by hand — the item is read
+# whole with `security`, keeping only the terminal key.
+if [ -z "$SCW_KEY" ]; then
+  KEY_BLOB=$(security find-generic-password -s "com.anaubi.sovatela" -a "secrets" -w 2>/dev/null) || die \
+    "Could not read the Sovatela keychain item.
 Open Sovatela and add your Scaleway API key first (Settings → Scaleway API key)."
-SCW_KEY=$(printf '%s' "$KEY_BLOB" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);process.stdout.write(((j.claude_glm_api_key||j.scaleway_api_key)||"").trim())}catch(e){}})') || SCW_KEY=""
-unset KEY_BLOB
+  SCW_KEY=$(printf '%s' "$KEY_BLOB" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);process.stdout.write(((j.claude_glm_api_key||j.scaleway_api_key)||"").trim())}catch(e){}})') || SCW_KEY=""
+  unset KEY_BLOB
+fi
 [ -n "$SCW_KEY" ] || die "No Scaleway API key is stored yet.
 Open Sovatela → Settings → Scaleway API key, then try again."
 

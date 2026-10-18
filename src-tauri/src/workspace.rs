@@ -289,7 +289,10 @@ pub(crate) fn is_disguising(c: char) -> bool {
 ///   folder is still allowed, since asking for one is ordinary;
 /// - replacing a file that can be run. A new file is created without
 ///   permission to run, but a replaced one keeps its own, so overwriting a git
-///   hook or a script that already runs would leave it running.
+///   hook or a script that already runs would leave it running. On Windows,
+///   where a name is what makes a file runnable, that means its extension;
+/// - a place that starts programs at login, or a shell's start-up file
+///   (`starts_programs`).
 fn may_write(rel: &str, path: &Path) -> Result<(), String> {
     if rel.chars().any(is_disguising) {
         return Err(
@@ -323,9 +326,154 @@ fn may_write(rel: &str, path: &Path) -> Result<(), String> {
             }
         }
     }
+    if let Some(why) = starts_programs(&components) {
+        return Err(format!(
+            "{why}, so a file there would run without anyone opening it. Nothing is written \
+             there from here"
+        ));
+    }
+    // Windows has no mark that makes a file runnable: its name does. So the
+    // rule above is kept there by extension, and until the 1.10.6 review (W2)
+    // it was not kept there at all.
     #[cfg(not(unix))]
-    let _ = path;
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file())
+        && components.last().is_some_and(|name| runnable_by_name(name))
+    {
+        return Err(
+            "that file can be run, and replacing it would leave the new content able to run, \
+             so it was not replaced"
+                .into(),
+        );
+    }
     Ok(())
+}
+
+/// Names Windows runs, opens as a program or follows as a shortcut. Used on
+/// Windows only, and tested everywhere.
+#[cfg_attr(unix, allow(dead_code))]
+pub(crate) fn runnable_by_name(name: &str) -> bool {
+    const RUNNABLE: &[&str] = &[
+        "exe",
+        "com",
+        "bat",
+        "cmd",
+        "ps1",
+        "psm1",
+        "psd1",
+        "vbs",
+        "vbe",
+        "js",
+        "jse",
+        "wsf",
+        "wsh",
+        "msc",
+        "msi",
+        "msp",
+        "lnk",
+        "url",
+        "scr",
+        "pif",
+        "cpl",
+        "hta",
+        "reg",
+        "inf",
+        "appref-ms",
+    ];
+    name.rsplit_once('.')
+        .is_some_and(|(_, ext)| RUNNABLE.iter().any(|r| ext.eq_ignore_ascii_case(r)))
+}
+
+/// Why writing to these path components would start a program unasked, if it
+/// would.
+///
+/// The hidden-folder rule above exists because files there are settings other
+/// programs act on, and the places that start programs at login are mostly not
+/// hidden folders: `Library/LaunchAgents` on macOS, the Startup folder on
+/// Windows, and shell start-up files, which are dotfiles in an ordinary folder.
+/// A plist or a `.bat` needs no permission to run. They were writable whenever
+/// the workspace was the home folder (the 1.10.6 review, W1). The home folder
+/// is now refused as a workspace too; these are refused anywhere, so a
+/// workspace that contains such a folder cannot be used to reach it either.
+/// Compared without case, because macOS and Windows file systems usually are.
+fn starts_programs(components: &[&str]) -> Option<&'static str> {
+    let lower: Vec<String> = components.iter().map(|c| c.to_lowercase()).collect();
+    let has = |run: &[&str]| lower.windows(run.len()).any(|w| w.iter().eq(run.iter()));
+    if has(&["library", "launchagents"])
+        || has(&["library", "launchdaemons"])
+        || has(&["library", "startupitems"])
+    {
+        return Some("that folder is where macOS starts programs at login");
+    }
+    if has(&["start menu", "programs", "startup"]) || lower.iter().any(|c| c == "appdata") {
+        return Some("that folder holds what Windows starts at login and programs' own settings");
+    }
+    const SHELL_STARTUP: &[&str] = &[
+        ".profile",
+        ".bashrc",
+        ".bash_profile",
+        ".bash_login",
+        ".bash_logout",
+        ".zshrc",
+        ".zshenv",
+        ".zprofile",
+        ".zlogin",
+        ".zlogout",
+        ".login",
+        ".logout",
+        ".cshrc",
+        ".tcshrc",
+        ".kshrc",
+        ".mkshrc",
+        ".xprofile",
+        ".xinitrc",
+        ".xsession",
+        ".xsessionrc",
+    ];
+    let name = lower.last().map(String::as_str).unwrap_or("");
+    if SHELL_STARTUP.contains(&name) {
+        return Some("that is a file a shell runs every time it starts");
+    }
+    if name.ends_with("profile.ps1") {
+        return Some("that is a file PowerShell runs every time it starts");
+    }
+    None
+}
+
+/// Why a folder cannot be the workspace, if it cannot.
+///
+/// A workspace is a folder the model may write into, one approval at a time.
+/// The home folder holds the places that start programs at login and the
+/// settings other programs act on, and a volume's root holds everything on it,
+/// so neither is a folder made for the purpose (the 1.10.6 review, W1). A
+/// folder that contains the home folder is refused for the same reason.
+pub fn refuse_as_workspace(dir: &Path, home: Option<&Path>) -> Option<String> {
+    let mut volume_root = dir.parent().is_none();
+    if let Some(parent) = dir.parent() {
+        // macOS mounts volumes in /Volumes; Linux in /media/<user>, /run/media/<user>
+        // and /mnt.
+        let parent = parent.to_string_lossy();
+        volume_root |= parent == "/Volumes" || parent == "/mnt";
+        if let Some(grand) = dir.parent().and_then(Path::parent) {
+            let grand = grand.to_string_lossy();
+            volume_root |= grand == "/media" || grand == "/run/media";
+        }
+    }
+    if volume_root {
+        return Some(format!(
+            "{} is the top of a disk. Choose a folder made for the assistant instead, such as \
+             one inside Documents.",
+            dir.display()
+        ));
+    }
+    if home.is_some_and(|home| home.starts_with(dir)) {
+        return Some(format!(
+            "{} is your home folder, or contains it. It holds the places that start programs \
+             when you log in, so the assistant is not given it. Choose a folder made for the \
+             assistant instead, such as one inside Documents.",
+            dir.display()
+        ));
+    }
+    None
 }
 
 /// Write raw bytes — for a generated document, which is a zip archive rather
@@ -672,6 +820,106 @@ mod write_limits {
             assert_eq!(will_overwrite(&root, rel), Ok(false), "{rel}");
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // W1 of the 1.10.6 review: with home as the workspace, these were written.
+    // The first three are the review's own (poc/workspace-may-write).
+    #[test]
+    fn places_that_start_programs_are_refused_anywhere() {
+        let root = scratch("autostart");
+        for rel in [
+            "Library/LaunchAgents/com.example.agent.plist",
+            "AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/x.bat",
+            ".bash_profile",
+            ".zshrc",
+            "project/.bashrc",
+            "LIBRARY/launchagents/x.plist",
+            "Library/LaunchDaemons/x.plist",
+            "appdata\\local\\x.dll",
+            "Documents/WindowsPowerShell/Microsoft.PowerShell_profile.ps1",
+            "Documents/PowerShell/profile.ps1",
+        ] {
+            let err = will_overwrite(&root, rel).unwrap_err();
+            assert!(err.contains("without anyone opening it"), "{rel}: {err}");
+            assert!(
+                write_file(&root, rel, "x", false).is_err(),
+                "{rel} was written"
+            );
+        }
+        // Names that only resemble them are ordinary.
+        for rel in [
+            "Library/notes.md",
+            "Library/Application Support/notes.md",
+            "startup/plan.md",
+            "profile.md",
+            "docs/.profile-notes",
+            "launchagents.md",
+        ] {
+            assert_eq!(will_overwrite(&root, rel), Ok(false), "{rel}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // W2: on Windows the name is what makes a file runnable.
+    #[test]
+    fn windows_runs_a_file_by_its_name() {
+        for name in [
+            "tool.ps1",
+            "RUN.BAT",
+            "x.cmd",
+            "setup.exe",
+            "a.lnk",
+            "s.vbs",
+            "x.js",
+            "y.reg",
+        ] {
+            assert!(runnable_by_name(name), "{name}");
+        }
+        for name in ["notes.md", "data.json", "script.ps1.txt", "exe", "batch.md"] {
+            assert!(!runnable_by_name(name), "{name}");
+        }
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn a_runnable_file_is_not_replaced_on_windows() {
+        let root = scratch("winexec");
+        std::fs::write(root.join("tool.ps1"), "Write-Host hi").unwrap();
+        let err = will_overwrite(&root, "tool.ps1").unwrap_err();
+        assert!(err.contains("can be run"), "{err}");
+        assert!(write_file(&root, "tool.ps1", "Remove-Item -Recurse ~", true).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn home_and_disk_tops_are_not_a_workspace() {
+        let home = Path::new("/Users/someone");
+        for dir in [
+            "/Users/someone",
+            "/Users",
+            "/",
+            "/Volumes/Backup",
+            "/mnt/data",
+            "/media/someone/USB",
+            "/run/media/someone/USB",
+        ] {
+            assert!(
+                refuse_as_workspace(Path::new(dir), Some(home)).is_some(),
+                "{dir}"
+            );
+        }
+        for dir in [
+            "/Users/someone/Documents/assistant",
+            "/Users/someone/Desktop",
+            "/Volumes/Backup/work",
+            "/Users/other",
+        ] {
+            assert_eq!(
+                refuse_as_workspace(Path::new(dir), Some(home)),
+                None,
+                "{dir}"
+            );
+        }
     }
 
     #[cfg(unix)]
