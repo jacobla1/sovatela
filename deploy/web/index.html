@@ -253,6 +253,26 @@
     <aside class="notice" id="terminal-access-security">
       <h2>If you set up terminal access (<code>claude-glm</code>), please read this</h2>
       <p>
+        <strong>On macOS, every version up to 1.10.6</strong> told you to answer the Keychain
+        prompt with <em>Always Allow</em>. That grant let any program on your Mac read every key
+        Sovatela holds, without asking. 1.10.7 no longer needs it, but updating does
+        <strong>not</strong> remove a grant you already gave.
+      </p>
+      <ol>
+        <li><strong>Remove the grant.</strong> In Keychain Access, open
+          <code>com.anaubi.sovatela</code> → <em>Access Control</em>, select
+          <code>security</code> and click −. Remove anything else you do not recognise.</li>
+        <li><strong>Update to 1.10.7 and run setup again</strong> under
+          <em>Settings → Terminal access</em>.</li>
+        <li><strong>Give terminal access its own key, for the AI models only</strong> — the guide
+          shows how.</li>
+      </ol>
+      <p>
+        <a href="https://github.com/jacobla1/sovatela/blob/main/docs/release/SECURITY-NOTE-2026-10-terminal-key.md">Read the October security note →</a>
+        · <a href="https://github.com/jacobla1/sovatela/security/advisories/GHSA-qv94-q5c6-6gf9">advisory GHSA-qv94-q5c6-6gf9</a>
+      </p>
+      <h3>Earlier: versions 1.2.0 to 1.6.0</h3>
+      <p>
         Every released version from <strong>1.2.0 to 1.6.0</strong> had a defect in the
         <code>claude-glm</code> launcher: it put your Scaleway API key into Claude Code's
         environment, where any command Claude ran could read it. Installing a newer version of

@@ -886,7 +886,8 @@ than filed away:
     address parser and the system's opener read tabs, newlines and
     backslashes differently.
 - **Found by an independent review of 1.10.6 and fixed in 1.10.7**, with the
-  advisory for terminal access below:
+  advisory for terminal access,
+  [GHSA-qv94-q5c6-6gf9](https://github.com/jacobla1/sovatela/security/advisories/GHSA-qv94-q5c6-6gf9):
   - **Terminal access opened every stored key to any program** (T1, Medium),
     through the Always Allow grant on `security` this project advised. See
     *Terminal access* under *What this does not protect against*, and the

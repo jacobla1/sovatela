@@ -382,7 +382,8 @@ the source text (I5).
 
 ## 5. Decisions owed
 
-- [x] **Advisories.** Decided 2026-10-18.
+- [x] **Advisories.** Decided 2026-10-18; T1's published as
+      GHSA-qv94-q5c6-6gf9 with 1.10.7 (2026-10-18T22:18:54Z).
       - **T1 gets a GitHub advisory** and a dated security note (in the
         manner of the 2026-08-30 claude-glm note). It says who is affected
         (anyone who set up claude-glm on macOS and answered Always Allow) and
@@ -426,3 +427,29 @@ the source text (I5).
 - [-] **`zip` 9:** decided 2026-10-18. 1.10.7 ships with the exception and its
       guard test; the upgrade goes in 1.10.8, once `zip` 9 has settled (after
       2026-10-30).
+
+## 6. Planned for 1.10.8
+
+Gathered here because issues are switched off on this repository.
+
+- [ ] **Draggable panel dividers** (owner, 2026-10-19). The dividers between
+      the chat history, the chat and the artifact panel are fixed today, and
+      nothing resizes them. Make them draggable:
+      - usable from the keyboard and by screen readers too: a focusable
+        separator (`role="separator"`, `aria-orientation`, `aria-valuenow`)
+        moved with the arrow keys;
+      - minimum widths that still work at the window's smallest size (560 px
+        wide), so no panel can be dragged to nothing or push the composer off
+        screen;
+      - each person's widths remembered between launches;
+      - the artifact frame must not swallow the drag as the pointer crosses it.
+- [ ] **Two wording faults found in the 1.10.7 installed check.**
+      - Settings → Terminal access says "shared with the terminal, so both
+        land on one invoice line", which implies a separate key would split
+        the invoice. Fix it, and widen the docPromises sweep to catch the
+        phrasing.
+      - The old-launcher warning breaks lines mid-sentence, because
+        `.warn-text` keeps the source's line breaks (`white-space: pre-line`).
+- [ ] **Sovatela makes the models-only key itself** (see §5).
+- [ ] **`zip` 9:** upgrade once it has settled (after 2026-10-30), and retire
+      the audit exception and its guard.

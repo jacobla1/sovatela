@@ -57,30 +57,47 @@ A condition of publishing. Against the draft release's installers. **The
 Windows check was not done, as for every release since 1.10.1**, by the
 owner's decision of 2026-10-18; the release notes say so.
 
-- [ ] **macOS**, the draft's notarized `.dmg`, installed by the owner. Note its
-      path; earlier copies are numbered.
-  - [ ] **A1, the decisive check:** the review's P1–P4 preconnect probe
-        (`poc/scripts-2/make-preconnect.mjs`, loopback listeners on 8735–8738)
-        must show **no connection**, and the artifact must still draw. Until
-        this passes, the documents may not say artifacts are kept off the
-        network on macOS.
-  - [ ] **S4:** the `qa/artifact-ipc/` probe shows no request at the listener,
-        as for 1.10.6.
-  - [ ] **T1:** run *Settings → Terminal access* setup again, then
-        `claude-glm`. There should be **no Keychain prompt**, and `security`
-        should not appear in the item's access list afterwards. A launcher from
-        1.10.6 should first be flagged as old in Settings.
-  - [ ] **A key for the AI models only works as the terminal key** in
-        `claude-glm`. (The owner confirmed chat, images and an artifact with
-        such a key on 1.10.6, on 2026-10-18.)
-  - [ ] **#72:** in a chat that already holds an image, with web search on,
-        "Please generate a dynamic chart displaying population growth in Oslo
-        from 1850 to today" answers, with no "Unexpected role" error.
-  - [ ] **W1:** choosing the home folder as the workspace is refused, with the
-        reason.
-  - [ ] **R3:** the review's deep-quote chat shows its reply as plain text with
-        a note, and switching chats never shows another chat's reply.
-  - [ ] **F1, unchanged:** a crafted import is still refused on screen.
+- [x] **macOS**, the draft's notarized `.dmg` (SHA-256 `7fa173e4…dd16`,
+      matching the signed `SHA256SUMS.txt`), installed by the owner as
+      `/Applications/Sovatela.app` on 2026-10-18; the app reports 1.10.7:
+  - [x] **A1, the decisive check:** the review's P1–P4 preconnect probe, with
+        loopback listeners on 8735–8738. All four artifacts drew (P2's script
+        reported adding its link), and **no connection reached any listener**.
+        On 1.10.6 the same probe connected at P1, P2 and P3. A request from
+        the terminal to each port afterwards was logged, so the listeners were
+        working.
+  - [x] **S4:** the `qa/artifact-ipc/` probe. The frame's origin is `null`;
+        every Tauri global is undefined; parent and top are `SecurityError`;
+        every fetch fails. The WebKit handler is SENT and `postMessage` sent,
+        as on 1.10.3–1.10.6. **No request at the listener** on 8733, which
+        logged a request from the terminal afterwards.
+  - [x] **T1:** Settings flagged the 1.10.6 launcher as old; *Reinstall /
+        update* ran to exit 0 and the flag went away. The new launcher asks
+        for the key, and `sovatela-app` (mode 600) names
+        `/Applications/Sovatela.app/Contents/MacOS/scale`, signed
+        `com.anaubi.sovatela`, team `BCG9GZC8PZ`. The owner cleared the
+        item's access list (several Sovatela copies, `security`, "Fake",
+        "Scale"), and Sovatela added itself back with one Always Allow.
+        **`claude-glm` started with no prompt**, and GLM-5.2 answered;
+        `POST /v1/messages` returned 200.
+  - [x] **A key for the AI models only** worked for chat, an image question
+        and an artifact on 2026-10-18 (in 1.10.6). The console showed the
+        application with only `GenerativeApisModelAccess`, for all Projects,
+        in no group.
+  - [x] **#72:** the Oslo prompt, in a chat holding an image with web search
+        on, produced its chart, with no "Unexpected role" error.
+  - [x] **W1:** the home folder is refused as the workspace, with the reason.
+  - [x] **R3:** the review's deep-quote chat (20,000 `>` then "hello")
+        renders as 20 quote levels and then its own "hello", and the
+        message after it renders. The nesting cap applies; the plain-text
+        fallback is for what the cap cannot bound.
+  - [x] **F1, unchanged:** a crafted import is refused on screen ("…research
+        steps are not a list").
+  - **Found while checking, not fixed in this build.** Settings still says
+    "shared with the terminal, so both land on one invoice line", which
+    implies a separate key would split the invoice, the claim corrected
+    elsewhere. The terminal warning box also breaks lines mid-sentence. Both
+    are wording only, left for 1.10.8 rather than rebuilding.
 - [ ] **Windows**, installed release build. Outstanding since 1.10.1, by
       decision.
 
@@ -88,23 +105,48 @@ owner's decision of 2026-10-18; the release notes say so.
 
 Run after the tag, against the draft, before publishing it.
 
-- [ ] Release run at `v1.10.7`: all jobs succeed, with the
-      `release`-environment approval.
-- [ ] The published source's own suite at the public tag, cloned fresh.
-- [ ] `scripts/verify-release.sh v1.10.7`.
-- [ ] The shipped binary from the draft's `.dmg`: the template fixtures give
-      the same verdicts as 1.10.6's.
+- [x] **Release** run `39165698125` at `v1.10.7` (public `70e22ea`, from
+      private `3e161ec`): all eight jobs succeeded at the first attempt, with
+      both `release`-environment approvals. The draft carries eleven files:
+      six installers, `PROVENANCE.txt`, `SHA256SUMS.txt` and its signature,
+      and the QA and terms copies.
+- [x] The published source's own suite, generated at `3e161ec`: 796 tests
+      pass.
+- [x] `scripts/verify-release.sh v1.10.7 <private checkout>`: **10 passed,
+      0 failed, 0 skipped.** The checksums (7 of 7, nothing outside the
+      list), the signature, the attestations by `release.yml` at the tag,
+      macOS signed, notarized and stapled, the provenance, and the publisher
+      re-run at `3e161ec` reproducing the published tree exactly.
+- [-] The shipped binary's template verdicts were not re-run: the template
+      and document code (`ooxml/`, the document helper, PDF and OCR) is
+      unchanged since 1.10.6. Import changed only in its not-JSON refusal
+      message (U2); F1 above exercises the import check on the installed
+      build.
 - [ ] **This record replaces the one attached to the draft, before
       publishing.**
 
 ## After publishing
 
-- [ ] The private repository is tagged `v1.10.7` at the commit the public
-      provenance names.
-- [ ] The site is built from the published assets and checked live.
-- [ ] The T1 advisory and its security note
-      ([SECURITY-NOTE-2026-10-terminal-key.md](SECURITY-NOTE-2026-10-terminal-key.md))
-      are published on GitHub, on the owner's go.
+Published by the owner's go at **2026-10-18T22:17:13Z** (00:17 on 19 October
+in Copenhagen). The copy of this record attached to the release ends with the
+section above; what follows exists in the repository only.
+
+- [x] The private repository is tagged `v1.10.7` at `3e161ec`, the commit the
+      public provenance names (tagged before the run).
+- [x] The published assets are byte-identical to the draft's that were
+      verified, and the published QA copy is this record as finished above.
+- [x] Site built from those assets, at private `07bda2d` (which adds the
+      terminal-access notice, #75), and committed as `sovatela-web@31413f5`.
+      All six live pages and `version.json` are byte-identical to the built
+      ones. Live `version.json` reads **1.10.7**; all eight release links
+      return **200**; the `.dmg` fetched from the live link hashes to
+      `7fa173e4699f39e2c7ccda64ab10dc49d91d91343d282f3f621f360c6d73dd16`.
+- [x] The T1 advisory,
+      [GHSA-qv94-q5c6-6gf9](https://github.com/jacobla1/sovatela/security/advisories/GHSA-qv94-q5c6-6gf9),
+      published at 2026-10-18T22:18:54Z (Medium, CVSS 3.1 5.3; affected
+      `>= 1.0.0, <= 1.10.6`; patched 1.10.7). It links the security note,
+      which resolves on the public repository. The site's terminal-access
+      notice, the note and SECURITY.md link it.
 
 ## Limits
 

@@ -8,6 +8,7 @@ from the repository's installer, since 1.0.0)
 answered the Keychain prompt with **Allow** rather than **Always Allow**.
 Windows and Linux have no such grant; see *What remains*.
 **Fixed in:** **1.10.7**, which hands the launcher one key instead.
+**Advisory:** [GHSA-qv94-q5c6-6gf9](https://github.com/jacobla1/sovatela/security/advisories/GHSA-qv94-q5c6-6gf9)
 **Updating does not undo a grant you already gave.** It stays on the item until
 you remove it, so the steps below apply after updating too.
 
