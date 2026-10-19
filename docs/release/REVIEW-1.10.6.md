@@ -432,6 +432,9 @@ the source text (I5).
 
 Gathered here because issues are switched off on this repository.
 
+Released as 1.10.8 on 2026-10-19T23:39:32Z; the record is
+[QA-1.10.8.md](QA-1.10.8.md).
+
 - [x] **GLM-5.3, branded "GLM"** (owner's decision, 2026-10-19). Scaleway
       deprecated `glm-5.2` on 2026-10-16 and ends it on 2026-11-16, routing it
       to `glm-5.3` meanwhile: same context, output ceiling, tools and price, and
@@ -470,6 +473,18 @@ Gathered here because issues are switched off on this repository.
         phrasing.
       - The old-launcher warning breaks lines mid-sentence, because
         `.warn-text` keeps the source's line breaks (`white-space: pre-line`).
-- [ ] **Sovatela makes the models-only key itself** (see §5).
-- [ ] **`zip` 9:** upgrade once it has settled (after 2026-10-30), and retire
-      the audit exception and its guard.
+- [-] **Sovatela makes the models-only key itself** (see §5): moved to §7.
+- [-] **`zip` 9:** upgrade once it has settled (after 2026-10-30), and retire
+      the audit exception and its guard: moved to §7.
+
+## 7. Planned for 1.10.9
+
+- [ ] **"GLM-5.3", not "GLM"** (owner, 2026-10-20). The owner wanted the
+      version written out; 1.10.8 shipped "GLM" because the choice was
+      misread. Name it from one constant in the interface, tied to
+      `glm::DEFAULT_MODEL` by a test, and use "GLM-5.3" in the window title,
+      header, composer, Guide, site and docs.
+- [ ] **Sovatela makes the models-only key itself** (moved from 1.10.8; see
+      §5).
+- [ ] **`zip` 9**, after 2026-10-30 (moved from §6).
+
