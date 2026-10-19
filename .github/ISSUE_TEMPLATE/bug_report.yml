@@ -80,7 +80,7 @@ body:
     id: status-dot
     attributes:
       label: Status dot
-      description: The dot beside "GLM-5.2 · Scaleway" — hover it for the message.
+      description: The dot beside "GLM · Scaleway" — hover it for the message.
       options:
         - Green — connected
         - Red — key rejected

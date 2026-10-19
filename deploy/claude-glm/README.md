@@ -1,12 +1,12 @@
-# claude-glm — Claude Code on GLM-5.2
+# claude-glm — Claude Code on GLM
 
-Run **Claude Code** against **GLM-5.2 on Scaleway** while your normal `claude`
+Run **Claude Code** against **GLM on Scaleway** while your normal `claude`
 command keeps using Anthropic models. A local [LiteLLM](https://litellm.ai)
 proxy translates Claude Code's Anthropic-format requests into the OpenAI format
 Scaleway speaks:
 
 ```
-claude-glm  →  LiteLLM (127.0.0.1, a free port picked per session)  →  https://api.scaleway.ai/v1  →  GLM-5.2
+claude-glm  →  LiteLLM (127.0.0.1, a free port picked per session)  →  https://api.scaleway.ai/v1  →  GLM
 ```
 
 ## Prerequisite
@@ -85,7 +85,7 @@ the same line whichever key is used.
 ## Use
 
 ```sh
-claude-glm            # GLM-5.2 via Scaleway
+claude-glm            # GLM via Scaleway
 claude                # unchanged: Anthropic models
 ```
 

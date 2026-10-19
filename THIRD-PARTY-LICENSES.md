@@ -214,7 +214,7 @@ Standard canonical texts, reproduced in each package's own distribution:
 ## Third-party services (not bundled)
 
 The app connects, using the user's own API keys, to services governed by their
-own terms — Z.ai GLM-5.2 via Scaleway, Mistral, OVHcloud AI Endpoints, Black
+own terms — Z.ai GLM via Scaleway, Mistral, OVHcloud AI Endpoints, Black
 Forest Labs (FLUX), Linkup, and Qwant Staan — and, optionally, to a
 user-operated **SearXNG** instance (AGPL-3.0). SearXNG is a separate service
 reached over HTTP and is **not** bundled or linked, so its terms do not attach

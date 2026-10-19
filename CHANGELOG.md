@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.10.8 — 2026-10-19
+
+- **GLM-5.3.** Scaleway deprecated GLM-5.2 on 16 October and retires it on
+  16 November 2026. Sovatela now asks for GLM-5.3, which has the same context,
+  output limit, tools and price, and, like GLM-5.2, reads text only, so images
+  still go to the vision model. The pricing table keeps GLM-5.2, so usage
+  recorded under it is still priced (#77).
+- **"GLM", not a version, in the app's name and text.** The window title,
+  header, composer, guide, site and docs say GLM; the guide's model table
+  names GLM-5.3 (#77).
+- **Terminal access must be set up again before 16 November.** The proxy
+  `claude-glm` runs lives outside the app and still asks for GLM-5.2 until
+  setup is run again; Settings now says so (#77).
+- **The dividers beside the chat can be moved,** by dragging or from the
+  keyboard, and the widths are remembered. The chat always keeps at least
+  320 px when the window allows (#78).
+- Settings no longer suggests a separate terminal key would split the
+  Scaleway invoice, and its warnings wrap normally (#77).
+
 ## 1.10.7 — 2026-10-18
 
 Fixes for what an independent review of 1.10.6 found before its

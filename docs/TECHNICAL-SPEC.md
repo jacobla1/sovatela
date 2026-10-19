@@ -1,6 +1,6 @@
 # Technical and security specification
 
-Sovatela v1.10.7 · Companion to Product spec ·
+Sovatela v1.10.8 · Companion to Product spec ·
 UX spec · [Security policy](../SECURITY.md)
 
 Fuller engineering rationale is kept internally in `ENGINEERING_NOTES.md`, which
@@ -28,7 +28,7 @@ is not part of the repository.
                 │ HTTPS
       ┌─────────┴──────────┬───────────────┬───────────────┐
    Scaleway            Search           Image          (nothing
-   (GLM-5.2,          provider         provider          else)
+   (GLM,          provider         provider          else)
     vision)          (optional)       (optional)
 ```
 

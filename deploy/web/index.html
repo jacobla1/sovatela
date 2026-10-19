@@ -20,7 +20,7 @@
   <meta name="referrer" content="no-referrer" />
   <title>Sovatela — download</title>
   <link rel="alternate" type="application/atom+xml" title="Sovatela releases" href="/releases.atom" />
-  <meta name="description" content="Sovatela — a desktop app for AI chat, running GLM-5.2 in Europe on Scaleway. Bring your own key; it is stored only on your device and sent only to your provider." />
+  <meta name="description" content="Sovatela — a desktop app for AI chat, running GLM in Europe on Scaleway. Bring your own key; it is stored only on your device and sent only to your provider." />
   <style>
     :root {
       --bg: #f7f8fb;
@@ -208,7 +208,7 @@
     <header>
       <img class="mark" src="assets/app-icon.jpg" width="112" height="112" alt="Sovatela app icon" />
       <h1>Sovatela</h1>
-      <p class="tagline">A desktop app for <strong>AI chat</strong>, with the model hosted in Europe. It runs <strong>GLM-5.2</strong> — developed by Z.ai, hosted in Paris by Scaleway — and your keys are stored only on your device, sent to your provider to authenticate you and to nobody else. There is no account here and no server of ours in the path; this site and the downloads are served by GitHub.</p>
+      <p class="tagline">A desktop app for <strong>AI chat</strong>, with the model hosted in Europe. It runs <strong>GLM</strong> — developed by Z.ai, hosted in Paris by Scaleway — and your keys are stored only on your device, sent to your provider to authenticate you and to nobody else. There is no account here and no server of ours in the path; this site and the downloads are served by GitHub.</p>
       <p>Chat and image understanding run on Scaleway in Paris. Optional search,
         image generation and terminal tools have different data paths; web search
         can contact public websites anywhere. See the <a href="/security/">security page</a>.</p>
@@ -262,8 +262,9 @@
         <li><strong>Remove the grant.</strong> In Keychain Access, open
           <code>com.anaubi.sovatela</code> → <em>Access Control</em>, select
           <code>security</code> and click −. Remove anything else you do not recognise.</li>
-        <li><strong>Update to 1.10.7 and run setup again</strong> under
-          <em>Settings → Terminal access</em>.</li>
+        <li><strong>Update and run setup again</strong> under
+          <em>Settings → Terminal access</em> — <strong>before 16 November 2026</strong>, when
+          Scaleway retires the GLM-5.2 model older setups ask for.</li>
         <li><strong>Give terminal access its own key, for the AI models only</strong> — the guide
           shows how.</li>
       </ol>

@@ -432,7 +432,24 @@ the source text (I5).
 
 Gathered here because issues are switched off on this repository.
 
-- [ ] **Draggable panel dividers** (owner, 2026-10-19). The dividers between
+- [x] **GLM-5.3, branded "GLM"** (owner's decision, 2026-10-19). Scaleway
+      deprecated `glm-5.2` on 2026-10-16 and ends it on 2026-11-16, routing it
+      to `glm-5.3` meanwhile: same context, output ceiling, tools and price, and
+      also text-only. The app, pricing (glm-5.2 kept for past usage) and the
+      three launchers move to `glm-5.3`. The interface, site and docs say "GLM",
+      and only the Guide's model table names the exact version; a test ties it
+      to `glm.rs`. Settings flags a terminal setup whose proxy still asks for
+      the old model (`launcher_model_outdated`), because that config lives
+      outside the app. The dated Ollama comparisons keep their 5.2 wording, as
+      that is what was checked.
+- [x] **Draggable panel dividers** (owner, 2026-10-19). Done in 1.10.8:
+      `Splitter.svelte` is a focusable `role="separator"` with its value, moved
+      by dragging or the arrow keys (Shift for bigger steps, Home and End to
+      the limits). `panelWidths.js` `layout()` computes both panel widths at
+      once, so the chat keeps at least 320 px whenever the window allows: the
+      artifact panel gives way first, then the chat list. The widths are
+      remembered per person. Frames ignore the pointer while a divider is
+      dragged. The original request follows. The dividers between
       the chat history, the chat and the artifact panel are fixed today, and
       nothing resizes them. Make them draggable:
       - usable from the keyboard and by screen readers too: a focusable
@@ -443,7 +460,10 @@ Gathered here because issues are switched off on this repository.
         screen;
       - each person's widths remembered between launches;
       - the artifact frame must not swallow the drag as the pointer crosses it.
-- [ ] **Two wording faults found in the 1.10.7 installed check.**
+- [x] **Two wording faults found in the 1.10.7 installed check**, fixed
+      with the model switch. The status line now reads "the terminal uses the
+      chat key", and prose warnings use `.warn-text.prose`, which wraps normally
+      (three such warnings had the same fault).
       - Settings → Terminal access says "shared with the terminal, so both
         land on one invoice line", which implies a separate key would split
         the invoice. Fix it, and widen the docPromises sweep to catch the

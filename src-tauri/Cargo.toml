@@ -1,7 +1,7 @@
 [package]
 name = "scale"
-version = "1.10.7"
-description = "BYO-key desktop chat client for GLM-5.2 on Scaleway"
+version = "1.10.8"
+description = "BYO-key desktop chat client for GLM on Scaleway"
 authors = ["Jacob Bergmann Larsen"]
 license = "MIT"
 edition = "2021"

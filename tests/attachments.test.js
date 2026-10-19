@@ -296,7 +296,7 @@ describe("a document read from a picture says so", () => {
     };
     await waitFor(() => checkBadge(document.querySelector(".att-ocr-missing")));
 
-    const box = screen.getByLabelText("Message GLM-5.2");
+    const box = screen.getByLabelText("Message GLM");
     await fireEvent.input(box, { target: { value: "Review this scan" } });
     await fireEvent.keyDown(box, { key: "Enter" });
     await waitFor(() => checkBadge(document.querySelector(".thread .att-ocr-missing")));
@@ -356,7 +356,7 @@ describe("a document read from a picture says so", () => {
       expect(screen.queryByText("OCR", { exact: true })).toBeNull();
     };
     await waitFor(check);
-    const box = screen.getByLabelText("Message GLM-5.2");
+    const box = screen.getByLabelText("Message GLM");
     await fireEvent.input(box, { target: { value: "Review this mixed PDF" } });
     await fireEvent.keyDown(box, { key: "Enter" });
     await waitFor(() => {

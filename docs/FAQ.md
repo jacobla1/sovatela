@@ -62,7 +62,7 @@ providers see the queries you send them. Nobody else, and specifically not the
 developer.
 
 **Does Z.ai see my chats?**
-Not through this app. GLM-5.2's weights are Z.ai's, but Scaleway hosts them in
+Not through this app. GLM's weights are Z.ai's, but Scaleway hosts them in
 France; your messages go to Scaleway, not to Z.ai. What Scaleway itself does
 with them is their policy, not ours — see [Scaleway's Generative APIs data
 privacy](https://www.scaleway.com/en/docs/generative-apis/reference-content/data-privacy/).
@@ -70,16 +70,17 @@ privacy](https://www.scaleway.com/en/docs/generative-apis/reference-content/data
 ## The model
 
 **Which model am I talking to?**
-GLM-5.2 for text. Any image in the conversation routes to a Mistral vision model
-instead, because GLM-5.2 is text-only. The header shows what's active.
+GLM for text. Any image in the conversation routes to a Mistral vision model
+instead, because GLM is text-only. The header shows what's active.
 
 **Can I choose a different model?**
-Not in this version. Model selection is fixed — GLM-5.2 with automatic vision
+Not in this version. Model selection is fixed — GLM with automatic vision
 routing — to keep the sovereignty guarantee checkable. A provider/model picker
 is under consideration; see the Roadmap in the README.
 
-**Isn't GLM-5.2 free in Ollama?**
-Ollama lists it, but only as `glm-5.2:cloud`: there are no weights to download,
+**Isn't GLM free in Ollama?**
+Ollama lists it, but when we checked (for GLM-5.2) only as `glm-5.2:cloud`:
+there are no weights to download,
 because the model is far too large to run on a laptop. It runs on Ollama's
 servers in the US, on an Ollama account billed by Ollama. So it isn't local
 versus hosted — both are hosted. The difference is whose cloud and under whose
@@ -87,7 +88,7 @@ law. Ollama's genuinely local models are a good offline option, and a smaller
 one running on your own hardware is more private than anything network-based.
 
 **What is Quick answers (⚡)?**
-GLM-5.2 reasons before it answers, which is why even a short reply takes a
+GLM reasons before it answers, which is why even a short reply takes a
 moment. Quick answers skips that step — roughly 0.5s instead of 1.5s. It costs
 accuracy on anything involving numbers, dates, or multiple steps, so it's off by
 default, and replies produced with it are marked *Quick · lower accuracy*. It's
@@ -157,7 +158,7 @@ No, not for the time being.
 
 **What is Terminal access / `claude-glm`?**
 An optional setup under **Settings → Advanced → Terminal access**. It installs a
-`claude-glm` launcher that runs **Claude Code** against GLM-5.2 on Scaleway
+`claude-glm` launcher that runs **Claude Code** against GLM on Scaleway
 through a small local proxy, reading the same Scaleway key you already saved —
 while your normal `claude` command keeps using Anthropic models. Claude Code
 must already be installed (`npm install -g @anthropic-ai/claude-code`).

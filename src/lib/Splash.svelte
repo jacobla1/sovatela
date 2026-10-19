@@ -51,7 +51,7 @@
   <h1>Welcome to Sovatela</h1>
   <p class="splash-lead">
     An app for <strong>AI chat</strong> — private, and yours. It runs
-    <strong>GLM-5.2</strong> in Europe, on a key that stays on your computer.
+    <strong>GLM</strong> in Europe, on a key that stays on your computer.
     Four steps, once.
   </p>
 

@@ -2,7 +2,11 @@ use futures_util::StreamExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const DEFAULT_ENDPOINT: &str = "https://api.scaleway.ai/v1";
-pub const DEFAULT_MODEL: &str = "glm-5.2";
+/// GLM-5.3. Scaleway deprecated glm-5.2 on 2026-10-16 and ends it on
+/// 2026-11-16, routing its requests to glm-5.3 meanwhile; the two have the
+/// same context, output ceiling, tools and price. Named in one place so the
+/// next change is a line here, not a rebrand: the interface says "GLM".
+pub const DEFAULT_MODEL: &str = "glm-5.3";
 pub const DEFAULT_MAX_TOKENS: u32 = 8192;
 
 /// Largest non-streaming provider body this app will buffer.
@@ -73,7 +77,7 @@ pub struct CompletionOptions {
     pub stream: bool,
     /// OpenAI-style `reasoning_effort`, passed through when set.
     ///
-    /// On the Scaleway GLM-5.2 endpoint `"none"` is the only value that changes
+    /// On Scaleway's GLM endpoint (measured on glm-5.2) `"none"` is the only value that changes
     /// anything — it suppresses the reasoning pass entirely (measured: ~2 output
     /// tokens in ~0.5s versus ~90 tokens in ~1.5s for a trivial prompt). The
     /// other levels, and the `enable_thinking` / `chat_template_kwargs` forms
@@ -592,7 +596,7 @@ mod tests {
     fn defaults_match_the_desktop_integration() {
         let options = CompletionOptions::default();
         assert_eq!(options.endpoint, "https://api.scaleway.ai/v1");
-        assert_eq!(options.model, "glm-5.2");
+        assert_eq!(options.model, "glm-5.3");
         assert_eq!(options.max_tokens, 8192);
         assert!(options.stream);
         // Reasoning stays on unless a caller explicitly opts out.

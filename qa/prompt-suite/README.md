@@ -1,7 +1,7 @@
 # Prompt suite
 
 61 prompts across 10 categories, driven through the app's own send path against
-the real Scaleway GLM-5.2 endpoint — graded where grading is possible, and
+the real Scaleway GLM endpoint — graded where grading is possible, and
 measured for latency, tokens and cost throughout.
 
 ```sh

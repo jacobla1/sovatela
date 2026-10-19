@@ -7,7 +7,7 @@
 <main class="onboarding">
   <h1>Welcome to Sovatela 👋</h1>
   <p class="lead">
-    Sovatela is your private client for <strong>GLM-5.2</strong>, hosted in
+    Sovatela is your private client for <strong>GLM</strong>, hosted in
     Europe on Scaleway. A quick tour of what you can do — reopen this anytime
     from the <strong>Guide</strong> button.
   </p>

@@ -4,7 +4,7 @@
   import Icon from "./Icon.svelte";
 
   const features = [
-    ["message", "Chat", "Talk to GLM-5.2 about anything."],
+    ["message", "Chat", "Talk to GLM about anything."],
     ["paperclip", "Upload files & images", "Attach documents (PDF, Word, ODT, Excel, PowerPoint), text, code, or images and ask about them."],
     ["panel", "Create artifacts", "Ask for a chart, diagram, or small app — it renders in a panel on the right."],
     ["file", "Write documents", "Ask for a Word document, spreadsheet or slide deck — see what it will contain, then save it or have it written into your workspace folder."],
@@ -17,7 +17,7 @@
   ];
 
   const models = [
-    ["Chat", "GLM-5.2 (Z.ai)"],
+    ["Chat", "GLM-5.3 (Z.ai)"],
     ["Image understanding", "Mistral Small (Mistral)"],
     ["Image generation", "SDXL (Stability AI) or FLUX (Black Forest Labs)"],
   ];
@@ -25,7 +25,7 @@
 
 <div class="guide">
   <p class="guide-intro">
-    Chat with <strong>GLM-5.2</strong> — Z.ai's Chinese open model — hosted in
+    Chat with <strong>GLM</strong> — Z.ai's Chinese open model — hosted in
     <strong>France by Scaleway</strong>. This chat core is the sovereign part:
     your messages and image understanding run on Scaleway's EU infrastructure,
     under EU jurisdiction.

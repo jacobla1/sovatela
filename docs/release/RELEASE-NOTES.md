@@ -1,3 +1,42 @@
+# Release notes — Sovatela 1.10.8
+
+Release date: 2026-10-19 · [All releases](https://github.com/jacobla1/sovatela/releases)
+
+Scaleway is retiring GLM-5.2 on 16 November 2026. This release moves Sovatela
+to GLM-5.3, at the same price, and lets you resize the panels beside the chat.
+
+## What to do if you use terminal access (`claude-glm`)
+
+**Run setup again before 16 November** (*Settings → Terminal access*). The
+proxy it runs lives outside the app and keeps asking for GLM-5.2 until you do;
+Settings says when yours is out of date. If you have not yet done the steps
+from 1.10.7 (removing an *Always Allow* grant, giving the terminal a key for
+the AI models only), do them too.
+
+## Changed
+
+- **Sovatela now uses GLM-5.3.** Same context, same output limit, same tools,
+  same price. Like GLM-5.2 it reads text only, so a chat with an image still
+  goes to the vision model.
+- **The app says "GLM"** rather than a version number. The guide names the
+  exact model.
+- **The dividers beside the chat can be moved.** Drag them, or focus one and
+  use the arrow keys. Sovatela remembers the widths, and always leaves the chat
+  enough room to type.
+
+## Fixed
+
+- Settings no longer suggests that a separate terminal key puts terminal use
+  on its own invoice line, and its warnings no longer break lines mid-sentence.
+
+[QA-1.10.8.md](QA-1.10.8.md) records verification. Windows and Linux
+installers remain unsigned and experimental, with no clean-machine lifecycle
+test and no measured real-photo OCR accuracy; on those, artifacts are not
+kept off the network as they are on macOS. Existing
+[accessibility limitations](https://sovatela.eu/accessibility) remain disclosed.
+
+---
+
 # Release notes — Sovatela 1.10.7
 
 Release date: 2026-10-18 · [All releases](https://github.com/jacobla1/sovatela/releases)

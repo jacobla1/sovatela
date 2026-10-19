@@ -151,3 +151,16 @@ describe("switching chats never shows the previous chat's reply", () => {
     }
   });
 });
+
+// 1.10.8: the divider beside the chat list is there when the list is, and
+// carries the width the layout gave the list.
+describe("the chat list can be resized", () => {
+  it("shows a separator beside the open chat list", async () => {
+    render(Chat, { props: {} });
+    expect(screen.queryByRole("separator", { name: "Resize the chat list" })).toBeNull();
+    await fireEvent.click(screen.getByLabelText("Toggle chat history sidebar"));
+    const sep = await screen.findByRole("separator", { name: "Resize the chat list" });
+    const workspace = document.querySelector(".workspace");
+    expect(workspace.style.getPropertyValue("--history-w")).toBe(`${sep.getAttribute("aria-valuenow")}px`);
+  });
+});

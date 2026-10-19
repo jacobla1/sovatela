@@ -6,6 +6,8 @@
   import Artifact from "./Artifact.svelte";
   import Icon from "./Icon.svelte";
   import History from "./History.svelte";
+  import Splitter from "./Splitter.svelte";
+  import { clampWidth, defaultWidth, layout, loadWidth, maxWidth, saveWidth, PANELS } from "./panelWidths.js";
   import ProjectPanel from "./ProjectPanel.svelte";
   import { modalFocus } from "./modalFocus.js";
   import MemoryReview from "./MemoryReview.svelte";
@@ -218,6 +220,23 @@
   let conversationId = $state(newConversationId());
   let conversations = $state([]);
   let showHistory = $state(false);
+
+  // Widths of the two side panels, resizable since 1.10.8 (panelWidths.js).
+  // Held as wished-for widths and clamped on the way out, so a window made
+  // narrower and then wider again gives back the width someone chose.
+  let windowWidth = $state(typeof window === "undefined" ? 900 : window.innerWidth);
+  let historyWish = $state(loadWidth("history") ?? PANELS.history.fallback);
+  let artifactWish = $state(loadWidth("artifact"));
+  const widths = $derived(
+    layout(windowWidth, {
+      history: showHistory ? historyWish : null,
+      artifact: activeArtifact ? (artifactWish ?? defaultWidth("artifact", windowWidth)) : null,
+    }),
+  );
+  const historyWidth = $derived(widths.history || clampWidth("history", historyWish, windowWidth, 0));
+  const artifactWidth = $derived(
+    widths.artifact || clampWidth("artifact", artifactWish ?? defaultWidth("artifact", windowWidth), windowWidth, 0),
+  );
   /// The sidebar is a disclosure, not a dialog: opening it should not steal
   /// focus mid-sentence. But it appeared and disappeared in silence — pressing
   /// the shortcut with focus in the message box said nothing at all, so there
@@ -997,7 +1016,7 @@
     const fileBlock = (a) => `File: ${a.name}\n\`\`\`\n${a.content}\n\`\`\``;
 
     if (!hasImage) {
-      // Text-only → single string so it stays on GLM-5.2.
+      // Text-only → single string so it stays on GLM.
       let content = m.text || "";
       for (const a of atts) content += `\n\n${fileBlock(a)}`;
       return { role: "user", content: content.trim() };
@@ -1979,9 +1998,12 @@
   }
 </script>
 
-<svelte:window onkeydown={onGlobalKeydown} />
+<svelte:window onkeydown={onGlobalKeydown} bind:innerWidth={windowWidth} />
 
-<div class="workspace">
+<div
+  class="workspace"
+  style="--history-w: {historyWidth}px; --artifact-w: {artifactWidth}px"
+>
 {#if showHistory}
   <History
     {conversations}
@@ -2001,6 +2023,15 @@
     onExport={exportConversation}
     onRename={renameConversation}
     onImport={importConversation}
+  />
+  <Splitter
+    label="Resize the chat list"
+    side="left"
+    value={historyWidth}
+    min={PANELS.history.min}
+    max={maxWidth("history", windowWidth, activeArtifact ? artifactWidth : 0)}
+    onresize={(w) => (historyWish = clampWidth("history", w, windowWidth, activeArtifact ? artifactWidth : 0))}
+    oncommit={(w) => saveWidth("history", w)}
   />
 {/if}
 <!-- The one main landmark in this view. History is navigation beside it,
@@ -2046,7 +2077,7 @@
         <!-- Wrapped so it can truncate. As a bare text node in a flex row it
              could not, so at a narrow window it ran straight through the
              buttons on the other side of the header. -->
-        <span class="title-label">GLM-5.2 · Scaleway</span>
+        <span class="title-label">GLM · Scaleway</span>
       </div>
     </div>
     <div class="header-actions">
@@ -2164,7 +2195,7 @@
     {/if}
     {#if messages.length === 0}
       <div class="empty-state">
-        <div class="empty-title">Ask GLM-5.2 anything</div>
+        <div class="empty-title">Ask GLM anything</div>
         <div class="empty-sub">Start a conversation, or attach files to get going.</div>
         <div class="empty-chips">
           {#each SUGGESTIONS as s}
@@ -2514,12 +2545,12 @@
     <div class="composer-input">
       <textarea
         bind:this={inputEl}
-        aria-label={imageMode ? "Describe an image to generate" : "Message GLM-5.2"}
+        aria-label={imageMode ? "Describe an image to generate" : "Message GLM"}
         placeholder={imageMode
           ? stagedImages.length
             ? "Describe the image to make from it…"
             : "Describe an image to generate…"
-          : "Message GLM-5.2…   (Enter to send · Shift+Enter for newline)"}
+          : "Message GLM…   (Enter to send · Shift+Enter for newline)"}
         bind:value={input}
         onkeydown={onKeydown}
         onpaste={onPaste}
@@ -2643,6 +2674,15 @@
 {/if}
 
 {#if activeArtifact}
+  <Splitter
+    label="Resize the artifact panel"
+    side="right"
+    value={artifactWidth}
+    min={PANELS.artifact.min}
+    max={maxWidth("artifact", windowWidth, showHistory ? historyWidth : 0)}
+    onresize={(w) => (artifactWish = clampWidth("artifact", w, windowWidth, showHistory ? historyWidth : 0))}
+    oncommit={(w) => saveWidth("artifact", w)}
+  />
   <aside class="artifact-panel" aria-label="Artifact preview">
     <div class="artifact-panel-head">
       <select

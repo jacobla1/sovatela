@@ -182,7 +182,7 @@ fn base_url() -> String {
     glm::DEFAULT_ENDPOINT.to_string()
 }
 const MODEL: &str = glm::DEFAULT_MODEL;
-// GLM-5.2 is text-only (no vision encoder), so messages containing images are
+// GLM is text-only (no vision encoder), so messages containing images are
 // routed to a European (Mistral) vision model on Scaleway instead.
 //
 // This was `mistral-small-3.1-24b-instruct-2503` until 1.5.3. That id no
@@ -196,7 +196,7 @@ const VISION_MODEL: &str = "mistral-small-3.2-24b-instruct-2506";
 ///
 /// The tool loop tells the model to wrap up, once when its budget runs low and
 /// once when the rounds are spent, by adding a message after the tool results.
-/// GLM-5.2 takes that. The vision model does not: Mistral's validator allows
+/// GLM takes that. The vision model does not: Mistral's validator allows
 /// only `assistant` or `tool` after a `tool` message, so every chat with an
 /// image in it, tools on and a few rounds of research failed with Scaleway's
 /// "Unexpected role 'system' after role 'tool'" (found by the owner on 1.10.6).
@@ -217,7 +217,7 @@ fn add_instruction(messages: &mut Vec<serde_json::Value>, role: &str, text: &str
     }
 }
 
-/// Scaleway's output ceiling for glm-5.2 — it rejects anything larger with
+/// Scaleway's output ceiling for GLM — it rejects anything larger with
 /// "max_completion_tokens is limited to 16384". Every path that writes a full
 /// answer uses this; the 8k default is only for short internal calls.
 const MAX_OUTPUT_TOKENS: u32 = 16384;
@@ -1061,7 +1061,7 @@ async fn check_connection() -> Result<String, String> {
 }
 
 /// True if any message carries an image part (OpenAI vision content format),
-/// meaning the request must go to the vision model rather than text-only GLM-5.2.
+/// meaning the request must go to the vision model rather than text-only GLM.
 fn messages_have_image(messages: &[serde_json::Value]) -> bool {
     messages.iter().any(|m| {
         m.get("content")
@@ -4194,7 +4194,7 @@ fn clamp_query(original: &str, rewritten: &str) -> String {
     }
 }
 
-/// Compress an over-long search query with GLM-5.2, keeping the intent —
+/// Compress an over-long search query with GLM, keeping the intent —
 /// Staan rejects queries over 400 chars, and long natural-language queries
 /// search poorly on every engine anyway. Falls back to hard truncation.
 async fn shorten_query(client: &reqwest::Client, key: &str, query: &str) -> String {
@@ -7568,7 +7568,7 @@ async fn run_chat<R: tauri::Runtime>(
 
     // Route on the payload actually being sent (post-compaction), not the full
     // history — once images have aged out of the sent window, the chat returns
-    // to GLM-5.2 instead of silently staying on the smaller vision model.
+    // to GLM instead of silently staying on the smaller vision model.
     let model = if messages_have_image(&convo) {
         // Two quite different situations produce the same routing decision, and
         // conflating them is what made this confusing in practice: someone
@@ -7586,7 +7586,7 @@ async fn run_chat<R: tauri::Runtime>(
                 "Mistral (vision) — this reply involves images"
             } else {
                 "Mistral (vision) — an earlier image is still in this chat, so \
-                 GLM-5.2 can't answer. Start a new chat to get it back."
+                 GLM can't answer. Start a new chat to get it back."
             }
             .into(),
         ));
@@ -8041,9 +8041,9 @@ async fn run_chat<R: tauri::Runtime>(
     // 16k, matching the research path. The 8k default truncated a large HTML
     // artifact mid-code — the same failure the comment on the research path
     // already describes, which was fixed there and not here. Reasoning counts
-    // against this budget too, and on GLM-5.2 that is not small: a one-line
+    // against this budget too, and on GLM that is not small: a one-line
     // factual answer bills ~86 output tokens before any artifact is written.
-    // 16384 is Scaleway's ceiling for glm-5.2; it rejects more outright.
+    // 16384 is Scaleway's ceiling for GLM; it rejects more outright.
     let (content, truncated) = stream_completion_max(
         &client,
         &key,
@@ -11330,7 +11330,7 @@ mod tests {
             ),
             (
                 "claude_glm_status",
-                "the terminal launcher in ~/bin, to see whether it asks the app for the key",
+                "the terminal launcher and its proxy config, to see whether they are current",
             ),
             ("load", "usage.json, the usage ledger, in the app's folder"),
             (
@@ -15604,13 +15604,16 @@ mod tests {
     // made of `<div>`, must be refused before the parser sees it.
     #[test]
     fn a_page_of_deep_blocks_is_refused_before_parsing() {
+        // Parsing this page would take minutes; refusing it takes about a
+        // second in a debug build on a busy machine. Ten seconds tells the two
+        // apart without failing when the test machine is loaded (it did, at 2).
         let page = "<div>".repeat(FETCH_MAX_BYTES / 5);
         let started = std::time::Instant::now();
         assert!(html_to_text(page.as_bytes())
             .unwrap_err()
             .contains("nested more than"));
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(2),
+            started.elapsed() < std::time::Duration::from_secs(10),
             "{:?}",
             started.elapsed()
         );
@@ -15787,6 +15790,22 @@ mod tests {
     }
 
     #[test]
+    fn a_proxy_config_for_the_old_model_is_recognised() {
+        // Every shipped installer writes a config for the current model.
+        for installer in [
+            include_str!("../../deploy/claude-glm/install-claude-glm.command"),
+            include_str!("../../deploy/claude-glm/install-claude-glm.sh"),
+            include_str!("../../deploy/claude-glm/install-claude-glm.ps1"),
+        ] {
+            assert!(
+                !asks_for_an_older_model(installer),
+                "an installer still names an older model"
+            );
+        }
+        assert!(asks_for_an_older_model("      model: openai/glm-5.2\n"));
+    }
+
+    #[test]
     fn the_terminal_key_flag_is_handled_before_anything_starts() {
         let main = include_str!("main.rs");
         let flag = main
@@ -15941,7 +15960,7 @@ mod tests {
         assert_eq!(bare[0]["role"], "system");
         assert_eq!(mistral_accepts(&bare), Ok(()));
 
-        // GLM-5.2 keeps the trailing message it has always had.
+        // GLM keeps the trailing message it has always had.
         let mut glm = after_tools();
         add_instruction(&mut glm, "system", "Start concluding.", MODEL);
         assert_eq!(glm.last().unwrap()["content"], "Start concluding.");
@@ -16135,7 +16154,7 @@ mod tests {
             "role": "user",
             "content": "Reply with exactly one word: pong."
         })];
-        // GLM-5.2 spends tokens on a hidden reasoning phase before any visible
+        // GLM spends tokens on a hidden reasoning phase before any visible
         // content, so a realistic budget is needed or the reply comes back empty.
         let opts = glm::CompletionOptions {
             max_tokens: 512,
@@ -18289,7 +18308,7 @@ mod tests {
             server.verify().await;
         }
 
-        // --- Scenario 11: a carried-over image says how to get GLM-5.2 back ---
+        // --- Scenario 11: a carried-over image says how to get GLM back ---
         // Pasting one screenshot routed every later turn to the vision model.
         // That is correct — a payload with image parts cannot go to a text-only
         // model — but a text-only follow-up answered by the smaller model with
@@ -18336,7 +18355,7 @@ mod tests {
             let all = events.join("\n");
             assert!(
                 all.contains("Start a new chat"),
-                "a text-only turn riding an older image must say how to get GLM-5.2 back: {all}"
+                "a text-only turn riding an older image must say how to get GLM back: {all}"
             );
             server.verify().await;
         }
@@ -18431,7 +18450,7 @@ mod tests {
 
 // ---------- claude-glm terminal setup (status + one-shot installer) ----------
 //
-// Layer 2 of terminal GLM-5.2 access: a Settings panel that wraps the tested
+// Layer 2 of terminal GLM access: a Settings panel that wraps the tested
 // installer scripts (deploy/claude-glm/), embedded here so they ship with the
 // app and need no resource bundling. macOS, Linux, and Windows.
 
@@ -18470,6 +18489,11 @@ struct ClaudeGlmStatus {
     /// item with `security` rather than asking the app for one key (T1). It
     /// sits outside the app, so only running setup again replaces it.
     launcher_reads_whole_item: bool,
+    /// An installed setup whose proxy still asks Scaleway for an older model
+    /// than `glm::DEFAULT_MODEL`: glm-5.2 until 1.10.8, which Scaleway ends on
+    /// 2026-11-16. Like the launcher, the proxy's config lives outside the
+    /// app, so only running setup again replaces it.
+    launcher_model_outdated: bool,
     proxy_running: bool,
     key_stored: bool,
 }
@@ -18690,6 +18714,12 @@ fn reads_whole_item(launcher: &str) -> bool {
     !launcher.contains(TERMINAL_KEY_FLAG)
 }
 
+/// Whether the terminal proxy's config asks for a model other than the one
+/// this version uses.
+fn asks_for_an_older_model(litellm_config: &str) -> bool {
+    !litellm_config.contains(&format!("openai/{}", glm::DEFAULT_MODEL))
+}
+
 /// Read-only readiness snapshot for the Settings panel.
 #[tauri::command]
 async fn claude_glm_status() -> Result<ClaudeGlmStatus, String> {
@@ -18703,6 +18733,10 @@ async fn claude_glm_status() -> Result<ClaudeGlmStatus, String> {
                 && launcher_path
                     .and_then(|p| std::fs::read_to_string(p).ok())
                     .is_some_and(|text| reads_whole_item(&text));
+            let launcher_model_outdated = launcher
+                && claude_glm_config_dir()
+                    .and_then(|d| std::fs::read_to_string(d.join("litellm.yaml")).ok())
+                    .is_some_and(|config| asks_for_an_older_model(&config));
             // 1.6.1 and later keep uv and the proxy inside the app's own config
             // folder. A launcher with no venv beside it predates that.
             let layout = claude_glm_layout(claude_glm_config_dir().as_deref(), launcher);
@@ -18713,6 +18747,7 @@ async fn claude_glm_status() -> Result<ClaudeGlmStatus, String> {
                 claude_installed: claude_glm_has("claude"),
                 launcher_installed: launcher,
                 launcher_reads_whole_item,
+                launcher_model_outdated,
                 proxy_running: claude_glm_proxy_running(),
                 key_stored,
             }

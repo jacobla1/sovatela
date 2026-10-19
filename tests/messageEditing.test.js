@@ -106,7 +106,7 @@ import Chat from "../src/lib/Chat.svelte";
 // One exchange: the question goes in, the scripted answer comes back.
 async function exchange(question, answer) {
   nextReply = answer;
-  const box = screen.getByLabelText("Message GLM-5.2");
+  const box = screen.getByLabelText("Message GLM");
   await fireEvent.input(box, { target: { value: question } });
   await fireEvent.keyDown(box, { key: "Enter" });
   await waitFor(() => expect(thread().getByText(answer)).toBeTruthy());
@@ -344,7 +344,7 @@ describe("a renamed chat keeps its name when the conversation continues", () => 
 
     // Now continue the conversation, which is what used to undo it.
     nextReply = "Sundays start at 11:00.";
-    const composer = screen.getByLabelText("Message GLM-5.2");
+    const composer = screen.getByLabelText("Message GLM");
     await fireEvent.input(composer, { target: { value: "and on Sunday" } });
     await fireEvent.keyDown(composer, { key: "Enter" });
     await waitFor(() => expect(sent).toBeGreaterThan(1));
@@ -559,7 +559,7 @@ describe("an edit the provider refuses does not destroy what was there", () => {
     expect(thread().queryByText("what time is the ferry")).toBeTruthy();
     // And the edited text is back in the composer, so the attempt is not lost
     // either.
-    expect(screen.getByLabelText("Message GLM-5.2").value).toBe("what time is the last ferry");
+    expect(screen.getByLabelText("Message GLM").value).toBe("what time is the last ferry");
   });
 
   it("saves the restored conversation, not the one it rolled back", async () => {
@@ -695,7 +695,7 @@ describe("copying your own message", () => {
     await exchange("what time is the ferry", "The 09:40 sailing.");
     // A send that never delivers, so the app stays in the sending state.
     stall = true;
-    const box = screen.getByLabelText("Message GLM-5.2");
+    const box = screen.getByLabelText("Message GLM");
     await fireEvent.input(box, { target: { value: "and on Sunday" } });
     await fireEvent.keyDown(box, { key: "Enter" });
 

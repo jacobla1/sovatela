@@ -1,6 +1,6 @@
 {
-  "version": "2026-07-24",
-  "collected": "2026-07-24",
+  "version": "2026-10-19",
+  "collected": "2026-10-19",
   "display_currency": "EUR",
   "fx": {
     "EUR": 1.0,
@@ -24,6 +24,7 @@
   },
   "ai": {
     "default": { "input_per_mtok": 1.80, "output_per_mtok": 5.50, "currency": "EUR" },
+    "glm-5.3": { "input_per_mtok": 1.80, "output_per_mtok": 5.50, "currency": "EUR" },
     "glm-5.2": { "input_per_mtok": 1.80, "output_per_mtok": 5.50, "currency": "EUR" },
     "mistral-small-3.2-24b-instruct-2506": { "input_per_mtok": 0.15, "output_per_mtok": 0.35, "currency": "EUR" }
   },

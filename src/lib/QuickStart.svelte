@@ -43,7 +43,7 @@
         <div class="ui-mock" aria-hidden="true">
           <div class="ui-mock-bar">
             <span>☰</span>
-            <span>● GLM-5.2 · Scaleway</span>
+            <span>● GLM · Scaleway</span>
             <span class="ui-mock-spacer"></span>
             <span class="ui-mock-btn">Quick start</span>
             <span class="ui-mock-btn">Guide</span>

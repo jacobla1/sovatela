@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# One-shot setup for `claude-glm` on Linux: run Claude Code against GLM-5.2 on
+# One-shot setup for `claude-glm` on Linux: run Claude Code against GLM on
 # Scaleway through a local LiteLLM proxy, while the normal `claude` command
 # keeps using Anthropic models. Run it: `bash install-claude-glm.sh`.
 #
@@ -29,7 +29,7 @@ backup() {
   say "  • Kept your previous $(basename "$1") as $(basename "$b")"
 }
 
-say "Setting up claude-glm (Claude Code → LiteLLM → Scaleway GLM-5.2)"
+say "Setting up claude-glm (Claude Code → LiteLLM → Scaleway GLM)"
 
 # ---- 1. Prerequisite: Claude Code -------------------------------------------
 step "Checking prerequisites"
@@ -290,14 +290,14 @@ chmod 700 "$CONFIG_DIR"
 
 backup "$CONFIG_DIR/litellm.yaml"
 cat > "$CONFIG_DIR/litellm.yaml" <<'YAML'
-# Maps the model name Claude Code sends (glm-5.2) onto Scaleway's OpenAI-
-# compatible GLM-5.2 endpoint. The Scaleway key comes from the environment,
+# Maps the model name Claude Code sends (glm-5.3) onto Scaleway's OpenAI-
+# compatible GLM endpoint. The Scaleway key comes from the environment,
 # which the claude-glm launcher populates from the Secret Service at runtime —
 # it is never written to this file.
 model_list:
-  - model_name: glm-5.2
+  - model_name: glm-5.3
     litellm_params:
-      model: openai/glm-5.2
+      model: openai/glm-5.3
       api_base: https://api.scaleway.ai/v1
       api_key: os.environ/SCW_SECRET_KEY
       drop_params: true
@@ -306,7 +306,7 @@ litellm_settings:
   # Claude Code speaks Anthropic /v1/messages to this proxy. LiteLLM translates
   # that to the upstream OpenAI *Responses* API whenever the provider is
   # literally `openai` — and Scaleway does not serve /v1/responses for
-  # glm-5.2, so every request came back 422 ROUTE NOT SUPPORTED. This is
+  # GLM, so every request came back 422 ROUTE NOT SUPPORTED. This is
   # LiteLLM's own documented opt-out; it sends them to /chat/completions.
   use_chat_completions_url_for_anthropic_messages: true
 
@@ -344,7 +344,7 @@ mkdir -p "$HOME/.local/bin"
 backup "$LAUNCHER"
 cat > "$LAUNCHER" <<'LAUNCHER_EOF'
 #!/usr/bin/env bash
-# claude-glm — run Claude Code against GLM-5.2 on Scaleway through a LiteLLM
+# claude-glm — run Claude Code against GLM on Scaleway through a LiteLLM
 # proxy this script owns, while the normal `claude` command keeps using
 # Anthropic models.
 #
@@ -504,7 +504,7 @@ PORT=""
 attempt=1
 while [ "$attempt" -le 3 ]; do
   candidate=$(pick_port) || die "Could not find a free port."
-  echo "Starting the local GLM-5.2 proxy on port $candidate…"
+  echo "Starting the local GLM proxy on port $candidate…"
   start_proxy "$candidate"
 
   # Wait for *a* listener to appear, and identify it — before anything
@@ -562,7 +562,7 @@ unset SCW_KEY
 
 # ---- Claude Code, with our proxy and without our secrets --------------------
 # CLAUDE_CODE_MAX_OUTPUT_TOKENS: Scaleway rejects anything above 16384 for
-# glm-5.2 ("max_completion_tokens is limited to 16384"); Claude Code would
+# GLM ("max_completion_tokens is limited to 16384"); Claude Code would
 # otherwise ask for a Claude-sized budget and every request would 400.
 STRIP_ARGS=()
 for v in "${STRIP_VARS[@]}"; do
@@ -577,18 +577,18 @@ run_status=0
 env "${STRIP_ARGS[@]}" \
   ANTHROPIC_BASE_URL="http://127.0.0.1:$PORT" \
   ANTHROPIC_AUTH_TOKEN="$PROXY_KEY" \
-  ANTHROPIC_MODEL="glm-5.2" \
-  ANTHROPIC_DEFAULT_HAIKU_MODEL="glm-5.2" \
-  ANTHROPIC_DEFAULT_SONNET_MODEL="glm-5.2" \
-  ANTHROPIC_DEFAULT_OPUS_MODEL="glm-5.2" \
-  ANTHROPIC_SMALL_FAST_MODEL="glm-5.2" \
+  ANTHROPIC_MODEL="glm-5.3" \
+  ANTHROPIC_DEFAULT_HAIKU_MODEL="glm-5.3" \
+  ANTHROPIC_DEFAULT_SONNET_MODEL="glm-5.3" \
+  ANTHROPIC_DEFAULT_OPUS_MODEL="glm-5.3" \
+  ANTHROPIC_SMALL_FAST_MODEL="glm-5.3" \
   CLAUDE_CODE_MAX_OUTPUT_TOKENS="16384" \
   CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY="1" \
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1" \
   DISABLE_TELEMETRY="1" \
   DISABLE_ERROR_REPORTING="1" \
   DISABLE_FEEDBACK_COMMAND="1" \
-  claude --model glm-5.2 "$@" || run_status=$?
+  claude --model glm-5.3 "$@" || run_status=$?
 
 # Not `exec`: the proxy is this session's child and the EXIT trap is what stops
 # it. That also means there is no PID file and no long-lived proxy to go stale —
@@ -647,7 +647,7 @@ say ""
 # install that died in either was still recorded as complete.
 write_state complete "$LEGACY_SEEN"
 say ""
-say "Done. Start a GLM-5.2 Claude Code session with:"
+say "Done. Start a GLM Claude Code session with:"
 say "    claude-glm"
 say ""
 say "Your normal 'claude' command is unchanged."

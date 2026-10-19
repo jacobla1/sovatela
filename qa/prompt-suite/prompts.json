@@ -1,6 +1,6 @@
 {
   "version": "1",
-  "model": "glm-5.2",
+  "model": "glm-5.3",
   "note": "Assertions are only written where a machine can honestly judge. Everything else carries `review` text for a human. A case with no `assert` is never reported as passing.",
   "cases": [
     {

@@ -106,7 +106,7 @@ in the header walks through it again at any time.
 
 The app immediately makes a no-cost call to check the key works, and confirms
 with **Connected**, showing the last few characters of what was actually stored.
-The status dot beside "GLM-5.2 · Scaleway" in the header turns green.
+The status dot beside "GLM · Scaleway" in the header turns green.
 
 The key goes straight into your operating system's credential store — macOS
 Keychain, Windows Credential Manager, or the Linux Secret Service. It is never
@@ -126,7 +126,7 @@ That's the whole core loop. Everything below is optional.
 **Attach a file.** Click the paperclip and pick a PDF, Word document, ODT, or
 any text or code file. The text is extracted on your machine and folded into the
 conversation. Attach an image instead and it routes to a European vision model,
-because GLM-5.2 itself is text-only.
+because GLM itself is text-only.
 
 One thing to know about Word and ODT files: the body, headers, footers,
 footnotes and endnotes are all sent — the last four after the body, under a
@@ -188,7 +188,7 @@ world, and the address it asks for can contain words from your conversation.
 
 ## If something isn't working
 
-The status dot beside "GLM-5.2 · Scaleway" in the header is the first thing to
+The status dot beside "GLM · Scaleway" in the header is the first thing to
 check. Hover it for the exact message, or click it to re-check:
 
 | Dot | Meaning |

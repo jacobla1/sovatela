@@ -34,7 +34,7 @@ import { invoke } from "@tauri-apps/api/core";
 import Chat from "../src/lib/Chat.svelte";
 
 async function sendAMessage(text = "a question worth keeping") {
-  const box = screen.getByLabelText("Message GLM-5.2");
+  const box = screen.getByLabelText("Message GLM");
   await fireEvent.input(box, { target: { value: text } });
   await fireEvent.keyDown(box, { key: "Enter" });
 }

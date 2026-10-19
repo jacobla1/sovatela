@@ -37,8 +37,19 @@ describe("Guide component", () => {
   it("lists image models by their developer in the Models section", () => {
     render(Guide);
     // Parenthetical is the model's developer (Stability AI made SDXL), not the
-    // host (OVHcloud) — consistent with "GLM-5.2 (Z.ai)".
+    // host (OVHcloud) — consistent with "GLM-5.3 (Z.ai)".
     expect(screen.getByText(/SDXL \(Stability AI\)/)).toBeTruthy();
     expect(screen.getByText(/FLUX \(Black Forest Labs\)/)).toBeTruthy();
+  });
+
+  // The interface says "GLM"; the Guide's table is the one place that names
+  // the exact model, so it must be the one the app requests.
+  it("names the model the app actually requests", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const glm = readFileSync(join(import.meta.dirname, "..", "src-tauri", "src", "glm.rs"), "utf8");
+    const id = glm.match(/pub const DEFAULT_MODEL: &str = "glm-([0-9.]+)";/)[1];
+    render(Guide, { props: {} });
+    expect(screen.getByText(`GLM-${id} (Z.ai)`)).toBeTruthy();
   });
 });

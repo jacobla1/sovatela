@@ -561,12 +561,52 @@ button.primary:disabled {
   color: var(--text);
 }
 
+/* ---------- Resizable dividers (Splitter.svelte) ---------- */
+/* Overlaps the panel border it replaces, so the layout does not move by its
+   width; the line appears on hover and focus. */
+.splitter {
+  flex: 0 0 8px;
+  margin: 0 -4px;
+  position: relative;
+  z-index: 2;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.splitter::after {
+  content: "";
+  position: absolute;
+  inset: 0 3px;
+  border-radius: 1px;
+}
+
+.splitter:hover::after,
+.splitter:focus-visible::after {
+  background: var(--accent);
+}
+
+.splitter:focus-visible {
+  outline: none;
+}
+
+/* While a divider is dragged: no text selection, one cursor everywhere, and
+   frames ignore the pointer so an artifact cannot swallow the drag. */
+body.resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+body.resizing iframe {
+  pointer-events: none;
+}
+
 /* ---------- History sidebar ---------- */
 .history {
   display: flex;
   flex-direction: column;
-  width: 240px;
-  min-width: 200px;
+  /* Set from Chat.svelte when the divider is moved; see panelWidths.js. */
+  width: var(--history-w, 240px);
+  flex: 0 0 auto;
   border-right: 1px solid var(--border);
   background: var(--sidebar-bg);
   height: 100%;
@@ -1981,6 +2021,12 @@ button.mini.primary:disabled {
   overflow-wrap: anywhere;
 }
 
+/* A warning written as prose in the markup, not passed through from the
+   backend: its source line breaks are wrapping, not structure. */
+.warn-text.prose {
+  white-space: normal;
+}
+
 .saved-note {
   font-size: var(--fs-sm);
   color: var(--success);
@@ -2623,9 +2669,8 @@ button.mini.primary:disabled {
 .artifact-panel {
   display: flex;
   flex-direction: column;
-  width: 46%;
-  min-width: 340px;
-  max-width: 760px;
+  width: var(--artifact-w, 46%);
+  flex: 0 0 auto;
   border-left: 1px solid var(--border);
   background: var(--panel);
 }

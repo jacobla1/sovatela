@@ -332,7 +332,7 @@
     saveImage();
   }
 
-  // ----- Terminal access (claude-glm: Claude Code on GLM-5.2) -----
+  // ----- Terminal access (claude-glm: Claude Code on GLM) -----
   let cgStatus = $state(null); // readiness snapshot from the backend
 
   // Terminal access (claude-glm) — shown when the backend says it may be
@@ -1608,7 +1608,7 @@
 
 {#snippet terminalSection()}
   <p class="hint">
-    Use GLM-5.2 <strong>from your terminal</strong>. This sets up
+    Use GLM <strong>from your terminal</strong>. This sets up
     <code>claude-glm</code>, which runs <strong>Claude Code</strong> against
     Scaleway through a small local proxy — while your normal <code>claude</code>
     command keeps using Anthropic models. It reads the Scaleway key you saved
@@ -1746,8 +1746,7 @@
             Scaleway key found — the terminal uses its own
             (…{terminalKeyHint ?? ""}), separate from chat
           {:else}
-            Scaleway key found — shared with the terminal, so both land on one
-            invoice line
+            Scaleway key found — the terminal uses the chat key
           {/if}
         </span>
       </div>
@@ -1791,8 +1790,15 @@
         that would let any program you run read every key stored here, without
         asking.
       </p>
+      {#if cgStatus.launcher_model_outdated}
+        <p class="warn-text prose">
+          This setup still asks Scaleway for <code>glm-5.2</code>, which Scaleway
+          stops serving on 16 November 2026. Run setup again to move it to
+          <code>glm-5.3</code>; nothing else about it changes.
+        </p>
+      {/if}
       {#if cgStatus.launcher_reads_whole_item}
-        <p class="warn-text">
+        <p class="warn-text prose">
           This launcher is from an earlier version and reads every stored key
           with macOS's <code>security</code> tool. Run setup again to replace
           it with one that asks Sovatela for the terminal key alone. If you
@@ -1892,7 +1898,7 @@
        whole point: through 1.6.0 the write result was discarded and the panel
        reported the totals as recorded either way. -->
   {#if usage?.persist_error}
-    <p class="warn-text" role="alert">
+    <p class="warn-text prose" role="alert">
       These totals could not be saved to disk ({usage.persist_error}). They are
       right for this session, but will go back to the last saved figures when
       the app restarts.
@@ -2396,7 +2402,7 @@
     <button class="back" onclick={() => onBack?.()}>← Back to chat</button>
     <h1>Settings</h1>
     {#if unreadSettings.length}
-      <div class="warn-text" role="alert">
+      <div class="warn-text prose" role="alert">
         Some settings could not be read, so what this page shows for them may be
         a default rather than what you saved. Nothing has been changed.
         <ul>
@@ -2559,7 +2565,7 @@
         <h2 class="settings-group-label" id="set-advanced">Advanced</h2>
         <div class="settings-group-body">
           <details class="section">
-            <summary>Terminal access (Claude Code + GLM-5.2)</summary>
+            <summary>Terminal access (Claude Code + GLM)</summary>
             <div class="section-body">{@render terminalSection()}</div>
           </details>
         </div>
@@ -2584,10 +2590,10 @@
          Everything below that only makes sense before connecting is dropped. -->
     <p class="lead">
       {#if connected}
-        That's the setup done. <strong>GLM-5.2</strong> is hosted in Europe on
+        That's the setup done. <strong>GLM</strong> is hosted in Europe on
         Scaleway, and you're paying them directly for what you use.
       {:else}
-        Chat with <strong>GLM-5.2</strong>, hosted in Europe on Scaleway. You bring
+        Chat with <strong>GLM</strong>, hosted in Europe on Scaleway. You bring
         your own key — three steps, once, and it's done.
       {/if}
     </p>
@@ -2608,7 +2614,7 @@
     {#if connected}
       <p class="pricing-note">
         <button class="link" onclick={() => open("https://www.scaleway.com/en/pricing/model-as-a-service/")}>
-          See GLM-5.2 pricing →
+          See GLM pricing →
         </button>
       </p>
     {:else}
@@ -2617,7 +2623,7 @@
         artifacts. Web search and image generation are optional add-ons you can
         connect later. You pay Scaleway directly for what you use.
         <button class="link" onclick={() => open("https://www.scaleway.com/en/pricing/model-as-a-service/")}>
-          See GLM-5.2 pricing →
+          See GLM pricing →
         </button>
       </p>
       <p class="skip-row">

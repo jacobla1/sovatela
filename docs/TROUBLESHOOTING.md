@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Start with the **status dot** beside "GLM-5.2 · Scaleway" in the header. It
+Start with the **status dot** beside "GLM · Scaleway" in the header. It
 reflects a real health check, not a guess. Hover for the message; click to
 re-check.
 
@@ -124,7 +124,7 @@ The dot is green but nothing streams:
 
 ### Replies are slow to start
 
-GLM-5.2 reasons before answering — 60–110 tokens of it — so even "OK" takes
+GLM reasons before answering — 60–110 tokens of it — so even "OK" takes
 about 1.5 seconds. That's the model, not the app. **Quick answers (⚡)** skips
 it, at a real cost to accuracy on anything involving numbers, dates, or multiple
 steps.
@@ -202,7 +202,7 @@ scan is fine — that is a letterhead, not an ambiguous page.
 
 ### My image was ignored
 
-Images route to a vision model rather than GLM-5.2. Confirm the file is a
+Images route to a vision model rather than GLM. Confirm the file is a
 supported raster format and that it actually attached — it should appear in the
 composer before you send.
 

@@ -401,14 +401,16 @@ mod tests {
         assert!(t.image.contains_key("default"));
         assert!(t.search.contains_key("default"));
         // The models the app actually uses must be priced explicitly.
+        assert!(t.ai.contains_key("glm-5.3"));
+        // Kept, so usage recorded under the old name is still priced.
         assert!(t.ai.contains_key("glm-5.2"));
     }
 
     #[test]
     fn ai_cost_splits_input_and_output() {
         let t = embedded();
-        // 1M input + 1M output at glm-5.2's €1.80 / €5.50.
-        let cost = t.ai_cost("glm-5.2", 1_000_000, 1_000_000);
+        // 1M input + 1M output at glm-5.3's €1.80 / €5.50.
+        let cost = t.ai_cost("glm-5.3", 1_000_000, 1_000_000);
         assert!((cost - 7.30).abs() < 1e-9, "got {cost}");
     }
 

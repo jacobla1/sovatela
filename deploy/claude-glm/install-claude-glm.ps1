@@ -1,4 +1,4 @@
-# One-shot setup for `claude-glm` on Windows: run Claude Code against GLM-5.2 on
+# One-shot setup for `claude-glm` on Windows: run Claude Code against GLM on
 # Scaleway through a local LiteLLM proxy, while the normal `claude` command keeps
 # using Anthropic models. Run it:
 #     powershell -ExecutionPolicy Bypass -File install-claude-glm.ps1
@@ -27,7 +27,7 @@ function Backup-File {
   Say "  . Kept your previous $(Split-Path -Leaf $path) as $(Split-Path -Leaf $b)"
 }
 
-Say "Setting up claude-glm (Claude Code -> LiteLLM -> Scaleway GLM-5.2)"
+Say "Setting up claude-glm (Claude Code -> LiteLLM -> Scaleway GLM)"
 
 # ---- 1. Prerequisite: Claude Code -------------------------------------------
 Step "Checking prerequisites"
@@ -232,14 +232,14 @@ New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
 
 Backup-File (Join-Path $ConfigDir 'litellm.yaml')
 $yaml = @'
-# Maps the model name Claude Code sends (glm-5.2) onto Scaleway's OpenAI-
-# compatible GLM-5.2 endpoint. The Scaleway key comes from the environment,
+# Maps the model name Claude Code sends (glm-5.3) onto Scaleway's OpenAI-
+# compatible GLM endpoint. The Scaleway key comes from the environment,
 # which the claude-glm launcher populates from Credential Manager at runtime -
 # it is never written to this file.
 model_list:
-  - model_name: glm-5.2
+  - model_name: glm-5.3
     litellm_params:
-      model: openai/glm-5.2
+      model: openai/glm-5.3
       api_base: https://api.scaleway.ai/v1
       api_key: os.environ/SCW_SECRET_KEY
       drop_params: true
@@ -248,7 +248,7 @@ litellm_settings:
   # Claude Code speaks Anthropic /v1/messages to this proxy. LiteLLM translates
   # that to the upstream OpenAI *Responses* API whenever the provider is
   # literally `openai` - and Scaleway does not serve /v1/responses for
-  # glm-5.2, so every request came back 422 ROUTE NOT SUPPORTED. This is
+  # GLM, so every request came back 422 ROUTE NOT SUPPORTED. This is
   # LiteLLM's own documented opt-out; it sends them to /chat/completions.
   use_chat_completions_url_for_anthropic_messages: true
 
@@ -446,7 +446,7 @@ $Proxy = $null
 $Port  = $null
 for ($attempt = 1; $attempt -le 3 -and -not $Port; $attempt++) {
   $candidate = Get-FreePort
-  Write-Host "Starting the local GLM-5.2 proxy on port $candidate..."
+  Write-Host "Starting the local GLM proxy on port $candidate..."
 
   # The key is placed in this process's environment for the length of one
   # Start-Process call and removed immediately afterwards, so the proxy inherits
@@ -520,16 +520,16 @@ foreach ($v in @(
   Remove-Item "Env:$v" -ErrorAction SilentlyContinue
 }
 
-# Route every model tier to glm-5.2, point Claude Code at the local proxy, and
+# Route every model tier to glm-5.3, point Claude Code at the local proxy, and
 # quiet nonessential traffic.
 $env:ANTHROPIC_BASE_URL             = "http://127.0.0.1:$Port"
 $env:ANTHROPIC_AUTH_TOKEN           = $ProxyKey
-$env:ANTHROPIC_MODEL                = 'glm-5.2'
-$env:ANTHROPIC_DEFAULT_HAIKU_MODEL  = 'glm-5.2'
-$env:ANTHROPIC_DEFAULT_SONNET_MODEL = 'glm-5.2'
-$env:ANTHROPIC_DEFAULT_OPUS_MODEL   = 'glm-5.2'
-$env:ANTHROPIC_SMALL_FAST_MODEL     = 'glm-5.2'
-# Scaleway rejects anything above this for glm-5.2 ("max_completion_tokens is
+$env:ANTHROPIC_MODEL                = 'glm-5.3'
+$env:ANTHROPIC_DEFAULT_HAIKU_MODEL  = 'glm-5.3'
+$env:ANTHROPIC_DEFAULT_SONNET_MODEL = 'glm-5.3'
+$env:ANTHROPIC_DEFAULT_OPUS_MODEL   = 'glm-5.3'
+$env:ANTHROPIC_SMALL_FAST_MODEL     = 'glm-5.3'
+# Scaleway rejects anything above this for glm-5.3 ("max_completion_tokens is
 # limited to 16384"), and Claude Code otherwise asks for a Claude-sized budget.
 $env:CLAUDE_CODE_MAX_OUTPUT_TOKENS  = '16384'
 $env:CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY = '1'
@@ -542,7 +542,7 @@ $env:DISABLE_FEEDBACK_COMMAND = '1'
 # a recorded number goes stale and the published `kill $(cat ...)` could stop
 # whatever had inherited it.
 try {
-  & claude --model glm-5.2 @args
+  & claude --model glm-5.3 @args
 } finally {
   if ($Proxy -and -not $Proxy.HasExited) {
     Stop-Process -Id $Proxy.Id -Force -ErrorAction SilentlyContinue
@@ -603,7 +603,7 @@ Say ""
 # Genuinely last. PATH and the credential check used to follow the marker.
 Write-State 'complete' $LegacySeen
 
-Say "Done. Open a NEW terminal and start a GLM-5.2 Claude Code session with:"
+Say "Done. Open a NEW terminal and start a GLM Claude Code session with:"
 Say "    claude-glm"
 Say ""
 Say "Your normal 'claude' command is unchanged."

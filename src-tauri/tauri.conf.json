@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Sovatela",
-  "version": "1.10.7",
+  "version": "1.10.8",
   "identifier": "com.anaubi.sovatela",
   "build": {
     "frontendDist": "../dist",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Sovatela \u2014 GLM-5.2",
+        "title": "Sovatela \u2014 GLM",
         "width": 900,
         "height": 720,
         "minWidth": 560,
@@ -32,8 +32,8 @@
   "bundle": {
     "active": true,
     "category": "Productivity",
-    "shortDescription": "Desktop chat for GLM-5.2 on Scaleway, with your own key",
-    "longDescription": "Sovatela is a desktop chat app for the GLM-5.2 model, served by Scaleway in France and used with your own API key. Chats are kept on your device, or in a folder you choose, and keys in your operating system's credential store.",
+    "shortDescription": "Desktop chat for Z.ai's GLM on Scaleway, with your own key",
+    "longDescription": "Sovatela is a desktop chat app for Z.ai's GLM models, served by Scaleway in France and used with your own API key. Chats are kept on your device, or in a folder you choose, and keys in your operating system's credential store.",
     "targets": "all",
     "resources": [
       "THIRD-PARTY-MANIFEST.md",
